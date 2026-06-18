@@ -1,6 +1,26 @@
 ---
 const year = new Date().getFullYear();
 const accent = "#5865F2"; // Blurple
+
+const title = "AgentCord — Your Claude Code sessions, live on Discord";
+const description =
+	"A tiny macOS menu bar app that turns your active Claude Code session into a Discord Rich Presence — project, model, tokens, and time, updating in real time.";
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const ogImage = new URL("/assets/agentcord-icon.png", Astro.site).href;
+
+const jsonLd = {
+	"@context": "https://schema.org",
+	"@type": "SoftwareApplication",
+	name: "AgentCord",
+	description,
+	url: Astro.site?.href,
+	applicationCategory: "DeveloperApplication",
+	operatingSystem: "macOS",
+	offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+	image: ogImage,
+	downloadUrl: "https://github.com/preschian/agentcord/releases",
+	author: { "@type": "Person", name: "Preschian Febryantara" },
+};
 ---
 
 <html lang="en">
@@ -12,17 +32,28 @@ const accent = "#5865F2"; // Blurple
 		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="generator" content={Astro.generator} />
-		<title>AgentCord — Your Claude Code sessions, live on Discord</title>
-		<meta
-			name="description"
-			content="A tiny macOS menu bar app that turns your active Claude Code session into a Discord Rich Presence — project, model, tokens, and time, updating in real time."
+		<meta name="theme-color" content="#5865F2" />
+		<title>{title}</title>
+		<meta name="description" content={description} />
+		<link rel="canonical" href={canonical} />
+		<meta property="og:type" content="website" />
+		<meta property="og:site_name" content="AgentCord" />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:url" content={canonical} />
+		<meta property="og:image" content={ogImage} />
+		<meta property="og:image:width" content="1024" />
+		<meta property="og:image:height" content="1024" />
+		<meta property="og:image:alt" content="AgentCord app icon" />
+		<meta name="twitter:card" content="summary" />
+		<meta name="twitter:title" content={title} />
+		<meta name="twitter:description" content={description} />
+		<meta name="twitter:image" content={ogImage} />
+		<meta name="twitter:image:alt" content="AgentCord app icon" />
+		<script
+			type="application/ld+json"
+			set:html={JSON.stringify(jsonLd)}
 		/>
-		<meta property="og:title" content="AgentCord" />
-		<meta
-			property="og:description"
-			content="Your Claude Code sessions, live on Discord."
-		/>
-		<meta property="og:image" content="/assets/agentcord-icon.png" />
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link
@@ -347,11 +378,11 @@ const accent = "#5865F2"; // Blurple
 							></path></svg
 						>
 					</div>
-					<h3
+					<h2
 						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
 					>
 						Automatic detection
-					</h3>
+					</h2>
 					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
 						Senses active Claude Code sessions on its own. One-time Discord ID and
 						you're set.
@@ -377,11 +408,11 @@ const accent = "#5865F2"; // Blurple
 								fill="#5865F2"></circle></svg
 						>
 					</div>
-					<h3
+					<h2
 						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
 					>
 						Menu bar only
-					</h3>
+					</h2>
 					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
 						No Dock icon, no window clutter. It lives quietly in your menu bar and
 						stays out of the way.
@@ -402,11 +433,11 @@ const accent = "#5865F2"; // Blurple
 							stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg
 						>
 					</div>
-					<h3
+					<h2
 						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
 					>
 						Never gets stuck
-					</h3>
+					</h2>
 					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
 						Auto-reconnects when Discord restarts and clears your presence on idle
 						or quit.

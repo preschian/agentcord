@@ -52,7 +52,7 @@ final class SettingsStore: ObservableObject {
             Key.showProject: true,
             Key.doNotDisturb: false,
             Key.largeImageKey: "discord-presence-icon",
-            Key.smallImageKey: "discord-presence-icon",
+            Key.smallImageKey: "claude-color",
             Key.activityType: 0,
             Key.idleWindowSeconds: 60.0
         ])
@@ -64,7 +64,7 @@ final class SettingsStore: ObservableObject {
         showProject = defaults.bool(forKey: Key.showProject)
         doNotDisturb = defaults.bool(forKey: Key.doNotDisturb)
         largeImageKey = defaults.string(forKey: Key.largeImageKey) ?? "discord-presence-icon"
-        smallImageKey = defaults.string(forKey: Key.smallImageKey) ?? "discord-presence-icon"
+        smallImageKey = defaults.string(forKey: Key.smallImageKey) ?? "claude-color"
         activityType = defaults.integer(forKey: Key.activityType)
         idleWindowSeconds = defaults.double(forKey: Key.idleWindowSeconds)
     }

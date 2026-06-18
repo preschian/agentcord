@@ -50,9 +50,14 @@ Five small components plus the SwiftUI app shell:
   handshake, `SET_ACTIVITY`, ping/pong, reconnect with exponential backoff, and
   clearing. All socket I/O runs off the main thread.
 - `ClaudeSession.swift` - watches `~/.claude/projects/` with `FSEvents` plus a
-  periodic re-scan, finds the most recently modified `.jsonl` transcript, and
-  parses project, model, session start, and token totals. Parsing is defensive:
-  malformed or unexpected lines are skipped, never fatal.
+  periodic re-scan. The most recently modified `.jsonl` transcript defines the
+  active session (project + model), while tokens and the elapsed timer are
+  aggregated across every transcript touched on the current local calendar day:
+  tokens are summed, and the timer reflects the combined working time of all of
+  today's sessions (idle gaps between sessions excluded). Per-file parse results
+  are memoized (keyed by modification time and the day boundary) so each scan
+  only re-reads files that actually changed. Parsing is defensive: malformed or
+  unexpected lines are skipped, never fatal.
 - `PresenceController.swift` - observes the session, builds the activity from
   your settings, debounces updates (at most roughly once every few seconds, and
   only when the content actually changes), and clears on idle or quit.
@@ -66,4 +71,8 @@ Five small components plus the SwiftUI app shell:
   tolerates missing keys and unknown event types.
 - A session is considered active if its transcript was modified within the idle
   window (default 5 min, configurable 5-30 min in 5-minute steps).
+- Token and elapsed-time totals cover the current local calendar day and reset
+  at midnight. Only the portion of a session that falls on the current day is
+  counted, so a session spanning midnight contributes only its post-midnight
+  time and tokens.
 - Discord throttles rapid activity updates, so updates are debounced.

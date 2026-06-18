@@ -11,8 +11,8 @@ session is active or the app quits, the presence is cleared.
 ## Features
 
 - Detects active Claude Code sessions automatically.
-- Shows project, model, token count, and an elapsed timer on your Discord
-  profile.
+- Shows your current project and model, plus the day's total token count and
+  combined working time, on your Discord profile (the totals reset at midnight).
 - Menu bar only, no Dock icon.
 - Auto-reconnects when Discord restarts.
 - Clears the presence on idle and on quit so it never gets stuck.

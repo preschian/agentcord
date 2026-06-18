@@ -103,9 +103,11 @@ final class ClaudeSession: ObservableObject {
             return
         }
 
+        var files: [(url: URL, date: Date)] = []
         var newest: (url: URL, date: Date)?
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            files.append((url, date))
             if newest == nil || date > newest!.date {
                 newest = (url, date)
             }
@@ -119,7 +121,36 @@ final class ClaudeSession: ObservableObject {
             publish(nil)
             return
         }
-        publish(parse(url: newest.url, modified: newest.date))
+
+        // The presence shows daily totals: tokens summed across every transcript
+        // touched today, and an elapsed timer that reflects the combined working
+        // time of all of today's sessions (idle gaps between sessions excluded).
+        // "Today" is the local calendar day, so the totals reset at midnight.
+        let dayStartMs = Int64(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1000)
+
+        var totalTokensToday = 0
+        var pastDurationsMs: Int64 = 0
+        var activeAgg = DayAggregate()
+        for file in files {
+            let agg = aggregate(url: file.url, mtime: file.date, dayStartMs: dayStartMs)
+            totalTokensToday += agg.tokensToday
+            if file.url == newest.url {
+                activeAgg = agg
+            } else if let earliest = agg.earliestTodayMs, let latest = agg.latestTodayMs, latest > earliest {
+                pastDurationsMs += (latest - earliest)
+            }
+        }
+
+        // Drop cache entries for transcripts that no longer exist.
+        let liveURLs = Set(files.map { $0.url })
+        aggregateCache = aggregateCache.filter { liveURLs.contains($0.key) }
+
+        publish(makeSessionInfo(
+            newest: newest,
+            active: activeAgg,
+            totalTokensToday: totalTokensToday,
+            pastDurationsMs: pastDurationsMs
+        ))
     }
 
     private func publish(_ info: SessionInfo?) {
@@ -131,46 +162,91 @@ final class ClaudeSession: ObservableObject {
 
     // MARK: Parsing
 
-    private func parse(url: URL, modified: Date) -> SessionInfo {
-        var projectName = deriveProjectName(fromDirectory: url.deletingLastPathComponent().lastPathComponent)
+    /// Per-transcript figures restricted to today, extracted from one `.jsonl`.
+    private struct DayAggregate {
         var cwd: String?
         var model: String?
-        var earliestMs: Int64?
-        var totalTokens = 0
+        var earliestTodayMs: Int64?
+        var latestTodayMs: Int64?
+        var tokensToday = 0
+    }
 
+    private struct CacheEntry {
+        let mtime: Date
+        let dayStartMs: Int64
+        let aggregate: DayAggregate
+    }
+
+    /// Parsing every transcript on each scan would be wasteful, so results are
+    /// memoized per file. An entry is reused only while the file is unmodified
+    /// and we are still on the same calendar day (the day boundary changes which
+    /// lines count as "today"). Keyed access is safe: scanning is serialized on
+    /// `queue`.
+    private var aggregateCache: [URL: CacheEntry] = [:]
+
+    private func aggregate(url: URL, mtime: Date, dayStartMs: Int64) -> DayAggregate {
+        if let entry = aggregateCache[url], entry.mtime == mtime, entry.dayStartMs == dayStartMs {
+            return entry.aggregate
+        }
+
+        var agg = DayAggregate()
         if let content = try? String(contentsOf: url, encoding: .utf8) {
             content.enumerateLines { line, _ in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
                 guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
 
-                if cwd == nil, let c = obj["cwd"] as? String, !c.isEmpty {
-                    cwd = c
+                if agg.cwd == nil, let c = obj["cwd"] as? String, !c.isEmpty {
+                    agg.cwd = c
                 }
-                if let ts = obj["timestamp"] as? String, let ms = Self.epochMs(fromISO: ts) {
-                    if earliestMs == nil || ms < earliestMs! { earliestMs = ms }
-                }
+
+                var lineMs: Int64?
+                if let ts = obj["timestamp"] as? String { lineMs = Self.epochMs(fromISO: ts) }
+                let isToday = (lineMs ?? .min) >= dayStartMs
+
                 if let message = obj["message"] as? [String: Any] {
                     if let m = message["model"] as? String, !m.isEmpty, m != "<synthetic>" {
-                        model = m
+                        agg.model = m
                     }
-                    if let usage = message["usage"] as? [String: Any] {
-                        totalTokens += (usage["input_tokens"] as? Int ?? 0)
-                        totalTokens += (usage["output_tokens"] as? Int ?? 0)
+                    if isToday, let usage = message["usage"] as? [String: Any] {
+                        agg.tokensToday += (usage["input_tokens"] as? Int ?? 0)
+                        agg.tokensToday += (usage["output_tokens"] as? Int ?? 0)
                     }
+                }
+
+                if isToday, let ms = lineMs {
+                    if agg.earliestTodayMs == nil || ms < agg.earliestTodayMs! { agg.earliestTodayMs = ms }
+                    if agg.latestTodayMs == nil || ms > agg.latestTodayMs! { agg.latestTodayMs = ms }
                 }
             }
         }
 
-        if let cwd { projectName = repoName(forCwd: cwd) }
-        let startMs = earliestMs ?? Int64(modified.timeIntervalSince1970 * 1000)
+        aggregateCache[url] = CacheEntry(mtime: mtime, dayStartMs: dayStartMs, aggregate: agg)
+        return agg
+    }
+
+    private func makeSessionInfo(
+        newest: (url: URL, date: Date),
+        active: DayAggregate,
+        totalTokensToday: Int,
+        pastDurationsMs: Int64
+    ) -> SessionInfo {
+        var projectName = deriveProjectName(fromDirectory: newest.url.deletingLastPathComponent().lastPathComponent)
+        if let cwd = active.cwd { projectName = repoName(forCwd: cwd) }
+
+        // The active session keeps running, so its share of the day's working
+        // time grows naturally as Discord ticks the timer up from `start`. We
+        // backdate `start` by the finished sessions' durations so the displayed
+        // elapsed time equals active-session-so-far + earlier sessions today.
+        let currentStartMs = active.earliestTodayMs ?? Int64(newest.date.timeIntervalSince1970 * 1000)
+        let startMs = currentStartMs - pastDurationsMs
 
         return SessionInfo(
             projectName: projectName.isEmpty ? "Claude Code" : projectName,
-            model: model.map(Self.prettyModel),
+            model: active.model.map(Self.prettyModel),
             startEpochMs: startMs,
-            totalTokens: totalTokens,
-            lastModified: modified
+            totalTokens: totalTokensToday,
+            lastModified: newest.date
         )
     }
 

@@ -25,6 +25,10 @@ final class SettingsStore: ObservableObject {
         static let idleWindowSeconds = "idleWindowSeconds"
     }
 
+    /// The Discord Application ID this app reports as. Not a secret; safe to
+    /// ship. Override by writing a `clientID` value into UserDefaults.
+    static let defaultClientID = "1517099756063686677"
+
     private let defaults: UserDefaults
 
     @Published var clientID: String { didSet { defaults.set(clientID, forKey: Key.clientID) } }
@@ -41,25 +45,26 @@ final class SettingsStore: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
+            Key.clientID: Self.defaultClientID,
             Key.presenceEnabled: true,
             Key.showModel: true,
             Key.showTokens: true,
             Key.showProject: true,
             Key.doNotDisturb: false,
-            Key.largeImageKey: "claude",
-            Key.smallImageKey: "coding",
+            Key.largeImageKey: "discord-presence-icon",
+            Key.smallImageKey: "discord-presence-icon",
             Key.activityType: 0,
             Key.idleWindowSeconds: 60.0
         ])
 
-        clientID = defaults.string(forKey: Key.clientID) ?? ""
+        clientID = defaults.string(forKey: Key.clientID) ?? Self.defaultClientID
         presenceEnabled = defaults.bool(forKey: Key.presenceEnabled)
         showModel = defaults.bool(forKey: Key.showModel)
         showTokens = defaults.bool(forKey: Key.showTokens)
         showProject = defaults.bool(forKey: Key.showProject)
         doNotDisturb = defaults.bool(forKey: Key.doNotDisturb)
-        largeImageKey = defaults.string(forKey: Key.largeImageKey) ?? "claude"
-        smallImageKey = defaults.string(forKey: Key.smallImageKey) ?? "coding"
+        largeImageKey = defaults.string(forKey: Key.largeImageKey) ?? "discord-presence-icon"
+        smallImageKey = defaults.string(forKey: Key.smallImageKey) ?? "discord-presence-icon"
         activityType = defaults.integer(forKey: Key.activityType)
         idleWindowSeconds = defaults.double(forKey: Key.idleWindowSeconds)
     }

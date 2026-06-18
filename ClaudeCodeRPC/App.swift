@@ -47,9 +47,8 @@ struct MenuBarLabel: View {
     @ObservedObject var controller: PresenceController
 
     var body: some View {
-        Image(systemName: controller.discordState == .connected
-              ? "brain.head.profile.fill"
-              : "brain.head.profile")
+        Image(systemName: "sparkles")
+            .symbolVariant(controller.discordState == .connected ? .none : .slash)
     }
 }
 
@@ -141,15 +140,6 @@ struct MenuContentView: View {
 
     private var settingsForm: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Discord Application ID")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("Application ID", text: $settings.clientID)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { controller.applyClientID() }
-            }
-
             Toggle("Show project", isOn: $settings.showProject)
             Toggle("Show model", isOn: $settings.showModel)
             Toggle("Show tokens", isOn: $settings.showTokens)

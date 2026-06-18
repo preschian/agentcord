@@ -151,10 +151,10 @@ struct MenuContentView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Idle window: \(Int(settings.idleWindowSeconds))s")
+                Text("Idle window: \(Int(settings.idleWindowSeconds / 60)) min")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Slider(value: $settings.idleWindowSeconds, in: 15...300, step: 15)
+                Slider(value: $settings.idleWindowSeconds, in: 300...1800, step: 300)
             }
         }
     }

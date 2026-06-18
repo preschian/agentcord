@@ -106,5 +106,5 @@ Five small components plus the SwiftUI app shell:
 - The Claude Code transcript schema is undocumented and may change. The parser
   tolerates missing keys and unknown event types.
 - A session is considered active if its transcript was modified within the idle
-  window (default 60s, configurable 15-300s).
+  window (default 5 min, configurable 5-30 min in 5-minute steps).
 - Discord throttles rapid activity updates, so updates are debounced.

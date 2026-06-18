@@ -54,7 +54,7 @@ final class SettingsStore: ObservableObject {
             Key.largeImageKey: "claude-color",
             Key.smallImageKey: "discord-presence-icon",
             Key.activityType: 0,
-            Key.idleWindowSeconds: 60.0
+            Key.idleWindowSeconds: 300.0
         ])
 
         clientID = defaults.string(forKey: Key.clientID) ?? Self.defaultClientID

@@ -162,7 +162,7 @@ final class ClaudeSession: ObservableObject {
             }
         }
 
-        if let cwd { projectName = (cwd as NSString).lastPathComponent }
+        if let cwd { projectName = repoName(forCwd: cwd) }
         let startMs = earliestMs ?? Int64(modified.timeIntervalSince1970 * 1000)
 
         return SessionInfo(
@@ -180,6 +180,43 @@ final class ClaudeSession: ObservableObject {
     private func deriveProjectName(fromDirectory dir: String) -> String {
         let parts = dir.split(separator: "-").filter { !$0.isEmpty }
         return parts.last.map(String.init) ?? dir
+    }
+
+    private var repoNameCache: [String: String] = [:]
+
+    /// Resolve the repository name for a working directory. Prefers the git
+    /// remote (so a Conductor worktree like ".../agentcord/abuja" still reports
+    /// "agentcord"), then the git toplevel, then the directory name.
+    private func repoName(forCwd cwd: String) -> String {
+        if let cached = repoNameCache[cwd] { return cached }
+
+        var name = (cwd as NSString).lastPathComponent
+        if let remote = runGit(["-C", cwd, "config", "--get", "remote.origin.url"]) {
+            var base = (remote as NSString).lastPathComponent
+            if base.hasSuffix(".git") { base = String(base.dropLast(4)) }
+            if !base.isEmpty { name = base }
+        } else if let top = runGit(["-C", cwd, "rev-parse", "--show-toplevel"]) {
+            let base = (top as NSString).lastPathComponent
+            if !base.isEmpty { name = base }
+        }
+
+        repoNameCache[cwd] = name
+        return name
+    }
+
+    private func runGit(_ args: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (output?.isEmpty == false) ? output : nil
     }
 
     // MARK: Static helpers

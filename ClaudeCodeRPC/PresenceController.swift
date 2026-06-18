@@ -123,21 +123,19 @@ final class PresenceController: ObservableObject {
     }
 
     private func buildPresence(from info: SessionInfo) -> RichPresence {
-        let details: String
-        if settings.showProject {
-            details = "Working on: \(info.projectName)"
-        } else {
-            details = "Idle"
-        }
+        // Header (bold title): the model, e.g. "Opus 4.8".
+        let name = (settings.showModel ? info.model : nil) ?? "Claude Code"
 
-        var stateParts: [String] = []
-        if settings.showModel, let model = info.model {
-            stateParts.append(model)
-        }
+        // details: the repository being worked on.
+        let details = settings.showProject ? "Working on: \(info.projectName)" : nil
+
+        // state: token usage.
+        let state: String?
         if settings.showTokens, info.totalTokens > 0 {
-            stateParts.append("\(formatTokens(info.totalTokens)) tokens")
+            state = "\(formatTokens(info.totalTokens)) tokens"
+        } else {
+            state = nil
         }
-        let state = stateParts.isEmpty ? nil : stateParts.joined(separator: " | ")
 
         let assets = Assets(
             large_image: settings.largeImageKey.isEmpty ? nil : settings.largeImageKey,
@@ -151,6 +149,7 @@ final class PresenceController: ObservableObject {
 
         return RichPresence(
             type: type,
+            name: name,
             details: details,
             state: state,
             timestamps: Timestamps(start: info.startEpochMs, end: nil),

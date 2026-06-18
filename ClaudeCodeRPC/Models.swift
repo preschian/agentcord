@@ -16,6 +16,8 @@ struct RichPresence: Codable, Equatable {
     /// Activity type. 0 Playing, 2 Listening, 3 Watching, 5 Competing.
     /// Types 1 (Streaming) and 4 (Custom) are not allowed for RPC updates.
     var type: Int?
+    /// The bold title line. Discord honors this for the activity header.
+    var name: String?
     var details: String?
     var state: String?
     var timestamps: Timestamps?

@@ -156,21 +156,6 @@ struct MenuContentView: View {
                     .foregroundStyle(.secondary)
                 Slider(value: $settings.idleWindowSeconds, in: 15...300, step: 15)
             }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Large image key")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("large_image", text: $settings.largeImageKey)
-                    .textFieldStyle(.roundedBorder)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Small image key")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("small_image", text: $settings.smallImageKey)
-                    .textFieldStyle(.roundedBorder)
-            }
         }
     }
 

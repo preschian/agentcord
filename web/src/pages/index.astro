@@ -1,0 +1,471 @@
+---
+const year = new Date().getFullYear();
+const accent = "#5865F2"; // Blurple
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/png" href="/assets/agentcord-icon.png" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="generator" content={Astro.generator} />
+		<title>AgentCord — Your Claude Code sessions, live on Discord</title>
+		<meta
+			name="description"
+			content="A tiny macOS menu bar app that turns your active Claude Code session into a Discord Rich Presence — project, model, tokens, and time, updating in real time."
+		/>
+		<meta property="og:title" content="AgentCord" />
+		<meta
+			property="og:description"
+			content="Your Claude Code sessions, live on Discord."
+		/>
+		<meta property="og:image" content="/assets/agentcord-icon.png" />
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+			rel="stylesheet"
+		/>
+		<style is:global>
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+			}
+			html,
+			body {
+				margin: 0;
+				padding: 0;
+			}
+			body {
+				font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+				-webkit-font-smoothing: antialiased;
+			}
+			::selection {
+				background: rgba(88, 101, 242, 0.22);
+			}
+			@keyframes ac-pulse {
+				0%,
+				100% {
+					transform: scale(1);
+					opacity: 1;
+				}
+				50% {
+					transform: scale(0.82);
+					opacity: 0.55;
+				}
+			}
+			@keyframes ac-float {
+				0%,
+				100% {
+					transform: translateY(0);
+				}
+				50% {
+					transform: translateY(-7px);
+				}
+			}
+			a {
+				transition:
+					color 0.18s ease,
+					border-color 0.18s ease,
+					filter 0.18s ease,
+					transform 0.18s ease;
+			}
+			.ac-nav-link:hover {
+				color: #16161a !important;
+			}
+			.ac-download-nav:hover {
+				filter: brightness(1.07);
+			}
+			.ac-cta-primary:hover {
+				filter: brightness(1.07);
+				transform: translateY(-1px);
+			}
+			.ac-cta-secondary:hover {
+				border-color: #c9c9d2 !important;
+			}
+			.ac-footer-link:hover {
+				color: #16161a !important;
+			}
+			@media (max-width: 720px) {
+				.ac-h1 {
+					font-size: 38px !important;
+				}
+				.ac-features {
+					grid-template-columns: 1fr !important;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<div
+			style={`--accent: ${accent}; min-height: 100vh; background: #FAFAFB; color: #16161A; overflow-x: hidden; position: relative;`}
+		>
+			<!-- ambient glow -->
+			<div
+				style="position: absolute; top: 220px; left: 50%; transform: translateX(-50%); width: 760px; height: 520px; background: radial-gradient(ellipse at center, var(--accent, #5865F2) 0%, transparent 68%); opacity: 0.13; filter: blur(36px); pointer-events: none; z-index: 0;"
+			>
+			</div>
+
+			<!-- NAV -->
+			<nav
+				style="position: relative; z-index: 3; max-width: 1120px; margin: 0 auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between;"
+			>
+				<div style="display: flex; align-items: center; gap: 10px;">
+					<img
+						src="/assets/agentcord-icon.png"
+						alt="AgentCord"
+						style="width: 30px; height: 30px; border-radius: 9px; display: block; box-shadow: 0 4px 14px rgba(20,20,30,0.18);"
+					/>
+					<span style="font-weight: 800; font-size: 17px; letter-spacing: -0.02em;"
+						>AgentCord</span
+					>
+				</div>
+				<div style="display: flex; align-items: center; gap: 22px;">
+					<a
+						href="https://github.com/preschian/agentcord"
+						target="_blank"
+						rel="noopener"
+						class="ac-nav-link"
+						style="font-size: 14.5px; font-weight: 600; color: #44444E; text-decoration: none;"
+						>GitHub</a
+					>
+					<a
+						href="https://github.com/preschian/agentcord/releases"
+						target="_blank"
+						rel="noopener"
+						class="ac-download-nav"
+						style="font-size: 14px; font-weight: 700; color: #fff; background: var(--accent, #5865F2); padding: 9px 18px; border-radius: 10px; text-decoration: none; box-shadow: 0 5px 16px rgba(88,101,242,0.32);"
+						>Download</a
+					>
+				</div>
+			</nav>
+
+			<!-- HERO -->
+			<header
+				style="position: relative; z-index: 2; max-width: 760px; margin: 0 auto; padding: 70px 32px 0; text-align: center;"
+			>
+				<div
+					style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 13px; border-radius: 100px; background: #fff; border: 1px solid #ECECF0; font-size: 12.5px; font-weight: 600; color: #5A5A64; box-shadow: 0 2px 8px rgba(20,20,30,0.04); white-space: nowrap;"
+				>
+					<span
+						style="width: 7px; height: 7px; border-radius: 50%; background: #23A55A; animation: ac-pulse 2.4s ease-in-out infinite;"
+					></span>
+					macOS menu bar app
+				</div>
+				<h1
+					class="ac-h1"
+					style="margin: 26px 0 0; font-size: 56px; line-height: 1.04; letter-spacing: -0.035em; font-weight: 800; text-wrap: balance;"
+				>
+					Your Claude Code sessions,<br />live on Discord.
+				</h1>
+				<p
+					style="margin: 24px auto 0; max-width: 540px; font-size: 18.5px; line-height: 1.55; color: #5A5A64; text-wrap: pretty;"
+				>
+					A tiny menu bar app that turns your active Claude Code session into a
+					Discord Rich Presence — project, model, tokens, and time, updating in
+					real time.
+				</p>
+
+				<div
+					style="margin-top: 36px; display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap;"
+				>
+					<a
+						href="https://github.com/preschian/agentcord/releases"
+						target="_blank"
+						rel="noopener"
+						class="ac-cta-primary"
+						style="display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #fff; background: var(--accent, #5865F2); padding: 14px 26px; border-radius: 13px; text-decoration: none; box-shadow: 0 10px 26px rgba(88,101,242,0.34);"
+					>
+						<svg
+							width="17"
+							height="17"
+							viewBox="0 0 24 24"
+							fill="#fff"
+							aria-hidden="true"
+							><path
+								d="M12 3v10.6l3.3-3.3 1.4 1.4L12 17.4 5.3 11.7l1.4-1.4L10 13.6V3h2zM5 19h14v2H5z"
+							></path></svg
+						>
+						Download for macOS
+					</a>
+					<a
+						href="https://github.com/preschian/agentcord"
+						target="_blank"
+						rel="noopener"
+						class="ac-cta-secondary"
+						style="display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #16161A; background: #fff; border: 1px solid #E4E4EA; padding: 14px 22px; border-radius: 13px; text-decoration: none;"
+						>View on GitHub</a
+					>
+				</div>
+				<p
+					style="margin: 16px 0 0; font-size: 13px; color: #8A8A94; font-weight: 500;"
+				>
+					Free &amp; open source · Requires macOS 13+ and the Discord desktop app
+				</p>
+			</header>
+
+			<!-- PRESENCE DEMO -->
+			<section
+				style="position: relative; z-index: 2; max-width: 1120px; margin: 64px auto 0; padding: 0 32px; display: flex; justify-content: center;"
+			>
+				<div style="animation: ac-float 6s ease-in-out infinite;">
+					<!-- discord profile popout -->
+					<div
+						style="width: 372px; background: #232428; border-radius: 18px; padding: 16px; box-shadow: 0 30px 70px -18px rgba(20,20,40,0.42), 0 0 0 1px rgba(255,255,255,0.04);"
+					>
+						<div
+							id="ac-activity"
+							style="font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #B5BAC1; text-transform: uppercase; margin: 4px 2px 12px;"
+						>
+							Playing
+						</div>
+
+						<div style="display: flex; gap: 14px; align-items: center;">
+							<!-- large image + small badge -->
+							<div style="position: relative; flex: none;">
+								<div
+									style="width: 64px; height: 64px; border-radius: 12px; background: linear-gradient(150deg, #E8835E 0%, #D97757 100%); display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(217,119,87,0.35);"
+								>
+									<svg
+										width="30"
+										height="30"
+										viewBox="0 0 24 24"
+										fill="#fff"
+										aria-hidden="true"
+										><path
+											d="M12 1.5 L13.7 9.1 L21.3 7.4 L15.7 12 L21.3 16.6 L13.7 14.9 L12 22.5 L10.3 14.9 L2.7 16.6 L8.3 12 L2.7 7.4 L10.3 9.1 Z"
+										></path></svg
+									>
+								</div>
+								<div
+									style="position: absolute; right: -7px; bottom: -7px; width: 28px; height: 28px; border-radius: 50%; background: var(--accent, #5865F2); border: 3px solid #232428; display: flex; align-items: center; justify-content: center;"
+								>
+									<span
+										style="font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600; color: #fff;"
+										>&gt;_</span
+									>
+								</div>
+							</div>
+
+							<!-- text block -->
+							<div style="min-width: 0; flex: 1;">
+								<div
+									style="font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 3px;"
+								>
+									Claude Code
+								</div>
+								<div
+									id="ac-rows"
+									style="opacity: 1; transition: opacity 0.32s ease;"
+								>
+									<div
+										id="ac-project"
+										style="font-size: 13.5px; color: #C7CBD1; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+									>
+										agentcord
+									</div>
+									<div
+										id="ac-model"
+										style="font-size: 13.5px; color: #9298A1; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+									>
+										Claude Sonnet 4.5
+									</div>
+								</div>
+								<div
+									id="ac-stats"
+									style="margin-top: 5px; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: #6FCF8E; font-variant-numeric: tabular-nums;"
+								>
+									1.24M tokens · 02:14:09 elapsed
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<!-- FEATURES -->
+			<section
+				class="ac-features"
+				style="position: relative; z-index: 2; max-width: 1000px; margin: 96px auto 0; padding: 0 32px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px;"
+			>
+				<div>
+					<div
+						style="width: 38px; height: 38px; border-radius: 11px; background: #EEF0FE; display: flex; align-items: center; justify-content: center; margin-bottom: 14px;"
+					>
+						<svg
+							width="19"
+							height="19"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="#5865F2"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path d="M21 12a9 9 0 1 1-6.2-8.6"></path><path d="M21 4v5h-5"
+							></path></svg
+						>
+					</div>
+					<h3
+						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
+					>
+						Automatic detection
+					</h3>
+					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
+						Senses active Claude Code sessions on its own. One-time Discord ID and
+						you're set.
+					</p>
+				</div>
+				<div>
+					<div
+						style="width: 38px; height: 38px; border-radius: 11px; background: #EEF0FE; display: flex; align-items: center; justify-content: center; margin-bottom: 14px;"
+					>
+						<svg
+							width="19"
+							height="19"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="#5865F2"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><rect x="3" y="4" width="18" height="4" rx="1.5"></rect><circle
+								cx="7"
+								cy="6"
+								r="0.6"
+								fill="#5865F2"></circle></svg
+						>
+					</div>
+					<h3
+						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
+					>
+						Menu bar only
+					</h3>
+					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
+						No Dock icon, no window clutter. It lives quietly in your menu bar and
+						stays out of the way.
+					</p>
+				</div>
+				<div>
+					<div
+						style="width: 38px; height: 38px; border-radius: 11px; background: #EEF0FE; display: flex; align-items: center; justify-content: center; margin-bottom: 14px;"
+					>
+						<svg
+							width="19"
+							height="19"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="#5865F2"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg
+						>
+					</div>
+					<h3
+						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
+					>
+						Never gets stuck
+					</h3>
+					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
+						Auto-reconnects when Discord restarts and clears your presence on idle
+						or quit.
+					</p>
+				</div>
+			</section>
+
+			<!-- FOOTER -->
+			<footer
+				style="position: relative; z-index: 2; max-width: 1120px; margin: 104px auto 0; padding: 28px 32px 40px; border-top: 1px solid #ECECF0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;"
+			>
+				<div style="display: flex; align-items: center; gap: 9px;">
+					<img
+						src="/assets/agentcord-icon.png"
+						alt="AgentCord"
+						style="width: 22px; height: 22px; border-radius: 6px; display: block;"
+					/>
+					<span style="font-size: 14px; font-weight: 700;">AgentCord</span>
+					<span style="font-size: 13px; color: #9A9AA4; font-weight: 500;"
+						>· open source</span
+					>
+				</div>
+				<div
+					style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; font-weight: 600;"
+				>
+					<a
+						href="https://github.com/preschian/agentcord"
+						target="_blank"
+						rel="noopener"
+						class="ac-footer-link"
+						style="color: #5A5A64; text-decoration: none;">GitHub</a
+					>
+					<a
+						href="https://github.com/preschian/agentcord/blob/main/README.md"
+						target="_blank"
+						rel="noopener"
+						class="ac-footer-link"
+						style="color: #5A5A64; text-decoration: none;">Docs</a
+					>
+					<span style="color: #B0B0BA; font-weight: 500;">© {year}</span>
+				</div>
+			</footer>
+		</div>
+
+		<script>
+			// Live Discord Rich Presence demo — mirrors the design's DCLogic component.
+			const projects = [
+				{ name: "agentcord", model: "Claude Sonnet 4.5" },
+				{ name: "design-system", model: "Claude Opus 4.6" },
+				{ name: "api-gateway", model: "Claude Sonnet 4.5" },
+				{ name: "docs-site", model: "Claude Haiku 4.5" },
+			];
+
+			let seconds = 8049;
+			let tokens = 1240512;
+			let idx = 0;
+
+			const rowsEl = document.getElementById("ac-rows");
+			const projectEl = document.getElementById("ac-project");
+			const modelEl = document.getElementById("ac-model");
+			const statsEl = document.getElementById("ac-stats");
+
+			const pad = (n: number) => String(n).padStart(2, "0");
+
+			function fmtTime(t: number) {
+				const h = Math.floor(t / 3600);
+				const m = Math.floor((t % 3600) / 60);
+				const s = t % 60;
+				return `${pad(h)}:${pad(m)}:${pad(s)}`;
+			}
+
+			function fmtTokens(n: number) {
+				if (n >= 1000000) return (n / 1000000).toFixed(2) + "M";
+				return n.toLocaleString("en-US");
+			}
+
+			function renderStats() {
+				if (statsEl) {
+					statsEl.textContent = `${fmtTokens(tokens)} tokens · ${fmtTime(seconds)} elapsed`;
+				}
+			}
+
+			renderStats();
+
+			setInterval(() => {
+				seconds += 1;
+				tokens += 600 + Math.floor(Math.random() * 1900);
+				renderStats();
+			}, 1000);
+
+			setInterval(() => {
+				if (rowsEl) rowsEl.style.opacity = "0";
+				setTimeout(() => {
+					idx = (idx + 1) % projects.length;
+					const p = projects[idx];
+					if (projectEl) projectEl.textContent = p.name;
+					if (modelEl) modelEl.textContent = p.model;
+					if (rowsEl) rowsEl.style.opacity = "1";
+				}, 340);
+			}, 4200);
+		</script>
+	</body>
+</html>

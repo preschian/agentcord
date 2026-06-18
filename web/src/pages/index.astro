@@ -18,7 +18,7 @@ const jsonLd = {
 	operatingSystem: "macOS",
 	offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
 	image: ogImage,
-	downloadUrl: "https://github.com/preschian/agentcord/releases",
+	downloadUrl: new URL("/AgentCord.dmg", Astro.site).href,
 	author: { "@type": "Person", name: "Preschian Febryantara" },
 };
 ---
@@ -165,11 +165,6 @@ const jsonLd = {
 					gap: 13px !important;
 				}
 			}
-			@media (max-width: 360px) {
-				.ac-nav-gh {
-					display: none !important;
-				}
-			}
 		</style>
 	</head>
 	<body>
@@ -199,17 +194,8 @@ const jsonLd = {
 				</div>
 				<div class="ac-nav-gap" style="display: flex; align-items: center; gap: 22px;">
 					<a
-						href="https://github.com/preschian/agentcord"
-						target="_blank"
-						rel="noopener"
-						class="ac-nav-link ac-nav-gh"
-						style="font-size: 14.5px; font-weight: 600; color: #44444E; text-decoration: none;"
-						>GitHub</a
-					>
-					<a
-						href="https://github.com/preschian/agentcord/releases"
-						target="_blank"
-						rel="noopener"
+						href="/AgentCord.dmg"
+						download
 						class="ac-download-nav"
 						style="font-size: 14px; font-weight: 700; color: #fff; background: var(--accent, #5865F2); padding: 9px 18px; border-radius: 10px; text-decoration: none; box-shadow: 0 5px 16px rgba(88,101,242,0.32);"
 						>Download</a
@@ -248,9 +234,8 @@ const jsonLd = {
 					style="margin-top: 36px; display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap;"
 				>
 					<a
-						href="https://github.com/preschian/agentcord/releases"
-						target="_blank"
-						rel="noopener"
+						href="/AgentCord.dmg"
+						download
 						class="ac-cta-primary"
 						style="display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #fff; background: var(--accent, #5865F2); padding: 14px 26px; border-radius: 13px; text-decoration: none; box-shadow: 0 10px 26px rgba(88,101,242,0.34);"
 					>
@@ -266,14 +251,6 @@ const jsonLd = {
 						>
 						Download for macOS
 					</a>
-					<a
-						href="https://github.com/preschian/agentcord"
-						target="_blank"
-						rel="noopener"
-						class="ac-cta-secondary"
-						style="display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #16161A; background: #fff; border: 1px solid #E4E4EA; padding: 14px 22px; border-radius: 13px; text-decoration: none;"
-						>View on GitHub</a
-					>
 				</div>
 				<p
 					style="margin: 16px 0 0; font-size: 13px; color: #8A8A94; font-weight: 500;"
@@ -468,18 +445,10 @@ const jsonLd = {
 					style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; font-weight: 600;"
 				>
 					<a
-						href="https://github.com/preschian/agentcord"
-						target="_blank"
-						rel="noopener"
+						href="/AgentCord.dmg"
+						download
 						class="ac-footer-link"
-						style="color: #5A5A64; text-decoration: none;">GitHub</a
-					>
-					<a
-						href="https://github.com/preschian/agentcord/blob/main/README.md"
-						target="_blank"
-						rel="noopener"
-						class="ac-footer-link"
-						style="color: #5A5A64; text-decoration: none;">Docs</a
+						style="color: #5A5A64; text-decoration: none;">Download</a
 					>
 					<span style="color: #B0B0BA; font-weight: 500;">© {year}</span>
 				</div>

@@ -132,7 +132,7 @@ final class PresenceController: ObservableObject {
         // state: token usage.
         let state: String?
         if settings.showTokens, info.totalTokens > 0 {
-            state = "\(formatTokens(info.totalTokens)) tokens"
+            state = "\(Self.formatTokens(info.totalTokens)) tokens"
         } else {
             state = nil
         }
@@ -158,7 +158,7 @@ final class PresenceController: ObservableObject {
         )
     }
 
-    private func formatTokens(_ count: Int) -> String {
+    static func formatTokens(_ count: Int) -> String {
         if count >= 1_000_000 {
             return String(format: "%.1fM", Double(count) / 1_000_000)
         }

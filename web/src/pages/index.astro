@@ -36,6 +36,7 @@ const accent = "#5865F2"; // Blurple
 			body {
 				margin: 0;
 				padding: 0;
+				overflow-x: hidden;
 			}
 			body {
 				font-family: "Plus Jakarta Sans", system-ui, sans-serif;
@@ -93,6 +94,40 @@ const accent = "#5865F2"; // Blurple
 				}
 				.ac-features {
 					grid-template-columns: 1fr !important;
+					gap: 30px !important;
+					padding: 0 22px !important;
+				}
+				.ac-nav {
+					padding: 18px 22px !important;
+				}
+				.ac-hero {
+					padding: 52px 22px 0 !important;
+				}
+				.ac-presence-section {
+					padding: 0 22px !important;
+				}
+				.ac-card {
+					width: 100% !important;
+					max-width: 372px !important;
+				}
+				.ac-footer {
+					padding: 26px 22px 36px !important;
+				}
+			}
+			@media (max-width: 400px) {
+				.ac-h1 {
+					font-size: 32px !important;
+				}
+				.ac-nav {
+					padding: 16px !important;
+				}
+				.ac-nav-gap {
+					gap: 13px !important;
+				}
+			}
+			@media (max-width: 360px) {
+				.ac-nav-gh {
+					display: none !important;
 				}
 			}
 		</style>
@@ -109,6 +144,7 @@ const accent = "#5865F2"; // Blurple
 
 			<!-- NAV -->
 			<nav
+				class="ac-nav"
 				style="position: relative; z-index: 3; max-width: 1120px; margin: 0 auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between;"
 			>
 				<div style="display: flex; align-items: center; gap: 10px;">
@@ -121,12 +157,12 @@ const accent = "#5865F2"; // Blurple
 						>AgentCord</span
 					>
 				</div>
-				<div style="display: flex; align-items: center; gap: 22px;">
+				<div class="ac-nav-gap" style="display: flex; align-items: center; gap: 22px;">
 					<a
 						href="https://github.com/preschian/agentcord"
 						target="_blank"
 						rel="noopener"
-						class="ac-nav-link"
+						class="ac-nav-link ac-nav-gh"
 						style="font-size: 14.5px; font-weight: 600; color: #44444E; text-decoration: none;"
 						>GitHub</a
 					>
@@ -143,6 +179,7 @@ const accent = "#5865F2"; // Blurple
 
 			<!-- HERO -->
 			<header
+				class="ac-hero"
 				style="position: relative; z-index: 2; max-width: 760px; margin: 0 auto; padding: 70px 32px 0; text-align: center;"
 			>
 				<div
@@ -207,12 +244,13 @@ const accent = "#5865F2"; // Blurple
 
 			<!-- PRESENCE DEMO -->
 			<section
+				class="ac-presence-section"
 				style="position: relative; z-index: 2; max-width: 1120px; margin: 64px auto 0; padding: 0 32px; display: flex; justify-content: center;"
 			>
-				<div style="animation: ac-float 6s ease-in-out infinite;">
+				<div class="ac-card" style="width: 372px; animation: ac-float 6s ease-in-out infinite;">
 					<!-- discord profile popout -->
 					<div
-						style="width: 372px; background: #232428; border-radius: 18px; padding: 16px; box-shadow: 0 30px 70px -18px rgba(20,20,40,0.42), 0 0 0 1px rgba(255,255,255,0.04);"
+						style="width: 100%; background: #232428; border-radius: 18px; padding: 16px; box-shadow: 0 30px 70px -18px rgba(20,20,40,0.42), 0 0 0 1px rgba(255,255,255,0.04);"
 					>
 						<div
 							id="ac-activity"
@@ -375,6 +413,7 @@ const accent = "#5865F2"; // Blurple
 
 			<!-- FOOTER -->
 			<footer
+				class="ac-footer"
 				style="position: relative; z-index: 2; max-width: 1120px; margin: 104px auto 0; padding: 28px 32px 40px; border-top: 1px solid #ECECF0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;"
 			>
 				<div style="display: flex; align-items: center; gap: 9px;">

@@ -1,4 +1,4 @@
-# Claude Code RPC
+# agentcord
 
 A lightweight macOS menu bar app that shows a Discord Rich Presence while a
 Claude Code session is active. When you have Claude Code running, your Discord
@@ -32,7 +32,7 @@ xcodebuild -project ClaudeCodeRPC.xcodeproj -scheme ClaudeCodeRPC -configuration
 ```
 
 Or open `ClaudeCodeRPC.xcodeproj` in Xcode and press Run. The app appears in the
-menu bar (a brain icon); there is no Dock icon and no app window.
+menu bar (a sparkles icon); there is no Dock icon and no app window.
 
 ## App Sandbox: keep it OFF
 

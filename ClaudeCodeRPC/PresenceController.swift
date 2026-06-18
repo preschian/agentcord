@@ -124,7 +124,7 @@ final class PresenceController: ObservableObject {
 
     private func buildPresence(from info: SessionInfo) -> RichPresence {
         // Header (bold title): the model, e.g. "Opus 4.8".
-        let name = (settings.showModel ? info.model : nil) ?? "Claude Code"
+        let name = (settings.showModel ? info.model : nil) ?? "agentcord"
 
         // details: the repository being worked on.
         let details = settings.showProject ? "Working on: \(info.projectName)" : nil
@@ -139,7 +139,7 @@ final class PresenceController: ObservableObject {
 
         let assets = Assets(
             large_image: settings.largeImageKey.isEmpty ? nil : settings.largeImageKey,
-            large_text: "Claude Code",
+            large_text: "agentcord",
             small_image: settings.smallImageKey.isEmpty ? nil : settings.smallImageKey,
             small_text: "Active session"
         )

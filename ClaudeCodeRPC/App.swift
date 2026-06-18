@@ -72,7 +72,7 @@ struct MenuContentView: View {
                     .padding(.top, 6)
             }
             Divider()
-            Button("Quit Claude Code RPC") {
+            Button("Quit agentcord") {
                 controller.shutdown()
                 NSApplication.shared.terminate(nil)
             }
@@ -85,7 +85,7 @@ struct MenuContentView: View {
     private var header: some View {
         HStack {
             Image(systemName: "sparkles")
-            Text("Claude Code RPC")
+            Text("agentcord")
                 .font(.headline)
             Spacer()
         }

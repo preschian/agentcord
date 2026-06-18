@@ -104,8 +104,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if settings.showMenuBarStatus, let info = controller.session.current {
-            // Leading space keeps the text off the icon.
-            button.title = " " + Self.statusText(for: info, settings: settings)
+            // Leading space keeps the text off the icon. Monospaced digits keep
+            // the elapsed timer from jittering as the title refreshes each tick.
+            let text = " " + Self.statusText(for: info, settings: settings)
+            button.attributedTitle = NSAttributedString(
+                string: text,
+                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 0, weight: .regular)]
+            )
         } else {
             button.title = ""
         }
@@ -113,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Formatting
 
-    /// Builds the menu bar string, e.g. "Opus 4.8 · 10:15 · 48.0K tokens".
+    /// Builds the menu bar string, e.g. "Opus 4.8 · 10m · 48.0K tokens".
     /// Honors the same Show model / Show tokens toggles as the Discord presence.
     static func statusText(for info: SessionInfo, settings: SettingsStore) -> String {
         var parts: [String] = []
@@ -128,15 +133,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return parts.joined(separator: " · ")
     }
 
-    /// Formats a duration as "H:MM:SS" once it reaches an hour, otherwise "M:SS".
+    /// Formats a duration without seconds: "Hh Mm" once it reaches an hour,
+    /// otherwise "Mm" (e.g. "1h 05m", "10m").
     static func formatElapsed(_ ms: Int64) -> String {
-        let total = max(0, Int(ms / 1000))
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
+        let totalMinutes = max(0, Int(ms / 60000))
+        let h = totalMinutes / 60
+        let m = totalMinutes % 60
         return h > 0
-            ? String(format: "%d:%02d:%02d", h, m, s)
-            : String(format: "%d:%02d", m, s)
+            ? String(format: "%dh %02dm", h, m)
+            : String(format: "%dm", m)
     }
 
     /// The sparkles icon, dimmed when Discord is not connected (mirrors the old

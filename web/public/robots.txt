@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://agentcord.avalix.dev/sitemap-index.xml

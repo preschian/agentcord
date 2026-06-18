@@ -1,25 +1,65 @@
 ---
 const year = new Date().getFullYear();
 const accent = "#5865F2"; // Blurple
+
+const title = "AgentCord: your Claude Code sessions, live on Discord";
+const description =
+	"A tiny macOS menu bar app that shows your running Claude Code session as a Discord Rich Presence: project, model, token count, and elapsed time, all live.";
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const ogImage = new URL("/assets/og-image.png", Astro.site).href;
+
+const jsonLd = {
+	"@context": "https://schema.org",
+	"@type": "SoftwareApplication",
+	name: "AgentCord",
+	description,
+	url: Astro.site?.href,
+	applicationCategory: "DeveloperApplication",
+	operatingSystem: "macOS",
+	offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+	image: ogImage,
+	downloadUrl: new URL("/AgentCord.dmg", Astro.site).href,
+	author: { "@type": "Person", name: "Preschian Febryantara" },
+};
 ---
 
 <html lang="en">
 	<head>
 		<meta charset="utf-8" />
-		<link rel="icon" type="image/png" href="/assets/agentcord-icon.png" />
+		<link rel="icon" href="/favicon.ico" sizes="any" />
+		<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+		<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="generator" content={Astro.generator} />
-		<title>AgentCord — Your Claude Code sessions, live on Discord</title>
+		<meta name="theme-color" content="#5865F2" />
+		<title>{title}</title>
+		<meta name="description" content={description} />
+		<link rel="canonical" href={canonical} />
+		<meta property="og:type" content="website" />
+		<meta property="og:site_name" content="AgentCord" />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:url" content={canonical} />
+		<meta property="og:image" content={ogImage} />
+		<meta property="og:image:width" content="1200" />
+		<meta property="og:image:height" content="630" />
 		<meta
-			name="description"
-			content="A tiny macOS menu bar app that turns your active Claude Code session into a Discord Rich Presence — project, model, tokens, and time, updating in real time."
+			property="og:image:alt"
+			content="AgentCord: your Claude Code sessions, live on Discord"
 		/>
-		<meta property="og:title" content="AgentCord" />
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content={title} />
+		<meta name="twitter:description" content={description} />
+		<meta name="twitter:image" content={ogImage} />
 		<meta
-			property="og:description"
-			content="Your Claude Code sessions, live on Discord."
+			name="twitter:image:alt"
+			content="AgentCord: your Claude Code sessions, live on Discord"
 		/>
-		<meta property="og:image" content="/assets/agentcord-icon.png" />
+		<script
+			type="application/ld+json"
+			set:html={JSON.stringify(jsonLd)}
+		/>
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link
@@ -36,6 +76,7 @@ const accent = "#5865F2"; // Blurple
 			body {
 				margin: 0;
 				padding: 0;
+				overflow-x: hidden;
 			}
 			body {
 				font-family: "Plus Jakarta Sans", system-ui, sans-serif;
@@ -93,6 +134,35 @@ const accent = "#5865F2"; // Blurple
 				}
 				.ac-features {
 					grid-template-columns: 1fr !important;
+					gap: 30px !important;
+					padding: 0 22px !important;
+				}
+				.ac-nav {
+					padding: 18px 22px !important;
+				}
+				.ac-hero {
+					padding: 52px 22px 0 !important;
+				}
+				.ac-presence-section {
+					padding: 0 22px !important;
+				}
+				.ac-card {
+					width: 100% !important;
+					max-width: 372px !important;
+				}
+				.ac-footer {
+					padding: 26px 22px 36px !important;
+				}
+			}
+			@media (max-width: 400px) {
+				.ac-h1 {
+					font-size: 32px !important;
+				}
+				.ac-nav {
+					padding: 16px !important;
+				}
+				.ac-nav-gap {
+					gap: 13px !important;
 				}
 			}
 		</style>
@@ -109,6 +179,7 @@ const accent = "#5865F2"; // Blurple
 
 			<!-- NAV -->
 			<nav
+				class="ac-nav"
 				style="position: relative; z-index: 3; max-width: 1120px; margin: 0 auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between;"
 			>
 				<div style="display: flex; align-items: center; gap: 10px;">
@@ -121,19 +192,10 @@ const accent = "#5865F2"; // Blurple
 						>AgentCord</span
 					>
 				</div>
-				<div style="display: flex; align-items: center; gap: 22px;">
+				<div class="ac-nav-gap" style="display: flex; align-items: center; gap: 22px;">
 					<a
-						href="https://github.com/preschian/agentcord"
-						target="_blank"
-						rel="noopener"
-						class="ac-nav-link"
-						style="font-size: 14.5px; font-weight: 600; color: #44444E; text-decoration: none;"
-						>GitHub</a
-					>
-					<a
-						href="https://github.com/preschian/agentcord/releases"
-						target="_blank"
-						rel="noopener"
+						href="/AgentCord.dmg"
+						download
 						class="ac-download-nav"
 						style="font-size: 14px; font-weight: 700; color: #fff; background: var(--accent, #5865F2); padding: 9px 18px; border-radius: 10px; text-decoration: none; box-shadow: 0 5px 16px rgba(88,101,242,0.32);"
 						>Download</a
@@ -143,6 +205,7 @@ const accent = "#5865F2"; // Blurple
 
 			<!-- HERO -->
 			<header
+				class="ac-hero"
 				style="position: relative; z-index: 2; max-width: 760px; margin: 0 auto; padding: 70px 32px 0; text-align: center;"
 			>
 				<div
@@ -162,18 +225,17 @@ const accent = "#5865F2"; // Blurple
 				<p
 					style="margin: 24px auto 0; max-width: 540px; font-size: 18.5px; line-height: 1.55; color: #5A5A64; text-wrap: pretty;"
 				>
-					A tiny menu bar app that turns your active Claude Code session into a
-					Discord Rich Presence — project, model, tokens, and time, updating in
-					real time.
+					A tiny menu bar app that shows your running Claude Code session as a
+					Discord Rich Presence. It tracks the project, model, token count, and
+					elapsed time, and updates as you work.
 				</p>
 
 				<div
 					style="margin-top: 36px; display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap;"
 				>
 					<a
-						href="https://github.com/preschian/agentcord/releases"
-						target="_blank"
-						rel="noopener"
+						href="/AgentCord.dmg"
+						download
 						class="ac-cta-primary"
 						style="display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #fff; background: var(--accent, #5865F2); padding: 14px 26px; border-radius: 13px; text-decoration: none; box-shadow: 0 10px 26px rgba(88,101,242,0.34);"
 					>
@@ -189,30 +251,29 @@ const accent = "#5865F2"; // Blurple
 						>
 						Download for macOS
 					</a>
-					<a
-						href="https://github.com/preschian/agentcord"
-						target="_blank"
-						rel="noopener"
-						class="ac-cta-secondary"
-						style="display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #16161A; background: #fff; border: 1px solid #E4E4EA; padding: 14px 22px; border-radius: 13px; text-decoration: none;"
-						>View on GitHub</a
-					>
 				</div>
 				<p
 					style="margin: 16px 0 0; font-size: 13px; color: #8A8A94; font-weight: 500;"
 				>
-					Free &amp; open source · Requires macOS 13+ and the Discord desktop app
+					Free · Requires macOS 13+ and the Discord desktop app
+				</p>
+				<p
+					style="margin: 10px auto 0; max-width: 440px; font-size: 12.5px; line-height: 1.5; color: #A0A0AA; font-weight: 500;"
+				>
+					The app isn't signed yet, so the first time you open it macOS will
+					block it. Right-click the app, choose Open, then confirm.
 				</p>
 			</header>
 
 			<!-- PRESENCE DEMO -->
 			<section
+				class="ac-presence-section"
 				style="position: relative; z-index: 2; max-width: 1120px; margin: 64px auto 0; padding: 0 32px; display: flex; justify-content: center;"
 			>
-				<div style="animation: ac-float 6s ease-in-out infinite;">
+				<div class="ac-card" style="width: 372px; animation: ac-float 6s ease-in-out infinite;">
 					<!-- discord profile popout -->
 					<div
-						style="width: 372px; background: #232428; border-radius: 18px; padding: 16px; box-shadow: 0 30px 70px -18px rgba(20,20,40,0.42), 0 0 0 1px rgba(255,255,255,0.04);"
+						style="width: 100%; background: #232428; border-radius: 18px; padding: 16px; box-shadow: 0 30px 70px -18px rgba(20,20,40,0.42), 0 0 0 1px rgba(255,255,255,0.04);"
 					>
 						<div
 							id="ac-activity"
@@ -306,14 +367,14 @@ const accent = "#5865F2"; // Blurple
 							></path></svg
 						>
 					</div>
-					<h3
+					<h2
 						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
 					>
 						Automatic detection
-					</h3>
+					</h2>
 					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
-						Senses active Claude Code sessions on its own. One-time Discord ID and
-						you're set.
+						It spots a running Claude Code session by itself. Set your Discord ID
+						once and you're done.
 					</p>
 				</div>
 				<div>
@@ -336,14 +397,14 @@ const accent = "#5865F2"; // Blurple
 								fill="#5865F2"></circle></svg
 						>
 					</div>
-					<h3
+					<h2
 						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
 					>
 						Menu bar only
-					</h3>
+					</h2>
 					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
-						No Dock icon, no window clutter. It lives quietly in your menu bar and
-						stays out of the way.
+						It runs from the menu bar with no Dock icon and no extra windows.
+						You'll mostly forget it's there.
 					</p>
 				</div>
 				<div>
@@ -361,20 +422,21 @@ const accent = "#5865F2"; // Blurple
 							stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg
 						>
 					</div>
-					<h3
+					<h2
 						style="margin: 0 0 6px; font-size: 16.5px; font-weight: 700; letter-spacing: -0.01em;"
 					>
 						Never gets stuck
-					</h3>
+					</h2>
 					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
-						Auto-reconnects when Discord restarts and clears your presence on idle
-						or quit.
+						If Discord restarts, it reconnects on its own. When you go idle or
+						quit, it clears your presence.
 					</p>
 				</div>
 			</section>
 
 			<!-- FOOTER -->
 			<footer
+				class="ac-footer"
 				style="position: relative; z-index: 2; max-width: 1120px; margin: 104px auto 0; padding: 28px 32px 40px; border-top: 1px solid #ECECF0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;"
 			>
 				<div style="display: flex; align-items: center; gap: 9px;">
@@ -384,26 +446,15 @@ const accent = "#5865F2"; // Blurple
 						style="width: 22px; height: 22px; border-radius: 6px; display: block;"
 					/>
 					<span style="font-size: 14px; font-weight: 700;">AgentCord</span>
-					<span style="font-size: 13px; color: #9A9AA4; font-weight: 500;"
-						>· open source</span
-					>
 				</div>
 				<div
 					style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; font-weight: 600;"
 				>
 					<a
-						href="https://github.com/preschian/agentcord"
-						target="_blank"
-						rel="noopener"
+						href="/AgentCord.dmg"
+						download
 						class="ac-footer-link"
-						style="color: #5A5A64; text-decoration: none;">GitHub</a
-					>
-					<a
-						href="https://github.com/preschian/agentcord/blob/main/README.md"
-						target="_blank"
-						rel="noopener"
-						class="ac-footer-link"
-						style="color: #5A5A64; text-decoration: none;">Docs</a
+						style="color: #5A5A64; text-decoration: none;">Download</a
 					>
 					<span style="color: #B0B0BA; font-weight: 500;">© {year}</span>
 				</div>

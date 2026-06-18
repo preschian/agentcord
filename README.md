@@ -1,9 +1,9 @@
 # agentcord
 
-A lightweight macOS menu bar app that shows a Discord Rich Presence while a
-Claude Code session is active. When you have Claude Code running, your Discord
-profile displays what you are working on (project, model, elapsed time). When no
-session is active or the app quits, the presence is cleared.
+A macOS menu bar app that shows a Discord Rich Presence while a Claude Code
+session is active. When Claude Code is running, your Discord profile displays
+what you are working on (project, model, elapsed time). When no session is
+active or the app quits, the presence is cleared.
 
 > Looking to build it from source or understand how it works? See
 > [DEVELOPMENT.md](DEVELOPMENT.md).
@@ -21,8 +21,8 @@ session is active or the app quits, the presence is cleared.
 ## Requirements
 
 - macOS 13.0 or later.
-- The Discord **desktop** client running (Rich Presence does not work with
-  Discord web).
+- The Discord desktop client running (Rich Presence does not work with Discord
+  web).
 
 ## One-time Discord setup (you do this manually)
 
@@ -46,7 +46,6 @@ session is active or the app quits, the presence is cleared.
    without disconnecting. Toggle **Launch at login** to start the app
    automatically when you log in.
 
-Once Discord is running and a Claude Code session is active, your profile shows
-the presence with project, model, and an elapsed timer. When the session goes
-idle (no transcript activity within the idle window) or you quit the app, the
-presence clears.
+Once Discord is running and a Claude Code session is active, the presence shows
+up on your profile. It clears again when the session goes idle (no transcript
+activity within the idle window) or when you quit the app.

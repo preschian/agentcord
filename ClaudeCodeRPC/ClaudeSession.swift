@@ -19,6 +19,12 @@ final class ClaudeSession: ObservableObject {
     /// A transcript counts as active if it was modified within this window.
     var activeWindowSeconds: TimeInterval = 60
 
+    /// When summing the day's working time, a gap between two consecutive
+    /// messages longer than this is treated as a break (idle), not work, so a
+    /// session left open does not inflate the total. This also excludes the gaps
+    /// between separate sessions.
+    private static let activeGapToleranceMs: Int64 = 5 * 60 * 1000
+
     private let projectsURL: URL
     private let queue = DispatchQueue(label: "com.claudecoderpc.session.scan", qos: .utility)
     private var eventStream: FSEventStreamRef?
@@ -129,15 +135,14 @@ final class ClaudeSession: ObservableObject {
         let dayStartMs = Int64(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1000)
 
         var totalTokensToday = 0
-        var pastDurationsMs: Int64 = 0
+        var totalActiveMs: Int64 = 0
         var activeAgg = DayAggregate()
         for file in files {
             let agg = aggregate(url: file.url, mtime: file.date, dayStartMs: dayStartMs)
             totalTokensToday += agg.tokensToday
+            totalActiveMs += agg.activeMsToday
             if file.url == newest.url {
                 activeAgg = agg
-            } else if let earliest = agg.earliestTodayMs, let latest = agg.latestTodayMs, latest > earliest {
-                pastDurationsMs += (latest - earliest)
             }
         }
 
@@ -149,7 +154,7 @@ final class ClaudeSession: ObservableObject {
             newest: newest,
             active: activeAgg,
             totalTokensToday: totalTokensToday,
-            pastDurationsMs: pastDurationsMs
+            totalActiveMs: totalActiveMs
         ))
     }
 
@@ -166,8 +171,12 @@ final class ClaudeSession: ObservableObject {
     private struct DayAggregate {
         var cwd: String?
         var model: String?
-        var earliestTodayMs: Int64?
-        var latestTodayMs: Int64?
+        /// Timestamp (epoch ms) of the last message recorded today, used to
+        /// extend the active session's working time up to "now".
+        var lastTodayMs: Int64?
+        /// Working time today: the sum of gaps between consecutive messages,
+        /// counting only gaps short enough to be considered continuous work.
+        var activeMsToday: Int64 = 0
         var tokensToday = 0
     }
 
@@ -190,6 +199,7 @@ final class ClaudeSession: ObservableObject {
         }
 
         var agg = DayAggregate()
+        var prevTodayMs: Int64?
         if let content = try? String(contentsOf: url, encoding: .utf8) {
             content.enumerateLines { line, _ in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -215,8 +225,16 @@ final class ClaudeSession: ObservableObject {
                 }
 
                 if isToday, let ms = lineMs {
-                    if agg.earliestTodayMs == nil || ms < agg.earliestTodayMs! { agg.earliestTodayMs = ms }
-                    if agg.latestTodayMs == nil || ms > agg.latestTodayMs! { agg.latestTodayMs = ms }
+                    // Add the gap from the previous message only if it is short
+                    // enough to count as continuous work (idle breaks excluded).
+                    if let prev = prevTodayMs {
+                        let delta = ms - prev
+                        if delta > 0 && delta <= Self.activeGapToleranceMs {
+                            agg.activeMsToday += delta
+                        }
+                    }
+                    prevTodayMs = ms
+                    agg.lastTodayMs = ms
                 }
             }
         }
@@ -229,17 +247,23 @@ final class ClaudeSession: ObservableObject {
         newest: (url: URL, date: Date),
         active: DayAggregate,
         totalTokensToday: Int,
-        pastDurationsMs: Int64
+        totalActiveMs: Int64
     ) -> SessionInfo {
         var projectName = deriveProjectName(fromDirectory: newest.url.deletingLastPathComponent().lastPathComponent)
         if let cwd = active.cwd { projectName = repoName(forCwd: cwd) }
 
-        // The active session keeps running, so its share of the day's working
-        // time grows naturally as Discord ticks the timer up from `start`. We
-        // backdate `start` by the finished sessions' durations so the displayed
-        // elapsed time equals active-session-so-far + earlier sessions today.
-        let currentStartMs = active.earliestTodayMs ?? Int64(newest.date.timeIntervalSince1970 * 1000)
-        let startMs = currentStartMs - pastDurationsMs
+        // `totalActiveMs` covers work up to each session's last logged message.
+        // The active session is ongoing, so extend it from its last message to
+        // "now" (while that gap stays within the work tolerance). Backdating
+        // `start` by the total makes Discord's elapsed timer show the combined
+        // working time of all of today's sessions.
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        var elapsedMs = totalActiveMs
+        if let last = active.lastTodayMs {
+            let tail = nowMs - last
+            if tail > 0 && tail <= Self.activeGapToleranceMs { elapsedMs += tail }
+        }
+        let startMs = nowMs - elapsedMs
 
         return SessionInfo(
             projectName: projectName.isEmpty ? "Claude Code" : projectName,

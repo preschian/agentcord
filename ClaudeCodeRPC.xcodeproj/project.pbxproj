@@ -13,6 +13,8 @@
 		BB0000000000000000000004 /* PresenceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000004 /* PresenceController.swift */; };
 		BB0000000000000000000005 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000005 /* Settings.swift */; };
 		BB0000000000000000000006 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006 /* Models.swift */; };
+		BB0000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000009 /* Assets.xcassets */; };
+		BB0000000000000000000008 /* LoginItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000A /* LoginItem.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +26,8 @@
 		AA0000000000000000000006 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		AA0000000000000000000007 /* ClaudeCodeRPC.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ClaudeCodeRPC.entitlements; sourceTree = "<group>"; };
 		AA0000000000000000000008 /* ClaudeCodeRPC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClaudeCodeRPC.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AA000000000000000000000A /* LoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItem.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,6 +58,8 @@
 				AA0000000000000000000004 /* PresenceController.swift */,
 				AA0000000000000000000005 /* Settings.swift */,
 				AA0000000000000000000006 /* Models.swift */,
+				AA000000000000000000000A /* LoginItem.swift */,
+				AA0000000000000000000009 /* Assets.xcassets */,
 				AA0000000000000000000007 /* ClaudeCodeRPC.entitlements */,
 			);
 			path = ClaudeCodeRPC;
@@ -125,6 +131,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB0000000000000000000007 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -141,6 +148,7 @@
 				BB0000000000000000000004 /* PresenceController.swift in Sources */,
 				BB0000000000000000000005 /* Settings.swift in Sources */,
 				BB0000000000000000000006 /* Models.swift in Sources */,
+				BB0000000000000000000008 /* LoginItem.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -203,6 +211,7 @@
 		1A0000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = ClaudeCodeRPC/ClaudeCodeRPC.entitlements;
 				CODE_SIGN_IDENTITY = "-";
@@ -225,6 +234,7 @@
 		1A0000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = ClaudeCodeRPC/ClaudeCodeRPC.entitlements;
 				CODE_SIGN_IDENTITY = "-";

@@ -16,6 +16,7 @@ zero third-party dependencies. Native frameworks only.
 - Menu bar only, no Dock icon.
 - Auto-reconnects when Discord restarts.
 - Clears the presence on idle and on quit so it never gets stuck.
+- Optional "Launch at login" (via `SMAppService`).
 
 ## Requirements
 
@@ -72,7 +73,8 @@ turn Hardened Runtime on; the no-sandbox requirement still applies.
 3. Choose what to display: project, model, tokens, the activity type, the idle
    window, and the image asset keys.
 4. Toggle **Enable presence** on. Toggle **Do not disturb** to pause updates
-   without disconnecting.
+   without disconnecting. Toggle **Launch at login** to start the app
+   automatically when you log in.
 
 Once Discord is running and a Claude Code session is active, your profile shows
 the presence with project, model, and an elapsed timer. When the session goes

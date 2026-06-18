@@ -17,6 +17,7 @@ struct ClaudeCodeRPCApp: App {
             MenuContentView()
                 .environmentObject(appDelegate.settings)
                 .environmentObject(appDelegate.controller)
+                .environmentObject(appDelegate.loginItem)
         } label: {
             MenuBarLabel(controller: appDelegate.controller)
         }
@@ -26,6 +27,7 @@ struct ClaudeCodeRPCApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let settings = SettingsStore()
+    let loginItem = LoginItem()
     lazy var controller = PresenceController(settings: settings)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -56,6 +58,7 @@ struct MenuBarLabel: View {
 struct MenuContentView: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var controller: PresenceController
+    @EnvironmentObject private var loginItem: LoginItem
     @State private var showAdvanced = false
 
     var body: some View {
@@ -129,6 +132,10 @@ struct MenuContentView: View {
                 set: { controller.setEnabled($0) }
             ))
             Toggle("Do not disturb (pause updates)", isOn: $settings.doNotDisturb)
+            Toggle("Launch at login", isOn: Binding(
+                get: { loginItem.isEnabled },
+                set: { loginItem.setEnabled($0) }
+            ))
         }
     }
 

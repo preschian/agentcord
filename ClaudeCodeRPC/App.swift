@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 @main
 struct ClaudeCodeRPCApp: App {
@@ -28,11 +29,13 @@ struct ClaudeCodeRPCApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
+    let usage = ClaudeUsage()
     lazy var controller = PresenceController(settings: settings)
 
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var refreshTimer: Timer?
+    private var cancellables = Set<AnyCancellable>()
     private lazy var connectedIcon = Self.icon(connected: true)
     private lazy var disconnectedIcon = Self.icon(connected: false)
     private var lastConnected: Bool?
@@ -41,10 +44,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Belt and suspenders: ensure no Dock icon even without LSUIElement.
         NSApp.setActivationPolicy(.accessory)
         controller.start()
+        usage.start()
 
         setupStatusItem()
         setupPopover()
         startRefreshTimer()
+
+        // The per-tick refresh leaves the menu bar untouched while the popover is
+        // open (so it doesn't jitter). But a deliberate settings change — e.g.
+        // toggling "Show usage in menu bar" — should reflect right away even with
+        // the popover still open, so force a refresh on any settings change.
+        settings.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.refreshStatusButton(force: true) }
+            .store(in: &cancellables)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -71,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(settings)
             .environmentObject(controller)
             .environmentObject(loginItem)
+            .environmentObject(usage)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
         // Settings section made the popover wobble. Pushing the size through a
@@ -100,6 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            // Pull fresh usage numbers as the popover opens so they're current.
+            usage.refresh()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
@@ -107,13 +123,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Updates the icon (only when the connection state flips) and the title
     /// (every tick, so the elapsed timer counts up live).
-    private func refreshStatusButton() {
+    private func refreshStatusButton(force: Bool = false) {
         guard let button = statusItem.button else { return }
 
         // While the popover is open, leave the button untouched. Re-setting its
         // title/image changes the status item's width, which nudges the anchored
-        // popover every tick and makes its contents jitter.
-        guard !popover.isShown else { return }
+        // popover every tick and makes its contents jitter. A forced refresh
+        // (from a deliberate settings change) bypasses this so the result shows
+        // immediately.
+        guard force || !popover.isShown else { return }
 
         let connected = controller.discordState == .connected
         if lastConnected != connected {
@@ -121,14 +139,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastConnected = connected
         }
 
+        // Monospaced digits keep the elapsed timer and percentages from
+        // jittering as the title refreshes each tick.
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 0, weight: .regular)
+        let title = NSMutableAttributedString()
+
         if settings.showMenuBarStatus, let info = controller.session.current {
-            // Leading space keeps the text off the icon. Monospaced digits keep
-            // the elapsed timer from jittering as the title refreshes each tick.
-            let text = " " + Self.statusText(for: info, settings: settings)
-            button.attributedTitle = NSAttributedString(
-                string: text,
-                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 0, weight: .regular)]
-            )
+            title.append(NSAttributedString(
+                string: Self.statusText(for: info, settings: settings),
+                attributes: [.font: font]
+            ))
+        }
+
+        if settings.showUsageInMenuBar, let snapshot = usage.current {
+            if title.length > 0 {
+                title.append(NSAttributedString(
+                    string: " · ",
+                    attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                ))
+            }
+            Self.appendUsage(snapshot, to: title, font: font)
+        }
+
+        if title.length > 0 {
+            // Leading space keeps the text off the icon.
+            let full = NSMutableAttributedString(string: " ", attributes: [.font: font])
+            full.append(title)
+            button.attributedTitle = full
         } else {
             button.title = ""
         }
@@ -149,6 +186,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             parts.append("\(PresenceController.formatTokens(info.totalTokens)) tokens")
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// Appends a compact "5h NN% · Wk NN%" usage readout, tinting each figure by
+    /// its severity so an elevated limit stands out even in the menu bar.
+    static func appendUsage(_ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont) {
+        func color(_ window: UsageInfo.Window) -> NSColor {
+            switch window.severity.lowercased() {
+            case "normal": return .labelColor
+            case "warning", "warn", "low": return .systemOrange
+            default: return .systemRed
+            }
+        }
+        title.append(NSAttributedString(
+            string: "5h \(usage.fiveHour.percent)%",
+            attributes: [.font: font, .foregroundColor: color(usage.fiveHour)]
+        ))
+        title.append(NSAttributedString(
+            string: " · ",
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+        ))
+        title.append(NSAttributedString(
+            string: "Wk \(usage.weekly.percent)%",
+            attributes: [.font: font, .foregroundColor: color(usage.weekly)]
+        ))
     }
 
     /// Formats a duration without seconds: "Hh Mm" once it reaches an hour,
@@ -211,6 +272,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
+    @EnvironmentObject private var usage: ClaudeUsage
 
     var body: some View {
         // Everything is shown at once. The popover used to have a collapsible
@@ -277,7 +339,47 @@ struct MenuContentView: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            if let usage = usage.current {
+                HStack(spacing: 6) {
+                    Text("Usage")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    usageBadge("5h", usage.fiveHour)
+                    Text("·")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    usageBadge("Week", usage.weekly)
+                }
+                .padding(.top, 2)
+            }
         }
+    }
+
+    /// One usage figure, e.g. "5h 46%", tinted by severity. The reset time rides
+    /// along as a tooltip to keep the row compact.
+    private func usageBadge(_ label: String, _ window: UsageInfo.Window) -> some View {
+        Text("\(label) \(window.percent)%")
+            .font(.subheadline.weight(.medium))
+            .monospacedDigit()
+            .foregroundStyle(usageColor(window))
+            .help(usageTooltip(window))
+    }
+
+    private func usageColor(_ window: UsageInfo.Window) -> Color {
+        switch window.severity.lowercased() {
+        case "normal": return .primary
+        case "warning", "warn", "low": return .orange
+        default: return .red
+        }
+    }
+
+    private func usageTooltip(_ window: UsageInfo.Window) -> String {
+        guard let reset = window.resetsAt else { return "\(window.percent)% used" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "\(window.percent)% used · resets \(formatter.localizedString(for: reset, relativeTo: Date()))"
     }
 
     private var toggles: some View {
@@ -300,6 +402,7 @@ struct MenuContentView: View {
             Toggle("Show model", isOn: $settings.showModel)
             Toggle("Show tokens", isOn: $settings.showTokens)
             Toggle("Show status in menu bar", isOn: $settings.showMenuBarStatus)
+            Toggle("Show usage in menu bar", isOn: $settings.showUsageInMenuBar)
 
             Picker("Activity type", selection: $settings.activityType) {
                 ForEach(SettingsStore.allowedActivityTypes, id: \.value) { type in

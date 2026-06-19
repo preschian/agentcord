@@ -177,9 +177,28 @@ struct MenuContentView: View {
             statusSection
             Divider()
             toggles
-            DisclosureGroup("Settings", isExpanded: $showAdvanced) {
+            // Custom disclosure rather than SwiftUI's DisclosureGroup: its
+            // expand/collapse animation fights the NSPopover's instant resize,
+            // which makes the whole popover jump. Toggling without animation lets
+            // the popover grow/shrink in a single clean step.
+            Button {
+                withAnimation(.none) { showAdvanced.toggle() }
+            } label: {
+                HStack {
+                    Text("Settings")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .rotationEffect(.degrees(showAdvanced ? 90 : 0))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showAdvanced {
                 settingsForm
-                    .padding(.top, 6)
+                    .padding(.top, 2)
             }
             Divider()
             Button("Quit agentcord") {

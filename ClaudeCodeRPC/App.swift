@@ -65,12 +65,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupPopover() {
         popover.behavior = .transient
+        // Don't animate the popover's open/close.
+        popover.animates = false
         let content = MenuContentView()
             .environmentObject(settings)
             .environmentObject(controller)
             .environmentObject(loginItem)
-        let host = NSHostingController(rootView: content)
-        host.sizingOptions = .preferredContentSize
+        // Size the popover ourselves instead of using `.preferredContentSize`.
+        // That automatic path animates the resize, so expanding/collapsing the
+        // Settings section made the popover wobble. Pushing the size through a
+        // zero-duration animation context makes it snap instantly instead.
+        let host = SizingHostingController(rootView: content)
+        host.onContentSizeChange = { [weak self] size in
+            guard let self else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                self.popover.contentSize = size
+            }
+        }
         popover.contentViewController = host
     }
 
@@ -96,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (every tick, so the elapsed timer counts up live).
     private func refreshStatusButton() {
         guard let button = statusItem.button else { return }
+
+        // While the popover is open, leave the button untouched. Re-setting its
+        // title/image changes the status item's width, which nudges the anchored
+        // popover every tick and makes its contents jitter.
+        guard !popover.isShown else { return }
 
         let connected = controller.discordState == .connected
         if lastConnected != connected {
@@ -162,44 +180,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// MARK: - Popover sizing
+
+/// Hosting controller that reports its content's fitting size whenever it lays
+/// out, so the popover can be resized manually and instantly. Avoids the
+/// animated resize that `NSHostingController.sizingOptions = .preferredContentSize`
+/// triggers, which made the popover wobble when the Settings section toggled.
+final class SizingHostingController<Content: View>: NSHostingController<Content> {
+    var onContentSizeChange: ((NSSize) -> Void)?
+    private var lastReportedSize: NSSize = .zero
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // Round up to whole points. `fittingSize` can wobble by a sub-point each
+        // layout pass (text-heavy rows especially), and since setting the popover
+        // size triggers another layout, those fractional differences would loop
+        // forever and make the contents jitter. Rounding collapses that to a
+        // stable integer size.
+        let raw = view.fittingSize
+        let size = NSSize(width: raw.width.rounded(.up), height: raw.height.rounded(.up))
+        guard size.width > 0, size.height > 0, size != lastReportedSize else { return }
+        lastReportedSize = size
+        onContentSizeChange?(size)
+    }
+}
+
 // MARK: - Popover content
 
 struct MenuContentView: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
-    @State private var showAdvanced = false
 
     var body: some View {
+        // Everything is shown at once. The popover used to have a collapsible
+        // "Settings" section, but expanding/collapsing it resized the popover and
+        // made the contents jump. A fixed layout never resizes, so nothing moves.
         VStack(alignment: .leading, spacing: 12) {
             header
             Divider()
             statusSection
             Divider()
             toggles
-            // Custom disclosure rather than SwiftUI's DisclosureGroup: its
-            // expand/collapse animation fights the NSPopover's instant resize,
-            // which makes the whole popover jump. Toggling without animation lets
-            // the popover grow/shrink in a single clean step.
-            Button {
-                withAnimation(.none) { showAdvanced.toggle() }
-            } label: {
-                HStack {
-                    Text("Settings")
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(showAdvanced ? 90 : 0))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if showAdvanced {
-                settingsForm
-                    .padding(.top, 2)
-            }
+            Divider()
+            Text("Settings")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            settingsForm
             Divider()
             Button("Quit agentcord") {
                 controller.shutdown()

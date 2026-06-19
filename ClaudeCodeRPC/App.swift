@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var connectedIcon = Self.icon(connected: true)
     private lazy var disconnectedIcon = Self.icon(connected: false)
     private var lastConnected: Bool?
+    private var lastStatusTitle = NSAttributedString()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Belt and suspenders: ensure no Dock icon even without LSUIElement.
@@ -161,10 +162,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.appendUsage(snapshot, to: title, font: font)
         }
 
+        // Leading space keeps the text off the icon.
+        let full = NSMutableAttributedString()
         if title.length > 0 {
-            // Leading space keeps the text off the icon.
-            let full = NSMutableAttributedString(string: " ", attributes: [.font: font])
+            full.append(NSAttributedString(string: " ", attributes: [.font: font]))
             full.append(title)
+        }
+
+        // The title is minute-granular, so on most of the per-second ticks it's
+        // identical. Skip touching the button then — assigning the title relays
+        // out the status item every second for nothing.
+        guard !full.isEqual(to: lastStatusTitle) else { return }
+        lastStatusTitle = full
+        if full.length > 0 {
             button.attributedTitle = full
         } else {
             button.title = ""

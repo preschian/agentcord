@@ -15,6 +15,7 @@
 		BB0000000000000000000006 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006 /* Models.swift */; };
 		BB0000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000009 /* Assets.xcassets */; };
 		BB0000000000000000000008 /* LoginItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000A /* LoginItem.swift */; };
+		BB0000000000000000000009 /* ClaudeUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* ClaudeUsage.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 		AA0000000000000000000008 /* ClaudeCodeRPC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClaudeCodeRPC.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA000000000000000000000A /* LoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItem.swift; sourceTree = "<group>"; };
+		AA000000000000000000000B /* ClaudeUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeUsage.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,6 +61,7 @@
 				AA0000000000000000000005 /* Settings.swift */,
 				AA0000000000000000000006 /* Models.swift */,
 				AA000000000000000000000A /* LoginItem.swift */,
+				AA000000000000000000000B /* ClaudeUsage.swift */,
 				AA0000000000000000000009 /* Assets.xcassets */,
 				AA0000000000000000000007 /* ClaudeCodeRPC.entitlements */,
 			);
@@ -149,6 +152,7 @@
 				BB0000000000000000000005 /* Settings.swift in Sources */,
 				BB0000000000000000000006 /* Models.swift in Sources */,
 				BB0000000000000000000008 /* LoginItem.swift in Sources */,
+				BB0000000000000000000009 /* ClaudeUsage.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

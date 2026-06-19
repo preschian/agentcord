@@ -92,3 +92,25 @@ struct SessionInfo: Equatable {
     var totalTokens: Int
     var lastModified: Date
 }
+
+// MARK: - Claude subscription usage
+
+/// The user's current subscription usage, as shown by Claude Code's `/usage`.
+struct UsageInfo: Equatable {
+
+    /// One rate-limit window: how much of it is used and when it resets.
+    struct Window: Equatable {
+        var percent: Int
+        /// Raw severity from the API ("normal", "warning", ...). Drives color.
+        var severity: String
+        var resetsAt: Date?
+
+        /// True once the window is past "normal", so the UI can highlight it.
+        var isElevated: Bool { severity.lowercased() != "normal" }
+    }
+
+    /// The rolling 5-hour session limit.
+    var fiveHour: Window
+    /// The weekly (all-models) limit.
+    var weekly: Window
+}

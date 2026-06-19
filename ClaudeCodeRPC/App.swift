@@ -202,6 +202,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             string: "5h \(usage.fiveHour.percent)%",
             attributes: [.font: font, .foregroundColor: color(usage.fiveHour)]
         ))
+        // Tie the 5-hour reset countdown to its figure, e.g. "5h 46% (1h 23m)".
+        if let reset = MenuContentView.timeUntilReset(usage.fiveHour) {
+            title.append(NSAttributedString(
+                string: " (\(reset))",
+                attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+            ))
+        }
         title.append(NSAttributedString(
             string: " · ",
             attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
@@ -353,6 +360,12 @@ struct MenuContentView: View {
                     usageBadge("Week", usage.weekly)
                 }
                 .padding(.top, 2)
+
+                if let resets = usageResetText(usage) {
+                    Text(resets)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -380,6 +393,30 @@ struct MenuContentView: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         return "\(window.percent)% used · resets \(formatter.localizedString(for: reset, relativeTo: Date()))"
+    }
+
+    /// A compact "Resets · 5h in 1h 23m · weekly in 6d" line for whichever
+    /// windows report a reset time. Recomputed each time the popover renders.
+    private func usageResetText(_ usage: UsageInfo) -> String? {
+        let parts = [
+            Self.timeUntilReset(usage.fiveHour).map { "5h in \($0)" },
+            Self.timeUntilReset(usage.weekly).map { "weekly in \($0)" }
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : "Resets · " + parts.joined(separator: " · ")
+    }
+
+    /// Formats the time remaining until a window resets, e.g. "1h 23m", "45m",
+    /// "6d 4h". Returns nil when there's no reset time, "now" once it's due.
+    static func timeUntilReset(_ window: UsageInfo.Window) -> String? {
+        guard let reset = window.resetsAt else { return nil }
+        let seconds = Int(reset.timeIntervalSinceNow)
+        guard seconds > 0 else { return "now" }
+        let days = seconds / 86400
+        let hours = (seconds % 86400) / 3600
+        let minutes = (seconds % 3600) / 60
+        if days > 0 { return hours > 0 ? "\(days)d \(hours)h" : "\(days)d" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
     }
 
     private var toggles: some View {

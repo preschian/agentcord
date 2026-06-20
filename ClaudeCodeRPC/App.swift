@@ -201,35 +201,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return parts.joined(separator: " · ")
     }
 
-    /// Appends a compact "5h NN% · Wk NN%" usage readout, tinting each figure by
-    /// its severity so an elevated limit stands out even in the menu bar.
+    /// Appends a compact "5h NN% (1h 23m)" usage readout, tinting the figure by
+    /// its severity so an elevated limit stands out even in the menu bar. Only
+    /// the 5-hour window is shown here.
     static func appendUsage(_ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont) {
-        func color(_ window: UsageInfo.Window) -> NSColor {
-            switch window.severity.lowercased() {
-            case "normal": return .labelColor
-            case "warning", "warn", "low": return .systemOrange
-            default: return .systemRed
-            }
+        let window = usage.fiveHour
+        let color: NSColor
+        switch window.severity.lowercased() {
+        case "normal": color = .labelColor
+        case "warning", "warn", "low": color = .systemOrange
+        default: color = .systemRed
         }
         title.append(NSAttributedString(
-            string: "5h \(usage.fiveHour.percent)%",
-            attributes: [.font: font, .foregroundColor: color(usage.fiveHour)]
+            string: "5h \(window.percent)%",
+            attributes: [.font: font, .foregroundColor: color]
         ))
         // Tie the 5-hour reset countdown to its figure, e.g. "5h 46% (1h 23m)".
-        if let reset = MenuContentView.timeUntilReset(usage.fiveHour) {
+        if let reset = MenuContentView.timeUntilReset(window) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
             ))
         }
-        title.append(NSAttributedString(
-            string: " · ",
-            attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-        ))
-        title.append(NSAttributedString(
-            string: "Wk \(usage.weekly.percent)%",
-            attributes: [.font: font, .foregroundColor: color(usage.weekly)]
-        ))
     }
 
     /// Formats a duration without seconds: "Hh Mm" once it reaches an hour,

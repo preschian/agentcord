@@ -4,7 +4,7 @@ const accent = "#5865F2"; // Blurple
 
 const title = "AgentCord: your Claude Code sessions, live on Discord";
 const description =
-	"A tiny macOS menu bar app that shows your running Claude Code session as a Discord Rich Presence: project, model, token count, and elapsed time, all live.";
+	"A tiny macOS menu bar app that shows your active Claude Code session as a Discord Rich Presence: project, model, token count, and elapsed time, updated as you work.";
 const canonical = new URL(Astro.url.pathname, Astro.site).href;
 const ogImage = new URL("/assets/og-image.png", Astro.site).href;
 
@@ -194,6 +194,14 @@ const jsonLd = {
 				</div>
 				<div class="ac-nav-gap" style="display: flex; align-items: center; gap: 22px;">
 					<a
+						href="https://github.com/preschian/agentcord"
+						target="_blank"
+						rel="noopener"
+						class="ac-nav-link"
+						style="font-size: 14.5px; font-weight: 600; color: #44444E; text-decoration: none;"
+						>GitHub</a
+					>
+					<a
 						href="/AgentCord.dmg"
 						download
 						class="ac-download-nav"
@@ -225,9 +233,9 @@ const jsonLd = {
 				<p
 					style="margin: 24px auto 0; max-width: 540px; font-size: 18.5px; line-height: 1.55; color: #5A5A64; text-wrap: pretty;"
 				>
-					A tiny menu bar app that shows your running Claude Code session as a
-					Discord Rich Presence. It tracks the project, model, token count, and
-					elapsed time, and updates as you work.
+					A tiny menu bar app that shows your active Claude Code session as a
+					Discord Rich Presence. It updates the project, model, token count,
+					and elapsed time as you work.
 				</p>
 
 				<div
@@ -251,11 +259,19 @@ const jsonLd = {
 						>
 						Download for macOS
 					</a>
+					<a
+						href="https://github.com/preschian/agentcord"
+						target="_blank"
+						rel="noopener"
+						class="ac-cta-secondary"
+						style="display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #16161A; background: #fff; border: 1px solid #E4E4EA; padding: 14px 22px; border-radius: 13px; text-decoration: none;"
+						>View on GitHub</a
+					>
 				</div>
 				<p
 					style="margin: 16px 0 0; font-size: 13px; color: #8A8A94; font-weight: 500;"
 				>
-					Free · Requires macOS 13+ and the Discord desktop app
+					Free &amp; open source · Requires macOS 13+ and the Discord desktop app
 				</p>
 				<p
 					style="margin: 10px auto 0; max-width: 440px; font-size: 12.5px; line-height: 1.5; color: #A0A0AA; font-weight: 500;"
@@ -373,8 +389,8 @@ const jsonLd = {
 						Automatic detection
 					</h2>
 					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
-						It spots a running Claude Code session by itself. Set your Discord ID
-						once and you're done.
+						It detects a running Claude Code session on its own. Set your
+						Discord ID once and that's it.
 					</p>
 				</div>
 				<div>
@@ -428,8 +444,8 @@ const jsonLd = {
 						Never gets stuck
 					</h2>
 					<p style="margin: 0; font-size: 14.5px; line-height: 1.55; color: #5A5A64;">
-						If Discord restarts, it reconnects on its own. When you go idle or
-						quit, it clears your presence.
+						It reconnects on its own when Discord restarts, and clears your
+						presence when you go idle or quit.
 					</p>
 				</div>
 			</section>
@@ -446,15 +462,26 @@ const jsonLd = {
 						style="width: 22px; height: 22px; border-radius: 6px; display: block;"
 					/>
 					<span style="font-size: 14px; font-weight: 700;">AgentCord</span>
+					<span style="font-size: 13px; color: #9A9AA4; font-weight: 500;"
+						>· open source</span
+					>
 				</div>
 				<div
 					style="display: flex; align-items: center; gap: 22px; font-size: 13.5px; font-weight: 600;"
 				>
 					<a
-						href="/AgentCord.dmg"
-						download
+						href="https://github.com/preschian/agentcord"
+						target="_blank"
+						rel="noopener"
 						class="ac-footer-link"
-						style="color: #5A5A64; text-decoration: none;">Download</a
+						style="color: #5A5A64; text-decoration: none;">GitHub</a
+					>
+					<a
+						href="https://github.com/preschian/agentcord/blob/main/README.md"
+						target="_blank"
+						rel="noopener"
+						class="ac-footer-link"
+						style="color: #5A5A64; text-decoration: none;">Docs</a
 					>
 					<span style="color: #B0B0BA; font-weight: 500;">© {year}</span>
 				</div>

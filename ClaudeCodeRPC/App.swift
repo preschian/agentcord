@@ -159,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if title.length > 0 {
                 title.append(NSAttributedString(
                     string: " · ",
-                    attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
                 ))
             }
             Self.appendUsage(snapshot, to: title, font: font)
@@ -219,12 +219,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let reset = MenuContentView.timeUntilReset(usage.fiveHour) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
-                attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
             ))
         }
         title.append(NSAttributedString(
             string: " · ",
-            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+            attributes: [.font: font, .foregroundColor: NSColor.labelColor]
         ))
         title.append(NSAttributedString(
             string: "Wk \(usage.weekly.percent)%",

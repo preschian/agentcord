@@ -1,51 +1,7 @@
 # agentcord
 
-A macOS menu bar app that shows a Discord Rich Presence while a Claude Code
-session is active. When Claude Code is running, your Discord profile displays
-what you are working on (project, model, elapsed time). When no session is
-active or the app quits, the presence is cleared.
+AgentCord is a macOS menu bar app that puts your Claude Code activity on your Discord profile. While a session is running, your Discord status shows what you're working on: the current project, the model you're using, how long you've coded today, and the day's token count. When the session goes quiet or you quit the app, the status clears itself.
 
-> Looking to build it from source or understand how it works? See
-> [DEVELOPMENT.md](DEVELOPMENT.md).
+The app lives in the menu bar with no Dock icon and no window in the way. The daily totals reset at midnight, so every day starts fresh.
 
-## Features
-
-- Detects active Claude Code sessions automatically.
-- Shows your current project and model, plus the day's total token count and
-  combined working time, on your Discord profile (the totals reset at midnight).
-- Menu bar only, no Dock icon.
-- Auto-reconnects when Discord restarts.
-- Clears the presence on idle and on quit so it never gets stuck.
-- Optional "Launch at login".
-
-## Requirements
-
-- macOS 13.0 or later.
-- The Discord desktop client running (Rich Presence does not work with Discord
-  web).
-
-## One-time Discord setup (you do this manually)
-
-1. Create an application at https://discord.com/developers/applications. No Team
-   is required for a personal app.
-2. Copy the **Application ID** (this is the Client ID).
-3. Under **Rich Presence > Art Assets**, upload your images and note their asset
-   keys. The defaults this app uses are `claude` (large image) and `coding`
-   (small image). These keys are what `large_image` / `small_image` reference,
-   so either name your uploads to match or change the keys in Settings.
-4. Make sure the Discord desktop client is running.
-
-## Using the app
-
-1. Click the menu bar icon (a sparkles icon) to open the popover.
-2. Expand **Settings** and paste your **Application ID**, then press Return to
-   apply it (this connects to Discord).
-3. Choose what to display: project, model, tokens, the activity type, the idle
-   window, and the image asset keys.
-4. Toggle **Enable presence** on. Toggle **Do not disturb** to pause updates
-   without disconnecting. Toggle **Launch at login** to start the app
-   automatically when you log in.
-
-Once Discord is running and a Claude Code session is active, the presence shows
-up on your profile. It clears again when the session goes idle (no transcript
-activity within the idle window) or when you quit the app.
+Curious how it's built, or want to set it up and run it yourself? See [DEVELOPMENT.md](DEVELOPMENT.md).

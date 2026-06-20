@@ -1,6 +1,6 @@
 //
 //  ClaudeSession.swift
-//  ClaudeCodeRPC
+//  AgentCord
 //
 //  Detects the currently active Claude Code session by watching
 //  ~/.claude/projects/ and parsing the most recently modified .jsonl
@@ -26,7 +26,7 @@ final class ClaudeSession: ObservableObject {
     private static let activeGapToleranceMs: Int64 = 5 * 60 * 1000
 
     private let projectsURL: URL
-    private let queue = DispatchQueue(label: "com.claudecoderpc.session.scan", qos: .utility)
+    private let queue = DispatchQueue(label: "com.agentcord.session.scan", qos: .utility)
     private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
 

@@ -1,6 +1,6 @@
 //
 //  LoginItem.swift
-//  ClaudeCodeRPC
+//  AgentCord
 //
 //  Thin wrapper around SMAppService for "launch at login" (macOS 13+).
 //

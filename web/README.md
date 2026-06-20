@@ -1,43 +1,34 @@
-# Astro Starter Kit: Minimal
+# AgentCord landing page
 
-```sh
-bun create astro@latest -- --template minimal
-```
+The marketing site for [AgentCord](https://github.com/preschian/agentcord), the macOS menu bar app that shows your Claude Code session as a Discord Rich Presence. It's a single Astro page deployed to Cloudflare Workers, live at [agentcord.avalix.dev](https://agentcord.avalix.dev).
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro project, you'll see the following folders and files:
+## Project structure
 
 ```text
 /
-├── public/
+├── public/                 # static assets (icons, og-image, AgentCord.dmg)
 ├── src/
 │   └── pages/
-│       └── index.astro
-└── package.json
+│       └── index.astro     # the whole landing page
+├── astro.config.mjs        # site URL + Cloudflare adapter + sitemap
+└── wrangler.jsonc          # Cloudflare Workers config
 ```
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+The page is a single `index.astro` file with inline styles and a small client script that animates the Discord presence demo. The downloadable `AgentCord.dmg` ships from `public/`.
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
+## Commands
 
-Any static assets, like images, can be placed in the `public/` directory.
+Run these from the `web/` directory:
 
-## 🧞 Commands
+| Command                | Action                                          |
+| :--------------------- | :---------------------------------------------- |
+| `bun install`          | Install dependencies                            |
+| `bun run dev`          | Start the dev server at `localhost:4321`        |
+| `bun run build`        | Build the production site to `./dist/`          |
+| `bun run preview`      | Build, then serve the Worker locally with `wrangler dev` |
+| `bun run deploy`       | Build and deploy to Cloudflare Workers          |
+| `bun run generate-types` | Generate Worker types with `wrangler types`   |
 
-All commands are run from the root of the project, from a terminal:
+## Deployment
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `bun install`             | Installs dependencies                            |
-| `bun run dev`             | Starts local dev server at `localhost:4321`      |
-| `bun run build`           | Build your production site to `./dist/`          |
-| `bun run preview`         | Preview your build locally, before deploying     |
-| `bun run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `bun run astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+`bun run deploy` builds the static site and pushes it to Cloudflare Workers under the `agentcord` Worker (see `wrangler.jsonc`). You need access to the Cloudflare account and to be logged in with `wrangler login` first.

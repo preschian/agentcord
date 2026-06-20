@@ -1,6 +1,6 @@
 //
 //  DiscordIPC.swift
-//  ClaudeCodeRPC
+//  AgentCord
 //
 //  A hand-written Discord RPC IPC client. No third-party dependencies.
 //  Implements only the subset needed for Rich Presence: socket discovery,
@@ -52,8 +52,8 @@ final class DiscordIPC {
 
     // MARK: Internals
 
-    private let ioQueue = DispatchQueue(label: "com.claudecoderpc.ipc.io")
-    private let readQueue = DispatchQueue(label: "com.claudecoderpc.ipc.read", qos: .utility)
+    private let ioQueue = DispatchQueue(label: "com.agentcord.ipc.io")
+    private let readQueue = DispatchQueue(label: "com.agentcord.ipc.read", qos: .utility)
 
     private var fd: Int32 = -1
     private var clientID = ""

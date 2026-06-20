@@ -1,6 +1,6 @@
 //
 //  Models.swift
-//  ClaudeCodeRPC
+//  AgentCord
 //
 //  Codable payload structs for the Discord Rich Presence IPC protocol,
 //  plus the value type that describes a detected Claude Code session.

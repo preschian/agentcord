@@ -1,6 +1,6 @@
 //
 //  App.swift
-//  ClaudeCodeRPC
+//  AgentCord
 //
 //  Menu bar entry point. No Dock icon (LSUIElement / accessory policy).
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import AppKit
 
 @main
-struct ClaudeCodeRPCApp: App {
+struct AgentCordApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     // The UI lives entirely in an NSStatusItem + NSPopover managed by the

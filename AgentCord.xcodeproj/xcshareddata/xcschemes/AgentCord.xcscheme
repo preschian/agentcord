@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "EE0000000000000000000001"
-               BuildableName = "ClaudeCodeRPC.app"
-               BlueprintName = "ClaudeCodeRPC"
-               ReferencedContainer = "container:ClaudeCodeRPC.xcodeproj">
+               BuildableName = "AgentCord.app"
+               BlueprintName = "AgentCord"
+               ReferencedContainer = "container:AgentCord.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -43,9 +43,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "EE0000000000000000000001"
-            BuildableName = "ClaudeCodeRPC.app"
-            BlueprintName = "ClaudeCodeRPC"
-            ReferencedContainer = "container:ClaudeCodeRPC.xcodeproj">
+            BuildableName = "AgentCord.app"
+            BlueprintName = "AgentCord"
+            ReferencedContainer = "container:AgentCord.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -60,9 +60,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "EE0000000000000000000001"
-            BuildableName = "ClaudeCodeRPC.app"
-            BlueprintName = "ClaudeCodeRPC"
-            ReferencedContainer = "container:ClaudeCodeRPC.xcodeproj">
+            BuildableName = "AgentCord.app"
+            BlueprintName = "AgentCord"
+            ReferencedContainer = "container:AgentCord.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

@@ -1,6 +1,6 @@
 //
 //  ClaudeUsage.swift
-//  ClaudeCodeRPC
+//  AgentCord
 //
 //  Polls the user's Claude subscription usage limits — the rolling 5-hour
 //  "session" quota and the weekly quota shown by Claude Code's `/usage`.
@@ -45,7 +45,7 @@ final class ClaudeUsage: ObservableObject {
     private var lastAttempt: Date = .distantPast
 
     private let urlSession: URLSession
-    private let queue = DispatchQueue(label: "com.claudecoderpc.usage", qos: .utility)
+    private let queue = DispatchQueue(label: "com.agentcord.usage", qos: .utility)
     private var timer: DispatchSourceTimer?
 
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!

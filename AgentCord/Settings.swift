@@ -1,6 +1,6 @@
 //
 //  Settings.swift
-//  ClaudeCodeRPC
+//  AgentCord
 //
 //  User-configurable settings, persisted in UserDefaults. Exposed as an
 //  ObservableObject so both the SwiftUI views and the PresenceController can

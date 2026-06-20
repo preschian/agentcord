@@ -14,10 +14,10 @@ zero third-party dependencies. Native frameworks only.
 ## Build and run
 
 ```sh
-xcodebuild -project ClaudeCodeRPC.xcodeproj -scheme ClaudeCodeRPC -configuration Debug build
+xcodebuild -project AgentCord.xcodeproj -scheme AgentCord -configuration Debug build
 ```
 
-Or open `ClaudeCodeRPC.xcodeproj` in Xcode and press Run. The app appears in the
+Or open `AgentCord.xcodeproj` in Xcode and press Run. The app appears in the
 menu bar (a sparkles icon); there is no Dock icon and no app window.
 
 ## App Sandbox: keep it OFF
@@ -34,7 +34,7 @@ Why it matters:
 - The app also needs to read `~/.claude/projects/`, which a sandbox would block.
 
 The Xcode project ships with App Sandbox disabled (see
-`ClaudeCodeRPC/ClaudeCodeRPC.entitlements`). Do not enable it.
+`AgentCord/AgentCord.entitlements`). Do not enable it.
 
 For local development the project signs with "Sign to Run Locally" and Hardened
 Runtime is off. If you later distribute the app, sign with your Developer ID and

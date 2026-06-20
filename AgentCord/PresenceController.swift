@@ -1,6 +1,6 @@
 //
 //  PresenceController.swift
-//  ClaudeCodeRPC
+//  AgentCord
 //
 //  Observes the active Claude Code session, builds the Rich Presence payload
 //  from the user's settings, debounces updates, and drives DiscordIPC. Clears

@@ -81,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
         // Don't animate the popover's open/close.
         popover.animates = false
+        // The redesigned content uses a fixed light palette, so pin the popover
+        // to the light appearance for consistent rendering in either system mode.
+        popover.appearance = NSAppearance(named: .aqua)
         let content = MenuContentView()
             .environmentObject(settings)
             .environmentObject(controller)
@@ -291,128 +294,157 @@ struct MenuContentView: View {
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var usage: ClaudeUsage
 
+    @State private var expandDisplay = false
+    @State private var expandActivity = false
+
+    private let idleSteps = [5, 10, 15, 20, 25, 30]
+
     var body: some View {
-        // Everything is shown at once. The popover used to have a collapsible
-        // "Settings" section, but expanding/collapsing it resized the popover and
-        // made the contents jump. A fixed layout never resizes, so nothing moves.
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 11) {
             header
-            Divider()
-            statusSection
-            Divider()
-            toggles
-            Divider()
-            Text("Settings")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-            settingsForm
-            Divider()
-            Button("Quit agentcord") {
-                controller.shutdown()
-                NSApplication.shared.terminate(nil)
-            }
-            .keyboardShortcut("q")
+            usageCard
+            primaryToggles
+            advancedSections
+            Rectangle()
+                .fill(Color.black.opacity(0.08))
+                .frame(height: 0.5)
+                .padding(.horizontal, -13)
+            quitButton
         }
-        .padding(14)
-        .frame(width: 320)
+        .padding(13)
+        .frame(width: 300)
+        .foregroundStyle(Palette.text)
     }
+
+    // MARK: Header
 
     private var header: some View {
-        HStack {
-            Image(systemName: "sparkles")
+        HStack(spacing: 9) {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(LinearGradient(
+                    colors: [
+                        Color(.sRGB, red: 0.227, green: 0.227, blue: 0.235),
+                        Color(.sRGB, red: 0.106, green: 0.106, blue: 0.114)
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ))
+                .frame(width: 26, height: 26)
+                .overlay(
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white)
+                )
+                .shadow(color: .black.opacity(0.28), radius: 1, y: 1)
+
             Text("agentcord")
-                .font(.headline)
+                .font(.system(size: 15, weight: .semibold))
             Spacer()
+            statusPill
         }
     }
 
-    private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
-                Text("Discord: \(controller.discordState.description)")
-                    .font(.subheadline)
-            }
+    private var statusPill: some View {
+        let accent: Color
+        let textColor: Color
+        let label: String
+        switch controller.discordState {
+        case .connected:
+            accent = Palette.green
+            textColor = Palette.greenText
+            label = "Connected"
+        case .connecting:
+            accent = Palette.yellow
+            textColor = Color(.sRGB, red: 0.6, green: 0.45, blue: 0.0)
+            label = "Connecting"
+        case .disconnected:
+            accent = Palette.track
+            textColor = Palette.secondary.opacity(0.7)
+            label = "Disconnected"
+        }
+        return HStack(spacing: 5) {
+            Circle().fill(accent).frame(width: 6, height: 6)
+            Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(textColor)
+        }
+        .padding(.leading, 6).padding(.trailing, 8).padding(.vertical, 2)
+        .background(Capsule().fill(accent.opacity(0.12)))
+        .overlay(Capsule().stroke(accent.opacity(0.28), lineWidth: 0.5))
+    }
 
-            if let session = controller.session.current {
-                Text("Project: \(session.projectName)")
-                    .font(.subheadline)
-                if let model = session.model {
-                    Text("Model: \(model)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text("No active session")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+    // MARK: Usage card
+
+    private var usageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("USAGE")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Spacer()
+                Text(sessionSummary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.secondary.opacity(0.5))
             }
+            usageRow("5-hour session", usage.current?.fiveHour)
+            usageRow("Weekly limit", usage.current?.weekly)
 
             if let error = controller.lastError {
                 Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
 
-            if let usage = usage.current {
-                HStack(spacing: 6) {
-                    Text("Usage")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    usageBadge("5h", usage.fiveHour)
-                    Text("·")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    usageBadge("Week", usage.weekly)
-                }
-                .padding(.top, 2)
-
-                if let resets = usageResetText(usage) {
-                    Text(resets)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private func usageRow(_ label: String, _ window: UsageInfo.Window?) -> some View {
+        VStack(spacing: 5) {
+            HStack {
+                Text(label).font(.system(size: 12.5))
+                Spacer()
+                Text(usageDetail(window))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.track.opacity(0.16))
+                    Capsule()
+                        .fill(severityColor(window))
+                        .frame(width: geo.size.width * barFraction(window))
                 }
             }
+            .frame(height: 6)
         }
     }
 
-    /// One usage figure, e.g. "5h 46%", tinted by severity. The reset time rides
-    /// along as a tooltip to keep the row compact.
-    private func usageBadge(_ label: String, _ window: UsageInfo.Window) -> some View {
-        Text("\(label) \(window.percent)%")
-            .font(.subheadline.weight(.medium))
-            .monospacedDigit()
-            .foregroundStyle(usageColor(window))
-            .help(usageTooltip(window))
+    private var sessionSummary: String {
+        controller.session.current?.projectName ?? "No active session"
     }
 
-    private func usageColor(_ window: UsageInfo.Window) -> Color {
+    private func usageDetail(_ window: UsageInfo.Window?) -> String {
+        guard let window else { return "—" }
+        if let reset = Self.timeUntilReset(window) {
+            return "\(window.percent)% · resets \(reset)"
+        }
+        return "\(window.percent)%"
+    }
+
+    private func barFraction(_ window: UsageInfo.Window?) -> CGFloat {
+        guard let window else { return 0 }
+        // Keep a faint sliver visible even at 0% so the track reads as a bar.
+        return max(CGFloat(window.percent) / 100, 0.015)
+    }
+
+    private func severityColor(_ window: UsageInfo.Window?) -> Color {
+        guard let window else { return Palette.blue }
         switch window.severity.lowercased() {
-        case "normal": return .primary
-        case "warning", "warn", "low": return .orange
-        default: return .red
+        case "normal": return Palette.blue
+        case "warning", "warn", "low": return Palette.orange
+        default: return Palette.red
         }
-    }
-
-    private func usageTooltip(_ window: UsageInfo.Window) -> String {
-        guard let reset = window.resetsAt else { return "\(window.percent)% used" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        return "\(window.percent)% used · resets \(formatter.localizedString(for: reset, relativeTo: Date()))"
-    }
-
-    /// A compact "Resets · 5h in 1h 23m · weekly in 6d" line for whichever
-    /// windows report a reset time. Recomputed each time the popover renders.
-    private func usageResetText(_ usage: UsageInfo) -> String? {
-        let parts = [
-            Self.timeUntilReset(usage.fiveHour).map { "5h in \($0)" },
-            Self.timeUntilReset(usage.weekly).map { "weekly in \($0)" }
-        ].compactMap { $0 }
-        return parts.isEmpty ? nil : "Resets · " + parts.joined(separator: " · ")
     }
 
     /// Formats the time remaining until a window resets, e.g. "1h 23m", "45m",
@@ -429,48 +461,241 @@ struct MenuContentView: View {
         return "\(minutes)m"
     }
 
-    private var toggles: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle("Enable presence", isOn: Binding(
-                get: { settings.presenceEnabled },
-                set: { controller.setEnabled($0) }
-            ))
-            Toggle("Do not disturb (pause updates)", isOn: $settings.doNotDisturb)
-            Toggle("Launch at login", isOn: Binding(
-                get: { loginItem.isEnabled },
-                set: { loginItem.setEnabled($0) }
-            ))
+    // MARK: Primary toggles
+
+    private var primaryToggles: some View {
+        VStack(spacing: 0) {
+            toggleRow("Enable presence", presenceBinding, divider: false)
+            toggleRow("Do not disturb", $settings.doNotDisturb, divider: true)
+            toggleRow("Launch at login", launchBinding, divider: true)
         }
     }
 
-    private var settingsForm: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle("Show project", isOn: $settings.showProject)
-            Toggle("Show model", isOn: $settings.showModel)
-            Toggle("Show tokens", isOn: $settings.showTokens)
-            Toggle("Show status in menu bar", isOn: $settings.showMenuBarStatus)
-            Toggle("Show usage in menu bar", isOn: $settings.showUsageInMenuBar)
+    private var presenceBinding: Binding<Bool> {
+        Binding(get: { settings.presenceEnabled }, set: { controller.setEnabled($0) })
+    }
 
-            Picker("Activity type", selection: $settings.activityType) {
-                ForEach(SettingsStore.allowedActivityTypes, id: \.value) { type in
-                    Text(type.name).tag(type.value)
+    private var launchBinding: Binding<Bool> {
+        Binding(get: { loginItem.isEnabled }, set: { loginItem.setEnabled($0) })
+    }
+
+    private func toggleRow(_ title: String, _ isOn: Binding<Bool>, size: CGFloat = 13, divider: Bool) -> some View {
+        HStack {
+            Text(title).font(.system(size: size))
+            Spacer()
+            ToggleSwitch(isOn: isOn)
+        }
+        .padding(.vertical, size < 13 ? 5 : 6)
+        .overlay(alignment: .top) {
+            if divider { Rectangle().fill(.black.opacity(0.05)).frame(height: 0.5) }
+        }
+    }
+
+    // MARK: Advanced (collapsible)
+
+    private var advancedSections: some View {
+        VStack(spacing: 7) {
+            collapsible(title: "Display & menu bar", summary: displaySummary, expanded: $expandDisplay) {
+                VStack(spacing: 0) {
+                    toggleRow("Show project", $settings.showProject, size: 12.5, divider: false)
+                    toggleRow("Show model", $settings.showModel, size: 12.5, divider: true)
+                    toggleRow("Show tokens", $settings.showTokens, size: 12.5, divider: true)
+                    toggleRow("Show status in menu bar", $settings.showMenuBarStatus, size: 12.5, divider: true)
+                    toggleRow("Show usage in menu bar", $settings.showUsageInMenuBar, size: 12.5, divider: true)
+                }
+                .padding(.horizontal, 11).padding(.top, 3).padding(.bottom, 8)
+            }
+
+            collapsible(title: "Activity & idle", summary: activitySummary, expanded: $expandActivity) {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Text("Activity type").font(.system(size: 12.5))
+                        Spacer()
+                        Button(action: cycleActivity) {
+                            HStack(spacing: 6) {
+                                Text(activityLabel).font(.system(size: 12.5))
+                                VStack(spacing: 1) {
+                                    Image(systemName: "chevron.up")
+                                    Image(systemName: "chevron.down")
+                                }
+                                .font(.system(size: 6, weight: .semibold))
+                                .foregroundStyle(Palette.secondary.opacity(0.45))
+                            }
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Palette.track.opacity(0.1)))
+                            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(.black.opacity(0.12), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    idleSlider
+                }
+                .padding(.horizontal, 11).padding(.top, 8).padding(.bottom, 10)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func collapsible<Content: View>(
+        title: String, summary: String, expanded: Binding<Bool>,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                expanded.wrappedValue.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Text(title).font(.system(size: 13))
+                    Spacer()
+                    Text(summary).font(.system(size: 12)).foregroundStyle(Palette.secondary.opacity(0.4))
+                    Image(systemName: expanded.wrappedValue ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Palette.secondary.opacity(0.35))
+                }
+                .padding(.horizontal, 11).padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded.wrappedValue {
+                content()
+                    .overlay(alignment: .top) {
+                        Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
+                    }
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
+    }
+
+    private var displaySummary: String {
+        let count = [
+            settings.showProject, settings.showModel, settings.showTokens,
+            settings.showMenuBarStatus, settings.showUsageInMenuBar
+        ].filter { $0 }.count
+        return "\(count) on"
+    }
+
+    private var activitySummary: String {
+        "\(activityLabel) · \(idleMin) min"
+    }
+
+    private var activityLabel: String {
+        SettingsStore.allowedActivityTypes.first { $0.value == settings.activityType }?.name ?? "Playing"
+    }
+
+    private func cycleActivity() {
+        let types = SettingsStore.allowedActivityTypes
+        let idx = types.firstIndex { $0.value == settings.activityType } ?? 0
+        settings.activityType = types[(idx + 1) % types.count].value
+    }
+
+    // MARK: Idle slider
+
+    private var idleMin: Int { Int(settings.idleWindowSeconds / 60) }
+
+    private var idleFraction: CGFloat {
+        let i = idleSteps.firstIndex(of: idleMin) ?? 0
+        return CGFloat(i) / CGFloat(idleSteps.count - 1)
+    }
+
+    private func setIdle(fraction: CGFloat) {
+        let clamped = max(0, min(1, fraction))
+        let idx = Int((clamped * CGFloat(idleSteps.count - 1)).rounded())
+        settings.idleWindowSeconds = Double(idleSteps[idx] * 60)
+    }
+
+    private var idleSlider: some View {
+        VStack(spacing: 7) {
+            HStack {
+                Text("Idle window").font(.system(size: 12.5))
+                Spacer()
+                Text("\(idleMin) min")
+                    .font(.system(size: 12.5)).monospacedDigit()
+                    .foregroundStyle(Palette.secondary.opacity(0.6))
+            }
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.track.opacity(0.2)).frame(height: 4)
+                    Capsule().fill(Palette.blue).frame(width: max(w * idleFraction, 4), height: 4)
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 15, height: 15)
+                        .shadow(color: .black.opacity(0.3), radius: 1, y: 0.5)
+                        .offset(x: w * idleFraction - 7.5)
+                }
+                .frame(height: 15)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                    setIdle(fraction: value.location.x / max(w, 1))
+                })
+            }
+            .frame(height: 15)
+            HStack {
+                ForEach(idleSteps, id: \.self) { step in
+                    Text("\(step)")
+                        .font(.system(size: 9.5)).monospacedDigit()
+                        .foregroundStyle(Palette.secondary.opacity(0.38))
+                    if step != idleSteps.last { Spacer() }
                 }
             }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Idle window: \(Int(settings.idleWindowSeconds / 60)) min")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Slider(value: $settings.idleWindowSeconds, in: 300...1800, step: 300)
-            }
         }
     }
 
-    private var statusColor: Color {
-        switch controller.discordState {
-        case .connected: return .green
-        case .connecting: return .yellow
-        case .disconnected: return .gray
+    // MARK: Quit
+
+    private var quitButton: some View {
+        Button {
+            controller.shutdown()
+            NSApplication.shared.terminate(nil)
+        } label: {
+            HStack {
+                Text("Quit agentcord").font(.system(size: 13))
+                Spacer()
+                Text("⌘Q").font(.system(size: 12)).foregroundStyle(Palette.secondary.opacity(0.4))
+            }
+            .padding(.horizontal, 11).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(.white.opacity(0.65)))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(.black.opacity(0.1), lineWidth: 0.5))
         }
+        .buttonStyle(.plain)
+        .keyboardShortcut("q")
+    }
+}
+
+// MARK: - Design primitives
+
+/// Fixed light palette pulled from the popover design spec.
+private enum Palette {
+    static let text = Color(.sRGB, red: 0.114, green: 0.114, blue: 0.122)
+    static let secondary = Color(.sRGB, red: 0.235, green: 0.235, blue: 0.263)
+    static let blue = Color(.sRGB, red: 0.0, green: 0.478, blue: 1.0)
+    static let green = Color(.sRGB, red: 0.204, green: 0.78, blue: 0.349)
+    static let greenText = Color(.sRGB, red: 0.114, green: 0.541, blue: 0.227)
+    static let track = Color(.sRGB, red: 0.471, green: 0.471, blue: 0.502)
+    static let yellow = Color(.sRGB, red: 0.9, green: 0.7, blue: 0.0)
+    static let orange = Color(.sRGB, red: 1.0, green: 0.584, blue: 0.0)
+    static let red = Color(.sRGB, red: 1.0, green: 0.231, blue: 0.188)
+}
+
+/// iOS-style toggle switch matching the design (28×17, green when on).
+struct ToggleSwitch: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Capsule()
+            .fill(isOn ? Palette.green : Palette.track.opacity(0.24))
+            .frame(width: 28, height: 17)
+            .overlay(alignment: isOn ? .trailing : .leading) {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 14, height: 14)
+                    .shadow(color: .black.opacity(0.3), radius: 0.75, y: 0.5)
+                    .padding(.horizontal, 1.5)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.15)) { isOn.toggle() }
+            }
     }
 }

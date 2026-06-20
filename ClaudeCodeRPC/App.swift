@@ -302,6 +302,7 @@ struct MenuContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             header
+            activeSessionCard
             usageCard
             primaryToggles
             advancedSections
@@ -347,19 +348,18 @@ struct MenuContentView: View {
         let accent: Color
         let textColor: Color
         let label: String
-        switch controller.discordState {
-        case .connected:
+        if !settings.presenceEnabled {
+            accent = Palette.track
+            textColor = Palette.secondary.opacity(0.7)
+            label = "Off"
+        } else if controller.discordState == .connected {
             accent = Palette.green
             textColor = Palette.greenText
             label = "Connected"
-        case .connecting:
+        } else {
             accent = Palette.yellow
             textColor = Color(.sRGB, red: 0.6, green: 0.45, blue: 0.0)
             label = "Connecting"
-        case .disconnected:
-            accent = Palette.track
-            textColor = Palette.secondary.opacity(0.7)
-            label = "Disconnected"
         }
         return HStack(spacing: 5) {
             Circle().fill(accent).frame(width: 6, height: 6)
@@ -370,20 +370,113 @@ struct MenuContentView: View {
         .overlay(Capsule().stroke(accent.opacity(0.28), lineWidth: 0.5))
     }
 
-    // MARK: Usage card
+    // MARK: Active session card
 
-    private var usageCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("USAGE")
+    private var activeSessionCard: some View {
+        let session = controller.session.current
+        let hasSession = session != nil
+        let presenceOn = settings.presenceEnabled
+        let active = hasSession && presenceOn
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("ACTIVE SESSION")
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(0.5)
                     .foregroundStyle(Palette.secondary.opacity(0.55))
                 Spacer()
-                Text(sessionSummary)
+                HStack(spacing: 5) {
+                    SessionDot(active: active).id(active)
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(elapsedClock(session, now: context.date))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(active ? Palette.text : Palette.secondary.opacity(0.45))
+                    }
+                }
+                .padding(.leading, 7).padding(.trailing, 8).padding(.vertical, 2)
+                .background(Capsule().fill(Palette.track.opacity(0.1)))
+            }
+
+            HStack(spacing: 7) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Text(projectText(session))
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .italic(!hasSession || !settings.showProject)
+                    .foregroundStyle((active && hasSession && settings.showProject) ? Palette.text : Palette.secondary.opacity(0.45))
+            }
+
+            Text(metaLine(session))
+                .font(.system(size: 12.5))
+                .italic(metaBits(session).isEmpty)
+                .foregroundStyle(active && !metaBits(session).isEmpty ? Palette.secondary.opacity(0.7) : Palette.secondary.opacity(0.4))
+                .padding(.leading, 21)
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(active ? Palette.discord : Palette.track.opacity(0.6))
+                    .frame(width: 5, height: 5)
+                Text(broadcastText(hasSession: hasSession, presenceOn: presenceOn))
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.secondary.opacity(0.5))
             }
+            .padding(.top, 8)
+            .overlay(alignment: .top) {
+                Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
+            }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func elapsedClock(_ session: SessionInfo?, now: Date) -> String {
+        guard let session else { return "—" }
+        let ms = Int64(now.timeIntervalSince1970 * 1000) - session.startEpochMs
+        let total = max(0, Int(ms / 1000))
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
+    }
+
+    private func projectText(_ session: SessionInfo?) -> String {
+        guard let session else { return "No active session" }
+        return settings.showProject ? session.projectName : "Project hidden"
+    }
+
+    private func metaBits(_ session: SessionInfo?) -> [String] {
+        guard let session else { return [] }
+        var bits: [String] = []
+        if settings.showModel, let model = session.model { bits.append(model) }
+        if settings.showTokens, session.totalTokens > 0 {
+            bits.append("\(PresenceController.formatTokens(session.totalTokens)) tokens")
+        }
+        return bits
+    }
+
+    private func metaLine(_ session: SessionInfo?) -> String {
+        let bits = metaBits(session)
+        if bits.isEmpty { return session == nil ? "Waiting for a session" : "Model & tokens hidden" }
+        return bits.joined(separator: "  ·  ")
+    }
+
+    private func broadcastText(hasSession: Bool, presenceOn: Bool) -> String {
+        if !presenceOn { return "Presence is off" }
+        return hasSession ? "Sharing to Discord as your status" : "Waiting for a session"
+    }
+
+    // MARK: Usage card
+
+    private var usageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("USAGE")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
             usageRow("5-hour session", usage.current?.fiveHour)
             usageRow("Weekly limit", usage.current?.weekly)
 
@@ -418,10 +511,6 @@ struct MenuContentView: View {
             }
             .frame(height: 6)
         }
-    }
-
-    private var sessionSummary: String {
-        controller.session.current?.projectName ?? "No active session"
     }
 
     private func usageDetail(_ window: UsageInfo.Window?) -> String {
@@ -466,7 +555,6 @@ struct MenuContentView: View {
     private var primaryToggles: some View {
         VStack(spacing: 0) {
             toggleRow("Enable presence", presenceBinding, divider: false)
-            toggleRow("Do not disturb", $settings.doNotDisturb, divider: true)
             toggleRow("Launch at login", launchBinding, divider: true)
         }
     }
@@ -673,6 +761,7 @@ private enum Palette {
     static let green = Color(.sRGB, red: 0.204, green: 0.78, blue: 0.349)
     static let greenText = Color(.sRGB, red: 0.114, green: 0.541, blue: 0.227)
     static let track = Color(.sRGB, red: 0.471, green: 0.471, blue: 0.502)
+    static let discord = Color(.sRGB, red: 0.345, green: 0.396, blue: 0.949)
     static let yellow = Color(.sRGB, red: 0.9, green: 0.7, blue: 0.0)
     static let orange = Color(.sRGB, red: 1.0, green: 0.584, blue: 0.0)
     static let red = Color(.sRGB, red: 1.0, green: 0.231, blue: 0.188)
@@ -696,6 +785,33 @@ struct ToggleSwitch: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 withAnimation(.easeInOut(duration: 0.15)) { isOn.toggle() }
+            }
+    }
+}
+
+/// The session's status dot — a steady green with an expanding pulse ring while
+/// active, or a quiet gray when there's no live session / presence is off.
+struct SessionDot: View {
+    let active: Bool
+    @State private var pulse = false
+
+    var body: some View {
+        Circle()
+            .fill(active ? Palette.green : Palette.track.opacity(0.7))
+            .frame(width: 6, height: 6)
+            .overlay {
+                if active {
+                    Circle()
+                        .stroke(Palette.green, lineWidth: 2)
+                        .scaleEffect(pulse ? 2.4 : 1)
+                        .opacity(pulse ? 0 : 0.5)
+                }
+            }
+            .onAppear {
+                guard active else { return }
+                withAnimation(.easeOut(duration: 2).repeatForever(autoreverses: false)) {
+                    pulse = true
+                }
             }
     }
 }

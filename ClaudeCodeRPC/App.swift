@@ -7,7 +7,6 @@
 
 import SwiftUI
 import AppKit
-import Combine
 
 @main
 struct ClaudeCodeRPCApp: App {
@@ -26,7 +25,7 @@ struct ClaudeCodeRPCApp: App {
 /// (to tick the elapsed timer) recreates its status item on each update, which
 /// drops clicks so the popover can't be opened. An `NSStatusItem` lets us
 /// refresh just the button title on a timer while clicks stay reliable.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
@@ -35,7 +34,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var refreshTimer: Timer?
-    private var cancellables = Set<AnyCancellable>()
     private lazy var connectedIcon = Self.icon(connected: true)
     private lazy var disconnectedIcon = Self.icon(connected: false)
     private var lastConnected: Bool?
@@ -50,19 +48,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupPopover()
         startRefreshTimer()
-
-        // The per-tick refresh leaves the menu bar untouched while the popover is
-        // open (so it doesn't jitter). But a deliberate settings change — e.g.
-        // toggling "Show usage in menu bar" — should reflect right away even with
-        // the popover still open, so force a refresh on any settings change.
-        settings.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.refreshStatusButton(force: true) }
-            .store(in: &cancellables)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         controller.shutdown()
+    }
+
+    // MARK: NSPopoverDelegate
+
+    func popoverDidClose(_ notification: Notification) {
+        // Apply any menu-bar-affecting settings now that the popover is gone, so
+        // the title width change can't move a still-open popover.
+        refreshStatusButton()
     }
 
     // MARK: Status item
@@ -84,6 +81,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The redesigned content uses a fixed light palette, so pin the popover
         // to the light appearance for consistent rendering in either system mode.
         popover.appearance = NSAppearance(named: .aqua)
+        // Refresh the menu bar once the popover closes: settings changed inside
+        // it (e.g. "Show status in menu bar") alter the title width, so applying
+        // them while the popover is open would move the anchored popover.
+        popover.delegate = self
         let content = MenuContentView()
             .environmentObject(settings)
             .environmentObject(controller)
@@ -127,15 +128,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Updates the icon (only when the connection state flips) and the title
     /// (every tick, so the elapsed timer counts up live).
-    private func refreshStatusButton(force: Bool = false) {
+    private func refreshStatusButton() {
         guard let button = statusItem.button else { return }
 
         // While the popover is open, leave the button untouched. Re-setting its
         // title/image changes the status item's width, which nudges the anchored
-        // popover every tick and makes its contents jitter. A forced refresh
-        // (from a deliberate settings change) bypasses this so the result shows
-        // immediately.
-        guard force || !popover.isShown else { return }
+        // popover and makes it move. The popover's delegate refreshes the title
+        // once it closes, and the timer keeps it current thereafter.
+        guard !popover.isShown else { return }
 
         let connected = controller.discordState == .connected
         if lastConnected != connected {

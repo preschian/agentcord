@@ -1,0 +1,45 @@
+[package]
+name = "agentcord"
+version = "0.1.0"
+edition = "2021"
+description = "Put your Claude Code activity on your Discord profile (Windows native tray app)"
+
+[[bin]]
+name = "agentcord"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# ISO-8601 / RFC-3339 timestamp parsing for session detection. The `clock`
+# feature is OFF on purpose: it pulls in OS-timezone crates that need the MSVC
+# import-lib tooling (`dlltool`) to link under the GNU toolchain. We only need
+# parsing, and we get the local UTC offset separately (see claude_session.rs),
+# so this keeps the build toolchain-free.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+# Win32 bindings for the hand-rolled system-tray icon + context menu (the
+# menu-bar-extra equivalent). We use the raw API directly rather than pulling
+# tray-icon + muda + winit, matching the macOS app's minimal-dependency stance.
+# windows-sys ships prebuilt import libraries for the *-gnu target, so this
+# links under the GNU toolchain without dlltool. Launch-at-login uses reg.exe,
+# so no registry bindings are needed here.
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
+]
+
+# Possible later: `notify` for instant transcript updates (we re-scan on a timer
+# for now, like the macOS app's fallback timer).
+
+[profile.release]
+opt-level = "z"   # optimize for size — this is a tiny background utility
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

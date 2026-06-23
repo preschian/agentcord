@@ -58,17 +58,6 @@ pub fn fetch() -> Option<UsageInfo> {
     Some(resp.into_usage_info())
 }
 
-/// Like [`fetch`], but skips (returns `None`) if a fetch was attempted within
-/// `min_secs`. Used when the popover opens so it can't hammer the endpoint.
-pub fn fetch_throttled(min_secs: u64) -> Option<UsageInfo> {
-    let now = (now_ms() / 1000) as u64;
-    let last = LAST_ATTEMPT_SECS.load(Ordering::Relaxed);
-    if now.saturating_sub(last) < min_secs {
-        return None;
-    }
-    fetch()
-}
-
 /// Reads Claude Code's OAuth access token from
 /// `%USERPROFILE%\.claude\.credentials.json`.
 fn read_access_token() -> Option<String> {

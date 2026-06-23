@@ -21,7 +21,6 @@ pub struct Settings {
     pub show_model: bool,
     pub show_tokens: bool,
     pub show_project: bool,
-    pub do_not_disturb: bool,
     pub large_image_key: String,
     pub small_image_key: String,
     /// Discord activity type: 0 Playing, 2 Listening, 3 Watching, 5 Competing.
@@ -37,7 +36,6 @@ impl Default for Settings {
             show_model: true,
             show_tokens: true,
             show_project: true,
-            do_not_disturb: false,
             large_image_key: "claude-color".to_string(),
             small_image_key: "discord-presence-icon".to_string(),
             activity_type: 0,

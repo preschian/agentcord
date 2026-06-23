@@ -19,17 +19,13 @@
 //! re-send). We do not read PINGs after READY; if Discord drops us for that, the
 //! next write fails and we reconnect within seconds — self-healing.
 
-use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
 use crate::claude_session::ClaudeSession;
-use crate::discord_ipc::{
-    handshake_payload, handle_inbound_frame, open_pipe, opcode, read_frame, write_activity, write_frame,
-    FrameAction,
-};
+use crate::discord_ipc::{connect_handshake, write_activity};
 use crate::models::{Assets, PresenceButton, RichPresence, SessionInfo, Timestamps, UsageInfo};
 use crate::settings::{is_allowed_activity, Settings, DISCORD_CLIENT_ID};
 
@@ -44,7 +40,6 @@ pub enum SessionDisplay {
     #[default]
     Idle,
     Disabled,
-    DoNotDisturb,
     Active {
         model: String,
         project: String,
@@ -53,193 +48,127 @@ pub enum SessionDisplay {
     },
 }
 
-/// A human-readable snapshot of what the controller is doing, for the tray
-/// popover to display.
-#[derive(Default, Clone)]
-pub struct StatusSnapshot {
-    /// "Connected", "Connecting…", or "Disconnected".
-    pub connection: String,
-    pub session: SessionDisplay,
+impl SessionDisplay {
+    pub fn headline(&self) -> String {
+        match self {
+            Self::Idle => "No active session".to_string(),
+            Self::Disabled => "Presence disabled".to_string(),
+            Self::Active { model, project, .. } => match (model.is_empty(), project.is_empty()) {
+                (false, false) => format!("{model} · {project}"),
+                (false, true) => model.clone(),
+                (true, false) => project.clone(),
+                (true, true) => "Active session".to_string(),
+            },
+        }
+    }
+
+    pub fn tokens_line(&self) -> Option<&str> {
+        match self {
+            Self::Active { tokens_line, .. } => tokens_line.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn start_ms(&self) -> Option<i64> {
+        match self {
+            Self::Active { start_ms, .. } => Some(*start_ms),
+            _ => None,
+        }
+    }
 }
 
-/// State shared between the controller and the tray UI. The tray mutates
-/// `settings` (toggles) and sets `quit`; the controller reads those and
-/// publishes `status` each tick.
+/// Tray-facing state published atomically each controller tick.
+#[derive(Default, Clone)]
+pub struct UiSnapshot {
+    /// "Connected", "Connecting…", "Disconnected", or "Off".
+    pub connection: String,
+    pub session: SessionDisplay,
+    pub usage: Option<UsageInfo>,
+}
+
+/// State shared between the controller, usage worker, and tray UI.
 pub struct SharedState {
     pub settings: Mutex<Settings>,
-    pub status: Mutex<StatusSnapshot>,
-    /// Latest subscription usage (5-hour + weekly), polled by the usage thread.
-    pub usage: Mutex<Option<UsageInfo>>,
+    pub ui: Mutex<UiSnapshot>,
     pub quit: AtomicBool,
+    /// Set by the tray when the popover opens; consumed by the usage worker.
+    pub usage_refresh: AtomicBool,
 }
 
 impl SharedState {
     pub fn new(settings: Settings) -> Self {
         Self {
             settings: Mutex::new(settings),
-            status: Mutex::new(StatusSnapshot::default()),
-            usage: Mutex::new(None),
+            ui: Mutex::new(UiSnapshot::default()),
             quit: AtomicBool::new(false),
+            usage_refresh: AtomicBool::new(false),
         }
     }
 
-    fn set_connection(&self, value: &str) {
-        self.status.lock().unwrap().connection = value.to_string();
+    pub fn publish_ui(&self, connection: &str, session: SessionDisplay) {
+        let mut ui = self.ui.lock().unwrap();
+        ui.connection = connection.to_string();
+        ui.session = session;
     }
 
-    fn set_session_display(&self, display: SessionDisplay) {
-        self.status.lock().unwrap().session = display;
+    pub fn set_usage(&self, usage: Option<UsageInfo>) {
+        self.ui.lock().unwrap().usage = usage;
+    }
+
+    pub fn request_usage_refresh(&self) {
+        self.usage_refresh.store(true, Ordering::Relaxed);
     }
 }
 
-pub struct PresenceController {
-    shared: Arc<SharedState>,
-    pid: u32,
-    nonce: AtomicU64,
-    session: ClaudeSession,
-    /// Last payload we sent; lets us skip unchanged updates without re-serializing.
-    last_sent: Option<Option<RichPresence>>,
-    /// Reconnect attempt counter, for exponential backoff.
-    attempt: u32,
+/// Visible session fields derived once from settings + session info.
+struct SessionFields {
+    /// Discord activity title; always non-empty.
+    title: String,
+    model_label: String,
+    project: String,
+    tokens_line: Option<String>,
+    start_ms: i64,
 }
 
-impl PresenceController {
-    pub fn new(shared: Arc<SharedState>) -> Self {
-        let idle_window = shared.settings.lock().unwrap().idle_window_seconds.max(1.0);
-        let session = ClaudeSession::new().with_active_window(Duration::from_secs_f64(idle_window));
-        Self {
-            shared,
-            pid: std::process::id(),
-            nonce: AtomicU64::new(0),
-            session,
-            last_sent: None,
-            attempt: 0,
-        }
-    }
-
-    /// Run the controller. Blocks the calling thread until `quit` is set.
-    pub fn run(mut self) {
-        while !self.shared.quit.load(Ordering::Relaxed) {
-            let end = self.connect_and_serve();
-            if matches!(end, ConnectionEnd::Quit) {
-                break;
-            }
-            self.shared.set_connection("Disconnected");
-            if matches!(end, ConnectionEnd::Dropped) {
-                // A live connection dropped: reconnect promptly.
-                self.attempt = 0;
-            }
-            self.backoff();
-        }
-    }
-
-    /// Open the pipe, handshake, wait for READY, then push presence updates
-    /// until the connection drops or quit is requested.
-    fn connect_and_serve(&mut self) -> ConnectionEnd {
-        println!("[discord] connecting");
-        self.shared.set_connection("Connecting…");
-        let mut pipe = match open_pipe() {
-            Some(p) => p,
-            None => return ConnectionEnd::CouldNotConnect,
-        };
-        if write_frame(&mut pipe, opcode::HANDSHAKE, &handshake_payload(DISCORD_CLIENT_ID)).is_err() {
-            return ConnectionEnd::CouldNotConnect;
-        }
-        if !wait_for_ready(&mut pipe) {
-            return ConnectionEnd::CouldNotConnect;
-        }
-
-        println!("[discord] connected");
-        self.shared.set_connection("Connected");
-        self.attempt = 0;
-        // Force a send on (re)connect even if the content is unchanged.
-        self.last_sent = None;
-
-        loop {
-            if self.shared.quit.load(Ordering::Relaxed) {
-                let _ = write_activity(&mut pipe, self.pid, &self.nonce, None);
-                return ConnectionEnd::Quit;
-            }
-
-            // Snapshot settings so we react to tray toggles within one tick.
-            let settings = self.shared.settings.lock().unwrap().clone();
-            self.session
-                .set_active_window(Duration::from_secs_f64(settings.idle_window_seconds.max(1.0)));
-
-            let session_info = self.session.scan();
-            let presence = if settings.presence_enabled && !settings.do_not_disturb {
-                session_info.as_ref().map(|info| build_presence(&settings, info))
-            } else {
-                None
-            };
-            self.shared
-                .set_session_display(build_session_display(&settings, session_info.as_ref()));
-
-            if self.last_sent.as_ref() != Some(&presence) {
-                match write_activity(&mut pipe, self.pid, &self.nonce, presence.clone()) {
-                    Ok(()) => {
-                        self.last_sent = Some(presence.clone());
-                        log_presence(&presence);
-                    }
-                    Err(_) => return ConnectionEnd::Dropped,
-                }
-            }
-
-            sleep(UPDATE_INTERVAL);
-        }
-    }
-
-    /// Sleep before the next connection attempt: exponential backoff capped at
-    /// 30s, mirroring the macOS client.
-    fn backoff(&mut self) {
-        self.attempt += 1;
-        let secs = 2u64.pow(self.attempt.min(5)).min(30);
-        sleep(Duration::from_secs(secs));
-    }
+/// Combined tray display + Discord payload for one scan tick.
+pub struct SessionView {
+    pub display: SessionDisplay,
+    pub presence: Option<RichPresence>,
 }
 
-enum ConnectionEnd {
-    /// Never reached READY (pipe missing, handshake/READY failed).
-    CouldNotConnect,
-    /// Was connected and READY, then the pipe dropped.
-    Dropped,
-    /// Quit was requested; the controller should stop.
-    Quit,
-}
-
-/// Read frames until READY. Answers any PINGs along the way (safe here: no
-/// write is racing a blocking read on this single thread). Returns false if the
-/// connection closed or errored first.
-fn wait_for_ready(pipe: &mut File) -> bool {
-    loop {
-        match read_frame(pipe) {
-            Ok(Some((op, payload))) => match handle_inbound_frame(op, &payload, pipe) {
-                FrameAction::Ready => return true,
-                FrameAction::Error(msg) => {
-                    eprintln!("[discord] error: {msg}");
-                    return false;
-                }
-                FrameAction::Closed => return false,
-                FrameAction::Continue => {}
-            },
-            Ok(None) | Err(_) => return false,
-        }
-    }
-}
-
-/// Build the tray popover's session card from settings and the detected session.
-pub fn build_session_display(settings: &Settings, session: Option<&SessionInfo>) -> SessionDisplay {
+pub fn build_session_view(settings: &Settings, session: Option<&SessionInfo>) -> SessionView {
     if !settings.presence_enabled {
-        return SessionDisplay::Disabled;
-    }
-    if settings.do_not_disturb {
-        return SessionDisplay::DoNotDisturb;
+        return SessionView {
+            display: SessionDisplay::Disabled,
+            presence: None,
+        };
     }
     let Some(info) = session else {
-        return SessionDisplay::Idle;
+        return SessionView {
+            display: SessionDisplay::Idle,
+            presence: None,
+        };
     };
 
-    let model = if settings.show_model {
+    let fields = session_fields(settings, info);
+    SessionView {
+        display: SessionDisplay::Active {
+            model: fields.model_label.clone(),
+            project: fields.project.clone(),
+            tokens_line: fields.tokens_line.clone(),
+            start_ms: fields.start_ms,
+        },
+        presence: Some(build_presence_from_fields(settings, &fields)),
+    }
+}
+
+fn session_fields(settings: &Settings, info: &SessionInfo) -> SessionFields {
+    let title = if settings.show_model {
+        info.model.clone().unwrap_or_else(|| "agentcord".to_string())
+    } else {
+        "agentcord".to_string()
+    };
+    let model_label = if settings.show_model {
         info.model.clone().unwrap_or_else(|| "agentcord".to_string())
     } else {
         String::new()
@@ -254,58 +183,204 @@ pub fn build_session_display(settings: &Settings, session: Option<&SessionInfo>)
     } else {
         None
     };
-
-    SessionDisplay::Active {
-        model,
+    SessionFields {
+        title,
+        model_label,
         project,
         tokens_line,
         start_ms: info.start_epoch_ms,
     }
 }
 
-/// Build the Rich Presence payload from settings and the active session.
-fn build_presence(s: &Settings, info: &SessionInfo) -> RichPresence {
-    // Header (bold title): the model, e.g. "Opus 4.8".
-    let name = if s.show_model { info.model.clone() } else { None }
-        .unwrap_or_else(|| "agentcord".to_string());
-
-    let details = if s.show_project {
-        Some(format!("Working on: {}", info.project_name))
+fn build_presence_from_fields(settings: &Settings, fields: &SessionFields) -> RichPresence {
+    let details = if settings.show_project {
+        Some(format!("Working on: {}", fields.project))
     } else {
         None
     };
-
-    let state = if s.show_tokens && info.total_tokens > 0 {
-        Some(format!("{} tokens", format_tokens(info.total_tokens)))
-    } else {
-        None
-    };
-
-    let assets = Assets {
-        large_image: non_empty(&s.large_image_key),
-        large_text: Some("agentcord".to_string()),
-        small_image: non_empty(&s.small_image_key),
-        small_text: Some("Active session".to_string()),
-    };
-
-    let activity_type = if is_allowed_activity(s.activity_type) {
-        s.activity_type
+    let state = fields.tokens_line.clone();
+    let activity_type = if is_allowed_activity(settings.activity_type) {
+        settings.activity_type
     } else {
         0
     };
 
     RichPresence {
         r#type: Some(activity_type),
-        name: Some(name),
+        name: Some(fields.title.clone()),
         details,
         state,
-        timestamps: Some(Timestamps { start: Some(info.start_epoch_ms), end: None }),
-        assets: Some(assets),
+        timestamps: Some(Timestamps {
+            start: Some(fields.start_ms),
+            end: None,
+        }),
+        assets: Some(Assets {
+            large_image: non_empty(&settings.large_image_key),
+            large_text: Some("agentcord".to_string()),
+            small_image: non_empty(&settings.small_image_key),
+            small_text: Some("Active session".to_string()),
+        }),
         buttons: Some(vec![PresenceButton {
             label: "What is Claude Code".to_string(),
             url: "https://www.anthropic.com".to_string(),
         }]),
     }
+}
+
+/// Tracks the last payload written to Discord for deduplication.
+enum LastPayload {
+    /// Reconnect or first tick — send even if unchanged.
+    Unsent,
+    Cleared,
+    Active(RichPresence),
+}
+
+impl LastPayload {
+    fn needs_send(&self, presence: &Option<RichPresence>) -> bool {
+        match (self, presence) {
+            (LastPayload::Unsent, _) => true,
+            (LastPayload::Cleared, None) => false,
+            (LastPayload::Cleared, Some(_)) => true,
+            (LastPayload::Active(p), Some(q)) => p != q,
+            (LastPayload::Active(_), None) => true,
+        }
+    }
+
+    fn mark_sent(&mut self, presence: Option<RichPresence>) {
+        *self = match presence {
+            None => LastPayload::Cleared,
+            Some(p) => LastPayload::Active(p),
+        };
+    }
+
+    fn force_resend(&mut self) {
+        *self = LastPayload::Unsent;
+    }
+}
+
+pub struct PresenceController {
+    shared: Arc<SharedState>,
+    pid: u32,
+    nonce: AtomicU64,
+    session: ClaudeSession,
+    last_sent: LastPayload,
+    attempt: u32,
+}
+
+impl PresenceController {
+    pub fn new(shared: Arc<SharedState>) -> Self {
+        let idle_window = shared.settings.lock().unwrap().idle_window_seconds.max(1.0);
+        let session = ClaudeSession::new().with_active_window(Duration::from_secs_f64(idle_window));
+        Self {
+            shared,
+            pid: std::process::id(),
+            nonce: AtomicU64::new(0),
+            session,
+            last_sent: LastPayload::Unsent,
+            attempt: 0,
+        }
+    }
+
+    /// Run the controller. Blocks the calling thread until `quit` is set.
+    pub fn run(mut self) {
+        while !self.shared.quit.load(Ordering::Relaxed) {
+            if !self.shared.settings.lock().unwrap().presence_enabled {
+                self.idle_tick("Off");
+                sleep(UPDATE_INTERVAL);
+                continue;
+            }
+
+            let end = self.connect_and_serve();
+            match end {
+                ConnectionEnd::Quit => break,
+                ConnectionEnd::Disabled => {
+                    self.last_sent.force_resend();
+                    continue;
+                }
+                ConnectionEnd::Dropped => self.attempt = 0,
+                ConnectionEnd::CouldNotConnect => self.idle_tick("Disconnected"),
+            }
+            if !matches!(end, ConnectionEnd::Disabled | ConnectionEnd::Quit) {
+                if !matches!(end, ConnectionEnd::CouldNotConnect) {
+                    self.shared.publish_ui(
+                        "Disconnected",
+                        self.shared.ui.lock().unwrap().session.clone(),
+                    );
+                }
+                self.backoff();
+            }
+        }
+    }
+
+    /// Scan session and publish tray state while Discord is disconnected.
+    fn idle_tick(&mut self, connection: &str) {
+        let settings = self.shared.settings.lock().unwrap().clone();
+        self.session
+            .set_active_window(Duration::from_secs_f64(settings.idle_window_seconds.max(1.0)));
+        let session_info = self.session.scan();
+        let view = build_session_view(&settings, session_info.as_ref());
+        self.shared.publish_ui(connection, view.display);
+    }
+
+    fn connect_and_serve(&mut self) -> ConnectionEnd {
+        println!("[discord] connecting");
+        self.idle_tick("Connecting…");
+
+        let mut pipe = match connect_handshake(DISCORD_CLIENT_ID) {
+            Ok(p) => p,
+            Err(_) => return ConnectionEnd::CouldNotConnect,
+        };
+
+        println!("[discord] connected");
+        self.attempt = 0;
+        self.last_sent.force_resend();
+
+        loop {
+            if self.shared.quit.load(Ordering::Relaxed) {
+                let _ = write_activity(&mut pipe, self.pid, &self.nonce, None);
+                return ConnectionEnd::Quit;
+            }
+
+            let settings = self.shared.settings.lock().unwrap().clone();
+            if !settings.presence_enabled {
+                let _ = write_activity(&mut pipe, self.pid, &self.nonce, None);
+                self.last_sent.mark_sent(None);
+                return ConnectionEnd::Disabled;
+            }
+
+            self.session
+                .set_active_window(Duration::from_secs_f64(settings.idle_window_seconds.max(1.0)));
+            let session_info = self.session.scan();
+            let view = build_session_view(&settings, session_info.as_ref());
+            self.shared.publish_ui("Connected", view.display);
+
+            let presence = view.presence;
+            if self.last_sent.needs_send(&presence) {
+                match write_activity(&mut pipe, self.pid, &self.nonce, presence.clone()) {
+                    Ok(()) => {
+                        self.last_sent.mark_sent(presence.clone());
+                        log_presence(&presence);
+                    }
+                    Err(_) => return ConnectionEnd::Dropped,
+                }
+            }
+
+            sleep(UPDATE_INTERVAL);
+        }
+    }
+
+    fn backoff(&mut self) {
+        self.attempt += 1;
+        let secs = 2u64.pow(self.attempt.min(5)).min(30);
+        sleep(Duration::from_secs(secs));
+    }
+}
+
+enum ConnectionEnd {
+    CouldNotConnect,
+    Dropped,
+    Quit,
+    Disabled,
 }
 
 fn non_empty(s: &str) -> Option<String> {
@@ -335,5 +410,57 @@ fn log_presence(presence: &Option<RichPresence>) {
             p.state.as_deref().unwrap_or("")
         ),
         None => println!("[presence] cleared"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::SessionInfo;
+
+    fn sample_info() -> SessionInfo {
+        SessionInfo {
+            project_name: "agentcord".to_string(),
+            model: Some("Opus 4.5".to_string()),
+            start_epoch_ms: 1_700_000_000_000,
+            total_tokens: 42_000,
+            last_modified_ms: 1_700_000_100_000,
+        }
+    }
+
+    #[test]
+    fn view_respects_display_toggles() {
+        let mut s = Settings::default();
+        s.show_model = false;
+        s.show_project = true;
+        s.show_tokens = false;
+        let view = build_session_view(&s, Some(&sample_info()));
+        match view.display {
+            SessionDisplay::Active { model, project, tokens_line, .. } => {
+                assert!(model.is_empty());
+                assert_eq!(project, "agentcord");
+                assert!(tokens_line.is_none());
+            }
+            _ => panic!("expected active"),
+        }
+        assert_eq!(view.presence.as_ref().unwrap().name.as_deref(), Some("agentcord"));
+        assert!(view.presence.as_ref().unwrap().state.is_none());
+    }
+
+    #[test]
+    fn view_disabled_skips_presence() {
+        let mut s = Settings::default();
+        s.presence_enabled = false;
+        let view = build_session_view(&s, Some(&sample_info()));
+        assert_eq!(view.display, SessionDisplay::Disabled);
+        assert!(view.presence.is_none());
+    }
+
+    #[test]
+    fn view_idle_without_session() {
+        let s = Settings::default();
+        let view = build_session_view(&s, None);
+        assert_eq!(view.display, SessionDisplay::Idle);
+        assert!(view.presence.is_none());
     }
 }

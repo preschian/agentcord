@@ -127,6 +127,31 @@ pub fn handle_inbound_frame<W: Write>(op: u32, payload: &[u8], pipe: &mut W) -> 
     }
 }
 
+/// Read frames until READY. Answers PINGs along the way.
+pub fn wait_for_ready(pipe: &mut (impl Read + Write)) -> Result<(), String> {
+    loop {
+        match read_frame(pipe) {
+            Ok(Some((op, payload))) => match handle_inbound_frame(op, &payload, pipe) {
+                FrameAction::Ready => return Ok(()),
+                FrameAction::Error(msg) => return Err(msg),
+                FrameAction::Closed => return Err("connection closed".to_string()),
+                FrameAction::Continue => {}
+            },
+            Ok(None) => return Err("connection closed".to_string()),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// Open the pipe, send the handshake, and block until READY.
+pub fn connect_handshake(client_id: &str) -> io::Result<File> {
+    let mut pipe = open_pipe()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no discord-ipc pipe found"))?;
+    write_frame(&mut pipe, opcode::HANDSHAKE, &handshake_payload(client_id))?;
+    wait_for_ready(&mut pipe).map_err(|msg| io::Error::new(io::ErrorKind::NotConnected, msg))?;
+    Ok(pipe)
+}
+
 /// Build and write a `SET_ACTIVITY` frame (or, with `None`, a clear). The nonce
 /// counter is shared so every command gets a unique nonce.
 pub fn write_activity(
@@ -143,8 +168,7 @@ pub fn write_activity(
 
 // MARK: - Single-connection convenience (used by the `ipc` smoke test)
 
-/// A minimal blocking client over one pipe. The full app uses the free helpers
-/// above from `presence_controller` instead, which adds reconnect and threading.
+/// A minimal blocking client over one pipe. Wraps the free helpers above.
 pub struct DiscordIpc {
     client_id: String,
     pid: u32,
@@ -171,9 +195,8 @@ impl DiscordIpc {
     pub fn connect(&mut self) -> io::Result<()> {
         self.pipe = None;
         self.ready = false;
-        let mut pipe = open_pipe()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no discord-ipc pipe found"))?;
-        write_frame(&mut pipe, opcode::HANDSHAKE, &handshake_payload(&self.client_id))?;
+        let pipe = connect_handshake(&self.client_id)?;
+        self.ready = true;
         self.pipe = Some(pipe);
         Ok(())
     }
@@ -205,8 +228,50 @@ impl DiscordIpc {
                 self.ready = false;
                 return Ok(false);
             }
-            FrameAction::Error(_) | FrameAction::Continue => {}
+            FrameAction::Error(msg) => {
+                eprintln!("[discord] error: {msg}");
+                self.ready = false;
+                return Ok(false);
+            }
+            FrameAction::Continue => {}
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn ready_frame_returns_ready() {
+        let payload = br#"{"evt":"READY"}"#;
+        let mut buf: Vec<u8> = Vec::new();
+        let action = handle_inbound_frame(opcode::FRAME, payload, &mut buf);
+        assert_eq!(action, FrameAction::Ready);
+    }
+
+    #[test]
+    fn ping_writes_pong() {
+        let payload = b"1234";
+        let mut written = Vec::new();
+        let action = handle_inbound_frame(opcode::PING, payload, &mut written);
+        assert_eq!(action, FrameAction::Continue);
+        assert!(!written.is_empty());
+    }
+
+    #[test]
+    fn error_frame_surfaces_message() {
+        let payload = br#"{"evt":"ERROR","data":{"message":"bad id"}}"#;
+        let mut buf = Cursor::new(Vec::new());
+        let action = handle_inbound_frame(opcode::FRAME, payload, &mut buf);
+        assert_eq!(action, FrameAction::Error("bad id".to_string()));
+    }
+
+    #[test]
+    fn close_frame_is_closed() {
+        let action = handle_inbound_frame(opcode::CLOSE, &[], &mut Vec::<u8>::new());
+        assert_eq!(action, FrameAction::Closed);
     }
 }

@@ -5,7 +5,8 @@
 //! AgentCord for Windows.
 //!
 //! Default (no args) launches the tray app: a notification-area icon with a
-//! status popover and context menu, driving the presence controller. The other
+//! status popover (left-click) and context menu (right-click), driving the
+//! presence controller. The other subcommands (`run`, `session`, `ipc`) are
 //! subcommands (`run`, `session`, `ipc`) are headless modes for debugging —
 //! see the usage text in `main`.
 
@@ -17,6 +18,7 @@ mod models;
 mod presence_controller;
 mod settings;
 mod tray;
+mod usage_poller;
 mod util;
 
 use std::sync::Arc;

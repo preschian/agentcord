@@ -31,7 +31,7 @@ use crate::util::command;
 const ACTIVE_GAP_TOLERANCE_MS: i64 = 5 * 60 * 1000;
 
 pub struct ClaudeSession {
-    projects_dir: PathBuf,
+    pub(crate) projects_dir: PathBuf,
     /// A transcript counts as active if it was modified within this window.
     active_window: Duration,
     /// Memoized per-file aggregates, reused while the file is unmodified and we
@@ -111,11 +111,6 @@ impl ClaudeSession {
             }
         }
 
-        // Daily totals: tokens summed across every transcript touched today, and
-        // an elapsed timer reflecting the combined working time of all of today's
-        // sessions (idle gaps excluded). "Today" is the local calendar day, so
-        // the totals reset at midnight.
-
         let mut total_tokens_today: i64 = 0;
         let mut total_active_ms: i64 = 0;
         for (path, mtime) in &files {
@@ -123,10 +118,8 @@ impl ClaudeSession {
             total_tokens_today += agg.tokens_today;
             total_active_ms += agg.active_ms_today;
         }
-        // The active session is the newest file; its aggregate is already cached.
         let active_agg = self.aggregate(&newest.0, newest.1, day_start_ms);
 
-        // Drop cache entries for transcripts that no longer exist.
         self.cache.retain(|k, _| files.iter().any(|(p, _)| p == k));
 
         let session =
@@ -142,7 +135,6 @@ impl ClaudeSession {
         Some(session)
     }
 
-    /// Recompute only the elapsed timer when the transcript tree is unchanged.
     fn refresh_elapsed(&self, prev: &ScanSnapshot, now_ms: i64) -> SessionInfo {
         let mut elapsed_ms = prev.total_active_ms;
         if let Some(last) = prev.active_last_today_ms {
@@ -158,9 +150,6 @@ impl ClaudeSession {
         }
     }
 
-    /// Parse one transcript into its today-only figures, memoizing the result.
-    /// An entry is reused only while the file is unmodified and we are still on
-    /// the same calendar day (the day boundary changes which lines count).
     fn aggregate(&mut self, path: &Path, mtime: i64, day_start_ms: i64) -> DayAggregate {
         if let Some(entry) = self.cache.get(path) {
             if entry.mtime == mtime && entry.day_start_ms == day_start_ms {
@@ -214,8 +203,6 @@ impl ClaudeSession {
 
                 if is_today {
                     if let Some(ms) = line_ms {
-                        // Count the gap from the previous message only if it is
-                        // short enough to be continuous work (idle breaks out).
                         if let Some(prev) = prev_today_ms {
                             let delta = ms - prev;
                             if delta > 0 && delta <= ACTIVE_GAP_TOLERANCE_MS {
@@ -255,11 +242,6 @@ impl ClaudeSession {
             project_name = self.repo_name(cwd);
         }
 
-        // `total_active_ms` covers work up to each session's last logged message.
-        // The active session is ongoing, so extend it from its last message to
-        // "now" (while that gap stays within the work tolerance). Backdating
-        // `start` by the total makes Discord's elapsed timer show the combined
-        // working time of all of today's sessions.
         let mut elapsed_ms = total_active_ms;
         if let Some(last) = active.last_today_ms {
             let tail = now_ms - last;
@@ -282,9 +264,6 @@ impl ClaudeSession {
         }
     }
 
-    /// Resolve the repository name for a working directory. Prefers the git
-    /// remote (so a worktree like ".../agentcord/abuja" still reports
-    /// "agentcord"), then the git toplevel, then the directory name.
     fn repo_name(&mut self, cwd: &str) -> String {
         if let Some(cached) = self.repo_name_cache.get(cwd) {
             return cached.clone();
@@ -311,16 +290,11 @@ impl ClaudeSession {
     }
 }
 
-/// Per-transcript figures restricted to today, extracted from one `.jsonl`.
 #[derive(Default, Clone)]
 struct DayAggregate {
     cwd: Option<String>,
     model: Option<String>,
-    /// Epoch ms of the last message recorded today, used to extend the active
-    /// session's working time up to "now".
     last_today_ms: Option<i64>,
-    /// Working time today: sum of gaps between consecutive messages, counting
-    /// only gaps short enough to be considered continuous work.
     active_ms_today: i64,
     tokens_today: i64,
 }
@@ -331,8 +305,6 @@ struct CacheEntry {
     aggregate: DayAggregate,
 }
 
-// MARK: - Free helpers
-
 fn files_signature(files: &[(PathBuf, i64)]) -> u64 {
     let mut hasher = DefaultHasher::new();
     for (path, mtime) in files {
@@ -342,8 +314,6 @@ fn files_signature(files: &[(PathBuf, i64)]) -> u64 {
     hasher.finish()
 }
 
-/// Recursively collect every `.jsonl` file under `dir` with its mtime (epoch
-/// ms). Hidden entries are skipped, matching the macOS enumerator options.
 fn collect_jsonl(dir: &Path, out: &mut Vec<(PathBuf, i64)>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -380,7 +350,6 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Current time as epoch milliseconds (UTC; epoch is timezone-independent).
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -388,7 +357,6 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Epoch ms at the start of today in the local timezone.
 fn local_day_start_ms() -> i64 {
     chrono::Local::now()
         .date_naive()
@@ -398,17 +366,12 @@ fn local_day_start_ms() -> i64 {
         .unwrap_or_else(now_ms)
 }
 
-/// Parse an ISO-8601 / RFC-3339 timestamp (with or without fractional seconds)
-/// to epoch milliseconds.
 pub fn epoch_ms_from_iso(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.timestamp_millis())
 }
 
-/// Claude Code encodes the project's cwd into the directory name by replacing
-/// path separators with hyphens. As a fallback (no `cwd` field) we take the
-/// trailing segment.
 fn derive_project_name(dir: &str) -> String {
     dir.rsplit('-')
         .find(|s| !s.is_empty())
@@ -416,7 +379,6 @@ fn derive_project_name(dir: &str) -> String {
         .unwrap_or_else(|| dir.to_string())
 }
 
-/// Last non-empty path segment, accepting both `/` and `\` separators.
 fn last_path_component(p: &str) -> String {
     p.rsplit(['/', '\\'])
         .find(|s| !s.is_empty())
@@ -437,7 +399,6 @@ fn run_git(args: &[&str]) -> Option<String> {
     }
 }
 
-/// Turn a raw model id such as "claude-opus-4-5-20260101" into "Opus 4.5".
 pub fn pretty_model(raw: &str) -> String {
     let lower = raw.to_lowercase();
     let family = if lower.contains("opus") {
@@ -458,8 +419,6 @@ pub fn pretty_model(raw: &str) -> String {
     }
 }
 
-/// Equivalent of the regex `[0-9]+([.-][0-9]+)?`: the first digit run plus at
-/// most one `.`/`-`-separated digit run, with `-` normalized to `.`.
 fn extract_version(raw: &str) -> Option<String> {
     let b = raw.as_bytes();
     let start = b.iter().position(u8::is_ascii_digit)?;
@@ -474,4 +433,63 @@ fn extract_version(raw: &str) -> Option<String> {
         }
     }
     Some(raw[start..end].replace('-', "."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn pretty_model_formats_opus() {
+        assert_eq!(pretty_model("claude-opus-4-5-20260101"), "Opus 4.5");
+    }
+
+    #[test]
+    fn extract_version_normalizes_dash() {
+        assert_eq!(extract_version("claude-sonnet-4-6"), Some("4.6".to_string()));
+    }
+
+    #[test]
+    fn epoch_ms_from_iso_parses_zulu() {
+        let ms = epoch_ms_from_iso("2026-01-15T12:00:00Z").unwrap();
+        assert!(ms > 0);
+    }
+
+    #[test]
+    fn aggregate_sums_tokens_and_active_gaps() {
+        let dir = std::env::temp_dir().join("agentcord_test_projects");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let day = local_day_start_ms();
+        let t0 = day + 60_000;
+        let t1 = t0 + 30_000;
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"{}","message":{{"model":"claude-opus-4-5","usage":{{"input_tokens":10,"output_tokens":5}}}}}}"#,
+            chrono::DateTime::from_timestamp_millis(t0).unwrap().to_rfc3339()
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"{}","message":{{"usage":{{"input_tokens":2,"output_tokens":3}}}}}}"#,
+            chrono::DateTime::from_timestamp_millis(t1).unwrap().to_rfc3339()
+        )
+        .unwrap();
+
+        let mut session = ClaudeSession::new().with_active_window(Duration::from_secs(3600));
+        session.projects_dir = dir.clone();
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        let mtime_ms = mtime
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let agg = session.aggregate(&path, mtime_ms, day);
+        assert_eq!(agg.tokens_today, 20);
+        assert_eq!(agg.active_ms_today, 30_000);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

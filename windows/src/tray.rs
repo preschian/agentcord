@@ -2,28 +2,31 @@
 //! `tray-icon` for the notification-area icon) so the popover can match the
 //! macOS `MenuBarExtra` look: rounded cards, a status pill, colored usage bars.
 //!
-//! The presence controller and usage poller run on background threads and
-//! publish into [`SharedState`]; the egui UI reads that each frame and renders.
-//! The window lives hidden and is shown (bottom-right, above the taskbar) on a
-//! left-click of the tray icon, dismissing itself when it loses focus.
+//! Left-click opens the status popover; right-click opens a tray context menu.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
 use eframe::egui::{Color32, RichText};
+use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
 
 use crate::claude_session::now_ms;
-use crate::presence_controller::{PresenceController, SessionDisplay, SharedState};
+use crate::presence_controller::{PresenceController, SharedState};
 use crate::settings::Settings;
+use crate::usage_poller;
 
 const WIDTH: f32 = 300.0;
 const HEIGHT: f32 = 384.0;
 const HEIGHT_EXPANDED: f32 = 628.0;
+
+const MENU_SHOW: &str = "show_status";
+const MENU_TOGGLE: &str = "toggle_presence";
+const MENU_QUIT: &str = "quit";
 
 const SECONDARY: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x72);
 const BLUE: Color32 = Color32::from_rgb(0x58, 0x65, 0xf2);
@@ -38,14 +41,8 @@ pub fn run() {
     std::thread::spawn(move || PresenceController::new(controller_shared).run());
 
     let usage_shared = Arc::clone(&shared);
-    std::thread::spawn(move || loop {
-        if let Some(info) = crate::claude_usage::fetch() {
-            *usage_shared.usage.lock().unwrap() = Some(info);
-        }
-        std::thread::sleep(crate::claude_usage::POLL_INTERVAL);
-    });
+    std::thread::spawn(move || usage_poller::run(usage_shared));
 
-    // Starts hidden; shown (bottom-right) on a tray left-click.
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([WIDTH, HEIGHT])
         .with_decorations(false)
@@ -63,8 +60,6 @@ pub fn run() {
         "AgentCord",
         options,
         Box::new(move |cc| {
-            // Force light regardless of the OS theme (eframe otherwise follows
-            // the system theme and would override a one-shot set_visuals).
             cc.egui_ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Light);
             cc.egui_ctx.set_visuals(egui::Visuals::light());
             Ok(Box::new(AgentApp::new(app_shared)) as Box<dyn eframe::App>)
@@ -76,14 +71,9 @@ struct AgentApp {
     shared: Arc<SharedState>,
     _tray: Option<TrayIcon>,
     visible: bool,
-    /// We only start dismissing on focus loss once the window has actually
-    /// gained focus, so the show transition doesn't immediately hide it.
     seen_focus: bool,
-    /// Cached so we don't shell out to `reg.exe` every frame.
     autostart_on: bool,
-    /// Whether the inline settings panel is expanded (grows the window).
     show_settings: bool,
-    /// Last window height we applied, so we only resize on change.
     applied_height: f32,
 }
 
@@ -92,9 +82,12 @@ impl AgentApp {
         let tray = load_rgba(include_bytes!("../assets/icon_32.png"))
             .and_then(|(rgba, w, h)| Icon::from_rgba(rgba, w, h).ok())
             .and_then(|icon| {
+                let menu = build_tray_menu();
                 TrayIconBuilder::new()
                     .with_tooltip("AgentCord")
                     .with_icon(icon)
+                    .with_menu(Box::new(menu))
+                    .with_menu_on_left_click(false)
                     .build()
                     .ok()
             });
@@ -110,20 +103,12 @@ impl AgentApp {
     }
 
     fn show(&mut self, ctx: &egui::Context) {
-        // Geometry only — settings panel state is preserved across open/close.
         self.applied_height = -1.0;
         self.seen_focus = false;
         self.visible = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-
-        // Pull fresh usage numbers (throttled) for next time.
-        let shared = Arc::clone(&self.shared);
-        std::thread::spawn(move || {
-            if let Some(info) = crate::claude_usage::fetch_throttled(60) {
-                *shared.usage.lock().unwrap() = Some(info);
-            }
-        });
+        self.shared.request_usage_refresh();
     }
 
     fn hide(&mut self, ctx: &egui::Context) {
@@ -131,8 +116,17 @@ impl AgentApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
-    /// Resize + reposition the window (bottom-right of the work area) to match
-    /// the current expanded/collapsed state. No-op when already correct.
+    fn toggle_presence(&mut self) {
+        let mut s = self.shared.settings.lock().unwrap();
+        s.presence_enabled = !s.presence_enabled;
+        let _ = s.save();
+    }
+
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.shared.quit.store(true, std::sync::atomic::Ordering::Relaxed);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
     fn apply_geometry(&mut self, ctx: &egui::Context) {
         let h = if self.show_settings { HEIGHT_EXPANDED } else { HEIGHT };
         if (h - self.applied_height).abs() < 0.5 {
@@ -146,17 +140,8 @@ impl AgentApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(WIDTH, h)));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
     }
-}
 
-impl eframe::App for AgentApp {
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Light window background regardless of the OS theme.
-        [0.95, 0.95, 0.96, 1.0]
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-
+    fn handle_tray_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
@@ -164,9 +149,38 @@ impl eframe::App for AgentApp {
                 ..
             } = ev
             {
-                self.show(&ctx);
+                self.show(ctx);
             }
         }
+
+        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+            if ev.id == MenuId::from(MENU_SHOW) {
+                self.show(ctx);
+            } else if ev.id == MenuId::from(MENU_TOGGLE) {
+                self.toggle_presence();
+            } else if ev.id == MenuId::from(MENU_QUIT) {
+                self.quit(ctx);
+            }
+        }
+    }
+}
+
+fn build_tray_menu() -> Menu {
+    let menu = Menu::new();
+    let _ = menu.append(&MenuItem::with_id(MENU_SHOW, "Show status", true, None));
+    let _ = menu.append(&MenuItem::with_id(MENU_TOGGLE, "Toggle presence", true, None));
+    let _ = menu.append(&MenuItem::with_id(MENU_QUIT, "Quit", true, None));
+    menu
+}
+
+impl eframe::App for AgentApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.95, 0.95, 0.96, 1.0]
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.handle_tray_events(&ctx);
 
         if self.visible {
             match ctx.input(|i| i.viewport().focused) {
@@ -178,59 +192,56 @@ impl eframe::App for AgentApp {
             self.render(ui, &ctx);
         }
 
-        // Heartbeat so we keep polling tray clicks and ticking the timer.
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
 
 impl AgentApp {
     fn render(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // The framework panel has ~no margin, so add our own padding.
         egui::Frame::default()
             .inner_margin(egui::Margin::same(13))
             .show(ui, |ui| self.render_inner(ui, ctx));
     }
 
     fn render_inner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let (conn, session) = {
-            let s = self.shared.status.lock().unwrap();
-            (s.connection.clone(), s.session.clone())
+        let (conn, session, usage) = {
+            let snap = self.shared.ui.lock().unwrap();
+            (snap.connection.clone(), snap.session.clone(), snap.usage.clone())
         };
-        let (headline, tokens_line, start_ms) = format_session_card(&session);
-        let usage = self.shared.usage.lock().unwrap().clone();
         let mut presence_on = self.shared.settings.lock().unwrap().presence_enabled;
 
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 
-        // Header: title + status pill.
         ui.horizontal(|ui| {
             ui.label(RichText::new("agentcord").size(15.0).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (label, color) = status_pill(presence_on, &conn);
                 ui.label(RichText::new(label).size(11.5).color(color));
-                // Painted dot (the "●" glyph isn't in egui's default font).
                 let (r, _) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
                 ui.painter().circle_filled(r.center(), 4.0, color);
             });
         });
 
-        // Active session card.
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(RichText::new("ACTIVE SESSION").size(10.5).color(SECONDARY).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(elapsed(start_ms)).size(11.5).monospace().color(SECONDARY));
+                    ui.label(
+                        RichText::new(elapsed(session.start_ms()))
+                            .size(11.5)
+                            .monospace()
+                            .color(SECONDARY),
+                    );
                 });
             });
             ui.add_space(2.0);
-            ui.label(RichText::new(headline).size(13.5).strong());
-            if let Some(line2) = tokens_line {
+            ui.label(RichText::new(session.headline()).size(13.5).strong());
+            if let Some(line2) = session.tokens_line() {
                 ui.label(RichText::new(line2).size(12.0).color(SECONDARY));
             }
         });
 
-        // Usage card.
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new("USAGE").size(10.5).color(SECONDARY).strong());
@@ -249,23 +260,19 @@ impl AgentApp {
 
         ui.add_space(2.0);
 
-        // Toggles.
         if ui.checkbox(&mut presence_on, "Presence enabled").changed() {
             let mut s = self.shared.settings.lock().unwrap();
             s.presence_enabled = presence_on;
             let _ = s.save();
         }
         if ui.checkbox(&mut self.autostart_on, "Launch at login").changed() {
-            if crate::autostart::set_enabled(self.autostart_on) {
-                // Trust the toggle; no need to shell out to `reg query` again.
-            } else {
+            if !crate::autostart::set_enabled(self.autostart_on) {
                 self.autostart_on = !self.autostart_on;
             }
         }
 
         ui.add_space(2.0);
 
-        // Inline settings panel (expands the window).
         let toggle = if self.show_settings { "Hide settings" } else { "Settings" };
         if ui.button(toggle).clicked() {
             self.show_settings = !self.show_settings;
@@ -276,17 +283,13 @@ impl AgentApp {
 
         ui.add_space(4.0);
 
-        // Quit (right-aligned).
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Quit").clicked() {
-                self.shared.quit.store(true, std::sync::atomic::Ordering::Relaxed);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.quit(ctx);
             }
         });
     }
 
-    /// The expandable settings panel — the GUI equivalent of editing the JSON.
-    /// Holds one lock for the whole panel and saves only when a control changes.
     fn render_settings(&mut self, ui: &mut egui::Ui) {
         let mut guard = self.shared.settings.lock().unwrap();
         let mut changed = false;
@@ -298,7 +301,6 @@ impl AgentApp {
             changed |= ui.checkbox(&mut guard.show_project, "Show project").changed();
             changed |= ui.checkbox(&mut guard.show_model, "Show model").changed();
             changed |= ui.checkbox(&mut guard.show_tokens, "Show tokens").changed();
-            changed |= ui.checkbox(&mut guard.do_not_disturb, "Do Not Disturb").changed();
 
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -328,23 +330,6 @@ impl AgentApp {
 
         if changed {
             let _ = guard.save();
-        }
-    }
-}
-
-fn format_session_card(display: &SessionDisplay) -> (String, Option<String>, Option<i64>) {
-    match display {
-        SessionDisplay::Idle => ("No active session".to_string(), None, None),
-        SessionDisplay::Disabled => ("Presence disabled".to_string(), None, None),
-        SessionDisplay::DoNotDisturb => ("Do Not Disturb".to_string(), None, None),
-        SessionDisplay::Active { model, project, tokens_line, start_ms } => {
-            let headline = match (model.is_empty(), project.is_empty()) {
-                (false, false) => format!("{model} · {project}"),
-                (false, true) => model.clone(),
-                (true, false) => project.clone(),
-                (true, true) => "Active session".to_string(),
-            };
-            (headline, tokens_line.clone(), Some(*start_ms))
         }
     }
 }

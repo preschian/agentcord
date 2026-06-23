@@ -1,422 +1,326 @@
-//! System-tray UI — the Windows equivalent of the macOS `MenuBarExtra`.
+//! System-tray app and status popover, built on `eframe`/`egui` (with
+//! `tray-icon` for the notification-area icon) so the popover can match the
+//! macOS `MenuBarExtra` look: rounded cards, a status pill, colored usage bars.
 //!
-//! Hand-rolled on the raw Win32 API (no tray-icon/winit), matching the macOS
-//! app's minimal-dependency stance. We create a hidden message window, register
-//! a notification-area icon with `Shell_NotifyIcon`, and show a right/left-click
-//! context menu via `TrackPopupMenu`. The presence controller runs on a
-//! background thread; this thread owns the Win32 message loop.
-//!
-//! The menu offers: toggle presence, toggle launch-at-login, open the settings
-//! file, and quit. Quitting sets the shared `quit` flag (so the controller
-//! clears the presence) and tears down the icon.
-//!
-//! The icon is the stock application icon for now; embedding a custom `.ico`
-//! via a resource is a later refinement.
+//! The presence controller and usage poller run on background threads and
+//! publish into [`SharedState`]; the egui UI reads that each frame and renders.
+//! The window lives hidden and is shown (bottom-right, above the taskbar) on a
+//! left-click of the tray icon, dismissing itself when it loses focus.
 
-use std::ffi::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::thread;
+use std::sync::Arc;
+use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{CreateSolidBrush, GetStockObject, DEFAULT_GUI_FONT};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
-};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    DispatchMessageW, GetCursorPos, GetDlgItem, GetMessageW, GetSystemMetrics, LoadCursorW,
-    LoadIconW, LoadImageW, PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
-    SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TrackPopupMenu,
-    TranslateMessage, BM_SETCHECK, BS_AUTOCHECKBOX, CW_USEDEFAULT,
-    HICON, HMENU, HWND_TOPMOST, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE,
-    MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SPI_GETWORKAREA, SW_HIDE,
-    SWP_SHOWWINDOW, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WA_INACTIVE, WM_ACTIVATE,
-    WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SETFONT, WNDCLASSW, WS_BORDER,
-    WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
-};
+use eframe::egui;
+use eframe::egui::{Color32, RichText};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
+
+use crate::claude_session::now_ms;
 use crate::presence_controller::{PresenceController, SharedState};
 use crate::settings::Settings;
 
-/// Custom message Shell_NotifyIcon posts to our window on tray interaction.
-const WM_TRAY_CALLBACK: u32 = WM_APP + 1;
-const TRAY_ID: u32 = 1;
+const WIDTH: f32 = 300.0;
+const HEIGHT: f32 = 384.0;
 
-// Menu command ids.
-const ID_TOGGLE_PRESENCE: usize = 1;
-const ID_TOGGLE_AUTOSTART: usize = 2;
-const ID_OPEN_SETTINGS: usize = 3;
-const ID_QUIT: usize = 4;
+const SECONDARY: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x72);
+const BLUE: Color32 = Color32::from_rgb(0x58, 0x65, 0xf2);
+const GREEN: Color32 = Color32::from_rgb(0x2e, 0xa0, 0x43);
+const ORANGE: Color32 = Color32::from_rgb(0xd1, 0x8b, 0x16);
+const RED: Color32 = Color32::from_rgb(0xcf, 0x3b, 0x3b);
 
-// Popover control ids.
-const ID_LBL_CONN: usize = 201;
-const ID_LBL_LINE1: usize = 202;
-const ID_LBL_LINE2: usize = 203;
-const ID_LBL_USAGE5: usize = 204;
-const ID_LBL_USAGEW: usize = 205;
-const ID_CHK_PRESENCE: usize = 211;
-const ID_CHK_AUTOSTART: usize = 212;
-const ID_BTN_SETTINGS: usize = 213;
-const ID_BTN_QUIT: usize = 214;
-
-const POPOVER_W: i32 = 300;
-const POPOVER_H: i32 = 262;
-
-static SHARED: OnceLock<Arc<SharedState>> = OnceLock::new();
-
-// Window handles, stored as usize so they can live in atomics (HWND is a raw
-// pointer and not `Sync`). Only ever used from the UI thread.
-static MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
-static POPOVER_HWND: AtomicUsize = AtomicUsize::new(0);
-
-/// The app icon (multi-size .ico generated from the macOS app icon), embedded
-/// so the binary stays self-contained.
-static ICON_BYTES: &[u8] = include_bytes!("../assets/agentcord.ico");
-
-/// Launch the tray app: spawn the presence controller, then run the message
-/// loop. Blocks until the user quits.
 pub fn run() {
     let shared = Arc::new(SharedState::new(Settings::load()));
-    let _ = SHARED.set(Arc::clone(&shared));
 
     let controller_shared = Arc::clone(&shared);
-    thread::spawn(move || PresenceController::new(controller_shared).run());
+    std::thread::spawn(move || PresenceController::new(controller_shared).run());
 
-    // Poll subscription usage in the background; keep the last good value on a
-    // failed poll (the numbers move slowly).
     let usage_shared = Arc::clone(&shared);
-    thread::spawn(move || loop {
+    std::thread::spawn(move || loop {
         if let Some(info) = crate::claude_usage::fetch() {
             *usage_shared.usage.lock().unwrap() = Some(info);
         }
-        thread::sleep(crate::claude_usage::POLL_INTERVAL);
+        std::thread::sleep(crate::claude_usage::POLL_INTERVAL);
     });
 
-    unsafe { run_message_loop() };
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-unsafe fn run_message_loop() {
-    let hinstance = GetModuleHandleW(std::ptr::null());
-    let class_name = wide("AgentCordTray");
-
-    let mut wc: WNDCLASSW = std::mem::zeroed();
-    wc.lpfnWndProc = Some(wndproc);
-    wc.hInstance = hinstance as _;
-    wc.lpszClassName = class_name.as_ptr();
-    wc.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
-    RegisterClassW(&wc);
-
-    // A normal window that we never show — it just receives messages.
-    let hwnd = CreateWindowExW(
-        0,
-        class_name.as_ptr(),
-        wide("AgentCord").as_ptr(),
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        hinstance as _,
-        std::ptr::null(),
-    );
-
-    MAIN_HWND.store(hwnd as usize, Ordering::Relaxed);
-    add_icon(hwnd);
-
-    let popover = create_popover();
-    POPOVER_HWND.store(popover as usize, Ordering::Relaxed);
-
-    let mut msg: MSG = std::mem::zeroed();
-    while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+    // Starts hidden; shown (bottom-right) on a tray left-click.
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([WIDTH, HEIGHT])
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_always_on_top()
+        .with_taskbar(false)
+        .with_visible(false);
+    if let Some((rgba, w, h)) = load_rgba(include_bytes!("../assets/icon_256.png")) {
+        viewport = viewport.with_icon(Arc::new(egui::IconData { rgba, width: w, height: h }));
     }
+
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    let app_shared = Arc::clone(&shared);
+    let _ = eframe::run_native(
+        "AgentCord",
+        options,
+        Box::new(move |cc| {
+            // Force light regardless of the OS theme (eframe otherwise follows
+            // the system theme and would override a one-shot set_visuals).
+            cc.egui_ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Light);
+            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            Ok(Box::new(AgentApp::new(app_shared)) as Box<dyn eframe::App>)
+        }),
+    );
 }
 
-unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    match msg {
-        WM_TRAY_CALLBACK => {
-            // The mouse event is the low word of lParam. Left click opens the
-            // status popover; right click opens the context menu.
-            let event = (lparam as u32) & 0xffff;
-            if event == WM_LBUTTONUP {
-                show_popover();
-            } else if event == WM_RBUTTONUP {
-                show_menu(hwnd);
+struct AgentApp {
+    shared: Arc<SharedState>,
+    _tray: Option<TrayIcon>,
+    visible: bool,
+    /// We only start dismissing on focus loss once the window has actually
+    /// gained focus, so the show transition doesn't immediately hide it.
+    seen_focus: bool,
+    /// Cached so we don't shell out to `reg.exe` every frame.
+    autostart_on: bool,
+}
+
+impl AgentApp {
+    fn new(shared: Arc<SharedState>) -> Self {
+        let tray = load_rgba(include_bytes!("../assets/icon_32.png"))
+            .and_then(|(rgba, w, h)| Icon::from_rgba(rgba, w, h).ok())
+            .and_then(|icon| {
+                TrayIconBuilder::new()
+                    .with_tooltip("AgentCord")
+                    .with_icon(icon)
+                    .build()
+                    .ok()
+            });
+        Self {
+            shared,
+            _tray: tray,
+            visible: false,
+            seen_focus: false,
+            autostart_on: false,
+        }
+    }
+
+    fn show(&mut self, ctx: &egui::Context) {
+        let wa = work_area();
+        let ppp = ctx.pixels_per_point();
+        let x = wa.right as f32 / ppp - WIDTH - 12.0;
+        let y = wa.bottom as f32 / ppp - HEIGHT - 12.0;
+        self.autostart_on = crate::autostart::is_enabled();
+        self.seen_focus = false;
+        self.visible = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+
+        // Pull fresh usage numbers (throttled) for next time.
+        let shared = Arc::clone(&self.shared);
+        std::thread::spawn(move || {
+            if let Some(info) = crate::claude_usage::fetch_throttled(60) {
+                *shared.usage.lock().unwrap() = Some(info);
             }
-            0
-        }
-        WM_DESTROY => {
-            remove_icon(hwnd);
-            PostQuitMessage(0);
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        });
+    }
+
+    fn hide(&mut self, ctx: &egui::Context) {
+        self.visible = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 }
 
-unsafe fn show_menu(hwnd: HWND) {
-    let hmenu = CreatePopupMenu();
-    if hmenu.is_null() {
-        return;
+impl eframe::App for AgentApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Light window background regardless of the OS theme.
+        [0.95, 0.95, 0.96, 1.0]
     }
 
-    let shared = SHARED.get().expect("SHARED set");
-    let presence_on = shared.settings.lock().unwrap().presence_enabled;
-    let autostart_on = crate::autostart::is_enabled();
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        // Force light every frame — eframe otherwise follows the (dark) OS theme.
+        ctx.set_theme(egui::ThemePreference::Light);
+        ctx.set_visuals(egui::Visuals::light());
 
-    let check = |on: bool| if on { MF_CHECKED } else { 0 };
-    AppendMenuW(hmenu, MF_STRING | check(presence_on), ID_TOGGLE_PRESENCE, wide("Presence enabled").as_ptr());
-    AppendMenuW(hmenu, MF_STRING | check(autostart_on), ID_TOGGLE_AUTOSTART, wide("Launch at login").as_ptr());
-    AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
-    AppendMenuW(hmenu, MF_STRING, ID_OPEN_SETTINGS, wide("Open settings file").as_ptr());
-    AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
-    AppendMenuW(hmenu, MF_STRING, ID_QUIT, wide("Quit AgentCord").as_ptr());
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = ev
+            {
+                self.show(&ctx);
+            }
+        }
 
-    let mut pt = POINT { x: 0, y: 0 };
-    GetCursorPos(&mut pt);
-    // Required so the menu dismisses correctly when focus moves elsewhere.
-    SetForegroundWindow(hwnd);
-    let cmd = TrackPopupMenu(
-        hmenu,
-        TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD,
-        pt.x,
-        pt.y,
-        0,
-        hwnd,
-        std::ptr::null(),
-    );
-    DestroyMenu(hmenu);
+        if self.visible {
+            match ctx.input(|i| i.viewport().focused) {
+                Some(true) => self.seen_focus = true,
+                Some(false) if self.seen_focus => self.hide(&ctx),
+                _ => {}
+            }
+            self.render(ui, &ctx);
+        }
 
-    if cmd != 0 {
-        handle_command(hwnd, cmd as usize);
+        // Heartbeat so we keep polling tray clicks and ticking the timer.
+        ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
 
-unsafe fn handle_command(hwnd: HWND, id: usize) {
-    let shared = SHARED.get().expect("SHARED set");
-    match id {
-        ID_TOGGLE_PRESENCE => {
-            let mut s = shared.settings.lock().unwrap();
-            s.presence_enabled = !s.presence_enabled;
+impl AgentApp {
+    fn render(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // The framework panel has ~no margin, so add our own padding.
+        egui::Frame::default()
+            .inner_margin(egui::Margin::same(13))
+            .show(ui, |ui| self.render_inner(ui, ctx));
+    }
+
+    fn render_inner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let (conn, line1, line2, start_ms) = {
+            let s = self.shared.status.lock().unwrap();
+            (s.connection.clone(), s.line1.clone(), s.line2.clone(), s.session_start_ms)
+        };
+        let usage = self.shared.usage.lock().unwrap().clone();
+        let mut presence_on = self.shared.settings.lock().unwrap().presence_enabled;
+
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+        // Header: title + status pill.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("agentcord").size(15.0).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (label, color) = status_pill(presence_on, &conn);
+                ui.label(RichText::new(label).size(11.5).color(color));
+                // Painted dot (the "●" glyph isn't in egui's default font).
+                let (r, _) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+                ui.painter().circle_filled(r.center(), 4.0, color);
+            });
+        });
+
+        // Active session card.
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("ACTIVE SESSION").size(10.5).color(SECONDARY).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(elapsed(start_ms)).size(11.5).monospace().color(SECONDARY));
+                });
+            });
+            ui.add_space(2.0);
+            let project = if line1.is_empty() { "No active session".to_string() } else { line1 };
+            ui.label(RichText::new(project).size(13.5).strong());
+            if !line2.is_empty() {
+                ui.label(RichText::new(line2).size(12.0).color(SECONDARY));
+            }
+        });
+
+        // Usage card.
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("USAGE").size(10.5).color(SECONDARY).strong());
+            ui.add_space(4.0);
+            match &usage {
+                Some(info) => {
+                    usage_row(ui, "5-hour session", &info.five_hour);
+                    ui.add_space(8.0);
+                    usage_row(ui, "Weekly limit", &info.weekly);
+                }
+                None => {
+                    ui.label(RichText::new("Usage unavailable").size(12.0).color(SECONDARY));
+                }
+            }
+        });
+
+        ui.add_space(2.0);
+
+        // Toggles.
+        if ui.checkbox(&mut presence_on, "Presence enabled").changed() {
+            let mut s = self.shared.settings.lock().unwrap();
+            s.presence_enabled = presence_on;
             let _ = s.save();
         }
-        ID_TOGGLE_AUTOSTART => {
-            let now = crate::autostart::is_enabled();
-            crate::autostart::set_enabled(!now);
+        if ui.checkbox(&mut self.autostart_on, "Launch at login").changed() {
+            crate::autostart::set_enabled(self.autostart_on);
+            self.autostart_on = crate::autostart::is_enabled();
         }
-        ID_OPEN_SETTINGS => {
-            // Make sure the file exists before opening it.
-            {
-                let s = shared.settings.lock().unwrap();
-                let _ = s.save();
+
+        ui.add_space(2.0);
+
+        // Buttons.
+        ui.horizontal(|ui| {
+            if ui.button("Open settings").clicked() {
+                {
+                    let s = self.shared.settings.lock().unwrap();
+                    let _ = s.save();
+                }
+                let _ = crate::util::command("notepad").arg(Settings::config_path()).spawn();
+                self.hide(ctx);
             }
-            let path = Settings::config_path();
-            let _ = std::process::Command::new("notepad").arg(path).spawn();
-        }
-        ID_QUIT => {
-            shared.quit.store(true, Ordering::Relaxed);
-            DestroyWindow(hwnd);
-        }
-        _ => {}
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Quit").clicked() {
+                    self.shared.quit.store(true, std::sync::atomic::Ordering::Relaxed);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
     }
 }
 
-/// Load the tray icon from the embedded `.ico`. We write it to a temp file and
-/// use `LoadImageW`, which (unlike `CreateIconFromResource`) handles PNG-encoded
-/// icon entries and scales to the small-icon size. Falls back to the stock app
-/// icon if anything fails.
-unsafe fn load_tray_icon() -> HICON {
-    let path = std::env::temp_dir().join("agentcord-tray.ico");
-    if std::fs::write(&path, ICON_BYTES).is_ok() {
-        if let Some(p) = path.to_str() {
-            let wpath = wide(p);
-            let icon = LoadImageW(
-                std::ptr::null_mut(),
-                wpath.as_ptr(),
-                IMAGE_ICON,
-                GetSystemMetrics(SM_CXSMICON),
-                GetSystemMetrics(SM_CYSMICON),
-                LR_LOADFROMFILE,
-            );
-            if !icon.is_null() {
-                return icon as HICON;
-            }
-        }
+fn status_pill(presence_on: bool, conn: &str) -> (&'static str, Color32) {
+    if !presence_on {
+        ("Off", SECONDARY)
+    } else if conn == "Connected" {
+        ("Connected", GREEN)
+    } else if conn.starts_with("Connecting") {
+        ("Connecting", ORANGE)
+    } else {
+        ("Disconnected", SECONDARY)
     }
-    LoadIconW(std::ptr::null_mut(), IDI_APPLICATION)
 }
 
-unsafe fn add_icon(hwnd: HWND) {
-    let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-    nid.hWnd = hwnd;
-    nid.uID = TRAY_ID;
-    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    nid.uCallbackMessage = WM_TRAY_CALLBACK;
-    nid.hIcon = load_tray_icon();
-    for (i, c) in wide("AgentCord").iter().enumerate().take(nid.szTip.len() - 1) {
-        nid.szTip[i] = *c;
-    }
-    Shell_NotifyIconW(NIM_ADD, &nid);
-}
-
-unsafe fn remove_icon(hwnd: HWND) {
-    let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-    nid.hWnd = hwnd;
-    nid.uID = TRAY_ID;
-    Shell_NotifyIconW(NIM_DELETE, &nid);
-}
-
-// MARK: - Status popover
-
-/// Create the (hidden) popover window and its child controls once at startup.
-unsafe fn create_popover() -> HWND {
-    let hinstance = GetModuleHandleW(std::ptr::null());
-    let class_name = wide("AgentCordPopover");
-
-    let mut wc: WNDCLASSW = std::mem::zeroed();
-    wc.lpfnWndProc = Some(popover_wndproc);
-    wc.hInstance = hinstance as _;
-    wc.lpszClassName = class_name.as_ptr();
-    wc.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(0x00F3F3F3); // light panel background
-    RegisterClassW(&wc);
-
-    let hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-        class_name.as_ptr(),
-        wide("AgentCord").as_ptr(),
-        WS_POPUP | WS_BORDER,
-        0,
-        0,
-        POPOVER_W,
-        POPOVER_H,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        hinstance as _,
-        std::ptr::null(),
-    );
-
-    let font = GetStockObject(DEFAULT_GUI_FONT) as WPARAM;
-    let label = |id, text, x, y, w, h| child(hwnd, hinstance, "STATIC", text, 0, id, x, y, w, h, font);
-
-    label(0, "AgentCord", 16, 12, 268, 18);
-    label(ID_LBL_CONN, "Discord: —", 16, 38, 268, 18);
-    label(ID_LBL_LINE1, "", 16, 58, 268, 18);
-    label(ID_LBL_LINE2, "", 16, 78, 268, 18);
-    label(ID_LBL_USAGE5, "5-hour: —", 16, 104, 268, 18);
-    label(ID_LBL_USAGEW, "Weekly: —", 16, 124, 268, 18);
-    child(hwnd, hinstance, "BUTTON", "Presence enabled", BS_AUTOCHECKBOX as u32, ID_CHK_PRESENCE, 16, 152, 268, 22, font);
-    child(hwnd, hinstance, "BUTTON", "Launch at login", BS_AUTOCHECKBOX as u32, ID_CHK_AUTOSTART, 16, 178, 268, 22, font);
-    child(hwnd, hinstance, "BUTTON", "Open settings", 0, ID_BTN_SETTINGS, 16, 214, 130, 28, font);
-    child(hwnd, hinstance, "BUTTON", "Quit", 0, ID_BTN_QUIT, 154, 214, 130, 28, font);
-
-    hwnd
-}
-
-#[allow(clippy::too_many_arguments)]
-unsafe fn child(
-    parent: HWND,
-    hinstance: HMODULE,
-    class: &str,
-    text: &str,
-    style: u32,
-    id: usize,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    font: WPARAM,
-) -> HWND {
-    let hwnd = CreateWindowExW(
-        0,
-        wide(class).as_ptr(),
-        wide(text).as_ptr(),
-        WS_CHILD | WS_VISIBLE | style,
-        x,
-        y,
-        w,
-        h,
-        parent,
-        id as HMENU,
-        hinstance as _,
-        std::ptr::null(),
-    );
-    SendMessageW(hwnd, WM_SETFONT, font, 1);
-    hwnd
-}
-
-/// Populate the popover from current state, then show it anchored to the
-/// bottom-right of the work area (just above the taskbar).
-unsafe fn show_popover() {
-    let hwnd = POPOVER_HWND.load(Ordering::Relaxed) as HWND;
-    if hwnd.is_null() {
-        return;
-    }
-    let shared = SHARED.get().expect("SHARED set");
-    let (conn, line1, line2) = {
-        let s = shared.status.lock().unwrap();
-        (s.connection.clone(), s.line1.clone(), s.line2.clone())
-    };
-    let presence_on = shared.settings.lock().unwrap().presence_enabled;
-    let autostart_on = crate::autostart::is_enabled();
-    let (usage5, usagew) = {
-        let u = shared.usage.lock().unwrap();
-        match u.as_ref() {
-            Some(info) => (
-                format_usage("5-hour", &info.five_hour),
-                format_usage("Weekly", &info.weekly),
-            ),
-            None => ("5-hour: —".to_string(), "Weekly: —".to_string()),
-        }
-    };
-
-    let conn = if conn.is_empty() { "—".to_string() } else { conn };
-    SetWindowTextW(GetDlgItem(hwnd, ID_LBL_CONN as i32), wide(&format!("Discord: {conn}")).as_ptr());
-    SetWindowTextW(GetDlgItem(hwnd, ID_LBL_LINE1 as i32), wide(&line1).as_ptr());
-    SetWindowTextW(GetDlgItem(hwnd, ID_LBL_LINE2 as i32), wide(&line2).as_ptr());
-    SetWindowTextW(GetDlgItem(hwnd, ID_LBL_USAGE5 as i32), wide(&usage5).as_ptr());
-    SetWindowTextW(GetDlgItem(hwnd, ID_LBL_USAGEW as i32), wide(&usagew).as_ptr());
-    set_check(GetDlgItem(hwnd, ID_CHK_PRESENCE as i32), presence_on);
-    set_check(GetDlgItem(hwnd, ID_CHK_AUTOSTART as i32), autostart_on);
-
-    let wa = work_area();
-    let x = wa.right - POPOVER_W - 8;
-    let y = wa.bottom - POPOVER_H - 8;
-    SetWindowPos(hwnd, HWND_TOPMOST, x, y, POPOVER_W, POPOVER_H, SWP_SHOWWINDOW);
-    SetForegroundWindow(hwnd);
-
-    // Pull fresh usage numbers (throttled) so the next open is current.
-    let shared = Arc::clone(shared);
-    thread::spawn(move || {
-        if let Some(info) = crate::claude_usage::fetch_throttled(60) {
-            *shared.usage.lock().unwrap() = Some(info);
-        }
+fn usage_row(ui: &mut egui::Ui, label: &str, w: &crate::models::UsageWindow) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(12.5));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(usage_detail(w)).size(12.5).strong().monospace());
+        });
     });
+    ui.add_space(4.0);
+    let frac = (w.percent as f32 / 100.0).clamp(0.015, 1.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, Color32::from_rgb(0xe2, 0xe2, 0xe6));
+    let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac, rect.height()));
+    painter.rect_filled(fill, 3.0, severity_color(w));
 }
 
-/// "5-hour: 42% · resets in 1h 20m", or just "5-hour: 42%" when no reset time.
-fn format_usage(prefix: &str, w: &crate::models::UsageWindow) -> String {
-    let mark = if w.is_elevated() { " ⚠" } else { "" };
+fn usage_detail(w: &crate::models::UsageWindow) -> String {
     match w.resets_at_ms {
-        Some(ms) => format!("{prefix}: {}%{mark} · resets {}", w.percent, format_reset(ms)),
-        None => format!("{prefix}: {}%{mark}", w.percent),
+        Some(ms) => format!("{}% · {}", w.percent, format_reset(ms)),
+        None => format!("{}%", w.percent),
     }
 }
 
-/// Relative reset time — timezone-free, so no local-offset math needed.
+fn severity_color(w: &crate::models::UsageWindow) -> Color32 {
+    match w.severity.to_lowercase().as_str() {
+        "normal" => BLUE,
+        s if s.contains("warn") => ORANGE,
+        _ => RED,
+    }
+}
+
+fn elapsed(start_ms: Option<i64>) -> String {
+    let Some(start) = start_ms else { return "—".to_string() };
+    let total = ((now_ms() - start) / 1000).max(0);
+    let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 fn format_reset(resets_at_ms: i64) -> String {
-    let secs = (resets_at_ms - crate::claude_session::now_ms()) / 1000;
+    let secs = (resets_at_ms - now_ms()) / 1000;
     if secs <= 0 {
         return "now".to_string();
     }
@@ -430,64 +334,16 @@ fn format_reset(resets_at_ms: i64) -> String {
     }
 }
 
-unsafe fn set_check(ctrl: HWND, checked: bool) {
-    // BST_CHECKED = 1, BST_UNCHECKED = 0.
-    let state: WPARAM = if checked { 1 } else { 0 };
-    SendMessageW(ctrl, BM_SETCHECK, state, 0);
+fn load_rgba(png: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let img = image::load_from_memory(png).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Some((img.into_raw(), w, h))
 }
 
-unsafe fn work_area() -> RECT {
+fn work_area() -> RECT {
     let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut RECT as *mut c_void, 0);
+    unsafe {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut RECT as *mut _, 0);
+    }
     r
-}
-
-unsafe extern "system" fn popover_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    match msg {
-        WM_COMMAND => {
-            handle_popover_command(hwnd, wparam & 0xffff);
-            0
-        }
-        WM_ACTIVATE => {
-            // Lost activation (clicked elsewhere) — dismiss, like the macOS popover.
-            if (wparam & 0xffff) == WA_INACTIVE as WPARAM {
-                ShowWindow(hwnd, SW_HIDE);
-            }
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
-}
-
-unsafe fn handle_popover_command(hwnd: HWND, id: WPARAM) {
-    let shared = SHARED.get().expect("SHARED set");
-    match id {
-        ID_CHK_PRESENCE => {
-            let mut s = shared.settings.lock().unwrap();
-            s.presence_enabled = !s.presence_enabled;
-            let _ = s.save();
-        }
-        ID_CHK_AUTOSTART => {
-            let now = crate::autostart::is_enabled();
-            crate::autostart::set_enabled(!now);
-            // Reflect the actual resulting state (the toggle may have failed).
-            set_check(GetDlgItem(hwnd, ID_CHK_AUTOSTART as i32), crate::autostart::is_enabled());
-        }
-        ID_BTN_SETTINGS => {
-            {
-                let s = shared.settings.lock().unwrap();
-                let _ = s.save();
-            }
-            let _ = crate::util::command("notepad").arg(Settings::config_path()).spawn();
-            ShowWindow(hwnd, SW_HIDE);
-        }
-        ID_BTN_QUIT => {
-            shared.quit.store(true, Ordering::Relaxed);
-            let main = MAIN_HWND.load(Ordering::Relaxed) as HWND;
-            if !main.is_null() {
-                DestroyWindow(main);
-            }
-        }
-        _ => {}
-    }
 }

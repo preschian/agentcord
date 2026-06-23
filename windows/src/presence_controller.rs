@@ -44,6 +44,8 @@ pub struct StatusSnapshot {
     pub line1: String,
     /// Secondary line, e.g. "871.7K tokens".
     pub line2: String,
+    /// Active session start (epoch ms), for the popover's elapsed timer.
+    pub session_start_ms: Option<i64>,
 }
 
 /// State shared between the controller and the tray UI. The tray mutates
@@ -71,10 +73,11 @@ impl SharedState {
         self.status.lock().unwrap().connection = value.to_string();
     }
 
-    fn set_session_lines(&self, line1: String, line2: String) {
+    fn set_session(&self, line1: String, line2: String, start_ms: Option<i64>) {
         let mut s = self.status.lock().unwrap();
         s.line1 = line1;
         s.line2 = line2;
+        s.session_start_ms = start_ms;
     }
 }
 
@@ -164,9 +167,14 @@ impl PresenceController {
             } else {
                 self.session.scan().map(|info| build_presence(&settings, &info))
             };
-            self.shared.set_session_lines(
+            let start_ms = presence
+                .as_ref()
+                .and_then(|p| p.timestamps.as_ref())
+                .and_then(|t| t.start);
+            self.shared.set_session(
                 status_line1(&settings, &presence),
                 presence.as_ref().and_then(|p| p.state.clone()).unwrap_or_default(),
+                start_ms,
             );
             let signature = match &presence {
                 Some(p) => serde_json::to_string(p).unwrap_or_default(),

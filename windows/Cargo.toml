@@ -17,22 +17,15 @@ serde_json = "1"
 # parsing, and we get the local UTC offset separately (see claude_session.rs),
 # so this keeps the build toolchain-free.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+eframe = "0.34.3"
+tray-icon = "0.24.1"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
-# Win32 bindings for the hand-rolled system-tray icon + context menu (the
-# menu-bar-extra equivalent). We use the raw API directly rather than pulling
-# tray-icon + muda + winit, matching the macOS app's minimal-dependency stance.
-# windows-sys ships prebuilt import libraries for the *-gnu target, so this
-# links under the GNU toolchain without dlltool. Launch-at-login uses reg.exe,
-# so no registry bindings are needed here.
+# Win32 bindings used only to read the work area (so the popover anchors above
+# the taskbar). The tray icon and window come from tray-icon/eframe.
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.59"
-features = [
-    "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_Shell",
-    "Win32_System_LibraryLoader",
-    "Win32_Graphics_Gdi",
-]
+features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"]
 
 # Possible later: `notify` for instant transcript updates (we re-scan on a timer
 # for now, like the macOS app's fallback timer).

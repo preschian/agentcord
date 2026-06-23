@@ -21,8 +21,8 @@ toggles). Release builds are a windowless GUI app with the app icon embedded.
 | Session detection | `FSEvents` on `~/.claude/projects` | timer re-scan of `%USERPROFILE%\.claude\projects` | ✅ ported (`claude_session.rs`) |
 | Presence controller | `PresenceController.swift` | `presence_controller.rs` | ✅ ported |
 | Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` | ✅ ported (`settings.rs`) |
-| Tray UI + popover | `MenuBarExtra` + popover | hand-rolled Win32 (`Shell_NotifyIcon`, `WS_POPUP`) | ✅ ported (`tray.rs`) |
-| Tray + exe icon | app icon | multi-size `.ico` (tray via `LoadImageW`, exe via `windres` in build.rs) | ✅ done |
+| Tray UI + popover | `MenuBarExtra` + popover | `eframe`/`egui` popover + `tray-icon` | ✅ ported (`tray.rs`) |
+| Tray + exe icon | app icon | multi-size `.ico` (exe via `windres`) + PNG (tray/window via `image`) | ✅ done |
 | Launch at login | `SMAppService` | `HKCU\...\Run` via `reg.exe` | ✅ ported (`autostart.rs`) |
 | Hide console window | — (GUI app) | `#![windows_subsystem = "windows"]` (release) | ✅ done |
 | Usage parsing | `ClaudeUsage.swift` (keychain) | `claude_usage.rs` (creds file + `curl`) | ✅ ported |
@@ -39,12 +39,18 @@ Windows apps), install the Visual Studio Build Tools with the "Desktop
 development with C++" workload to get `link.exe`, then
 `rustup override set stable-x86_64-pc-windows-msvc`.
 
-Embedding the **executable icon** (shown in Explorer/taskbar) needs `windres`,
-which the GNU toolchain doesn't bundle. Install a mingw-w64 that provides it —
-e.g. `winget install BrechtSanders.WinLibs.POSIX.UCRT` — and make sure `windres`
-is on `PATH` (or set the `WINDRES` env var to its full path). `build.rs` finds
-it automatically; if it's absent the build still succeeds, just with the default
-exe icon (the tray icon, loaded at runtime, is unaffected either way).
+**mingw-w64 is required on PATH.** The GUI crates (`eframe`/`tray-icon` →
+`windows-*`) generate import libraries at build time with `dlltool`, which the
+Rust GNU toolchain doesn't bundle. Install a mingw-w64 that provides it (and
+`windres`, used to embed the exe icon):
+
+```sh
+winget install BrechtSanders.WinLibs.POSIX.UCRT
+```
+
+Then make sure its `mingw64\bin` is on `PATH` (winget adds it). `build.rs` finds
+`windres` there automatically (or set the `WINDRES` env var to its full path); if
+`windres` is missing the build still succeeds, just with the default exe icon.
 
 ## Run it
 
@@ -107,22 +113,18 @@ means Discord closed the pipe and triggers a reconnect. See the module header in
 
 ## Notes on the tray UI
 
-`tray.rs` is hand-rolled on the raw Win32 API via `windows-sys` — a hidden
-message window, `Shell_NotifyIcon` for the notification-area icon, and
-`TrackPopupMenu` for the context menu — rather than pulling `tray-icon` +
-`winit`, matching the macOS app's minimal-dependency stance. `windows-sys` ships
-prebuilt import libraries for the `*-pc-windows-gnu` target, so it links under
-the GNU toolchain without `dlltool`. Launch-at-login (`autostart.rs`) shells out
-to `reg.exe`, so it needs no registry bindings.
+`tray.rs` is an `eframe`/`egui` app with a `tray-icon` notification-area icon —
+chosen over a hand-rolled Win32 popover so the popover can match the macOS
+`MenuBarExtra` look (rounded cards, a status pill, colored usage bars). The
+window starts hidden and is shown bottom-right (above the taskbar, positioned
+from the Win32 work area) on a tray left-click, dismissing itself when it loses
+focus. The presence controller and usage poller run on background threads and
+publish into `SharedState`; the egui UI reads that each frame and renders.
 
-The popover is the Windows analog of the macOS `MenuBarExtra` window: a
-borderless `WS_POPUP` window with native child controls (static labels,
-auto-checkboxes, push buttons) that anchors to the bottom-right of the work
-area and dismisses itself on `WM_ACTIVATE`/`WA_INACTIVE` (focus loss), exactly
-like the macOS popover. The controller publishes a `StatusSnapshot` the popover
-reads when shown. The tray icon is built from a multi-size `.ico` (generated
-from the macOS app-icon PNGs) embedded with `include_bytes!` and loaded via
-`LoadImageW` from a temp file — no resource compiler (`windres`) required.
+Two egui quirks worth noting: the light theme is forced every frame with
+`ctx.set_theme(ThemePreference::Light)` (eframe otherwise follows the OS dark
+theme), and the status dot is painted (egui's default font lacks `●`). The tray
+and window icons are decoded from embedded PNGs with the `image` crate.
 
 ## Notes on usage polling
 

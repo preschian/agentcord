@@ -11,12 +11,11 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# ISO-8601 / RFC-3339 timestamp parsing for session detection. The `clock`
-# feature is OFF on purpose: it pulls in OS-timezone crates that need the MSVC
-# import-lib tooling (`dlltool`) to link under the GNU toolchain. We only need
-# parsing, and we get the local UTC offset separately (see claude_session.rs),
-# so this keeps the build toolchain-free.
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Timestamp parsing + local-timezone math (the midnight reset). The `clock`
+# feature pulls OS-timezone crates that need `dlltool` to link under the GNU
+# toolchain — already required here anyway, since eframe/tray-icon pull the same
+# `windows-*` crates.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 eframe = "0.34.3"
 tray-icon = "0.24.1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }

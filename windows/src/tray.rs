@@ -25,10 +25,6 @@ const WIDTH: f32 = 300.0;
 const HEIGHT: f32 = 384.0;
 const HEIGHT_EXPANDED: f32 = 628.0;
 
-/// Discord activity types allowed for RPC (value, label).
-const ACTIVITY_TYPES: [(i32, &str); 4] =
-    [(0, "Playing"), (2, "Listening"), (3, "Watching"), (5, "Competing")];
-
 const SECONDARY: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x72);
 const BLUE: Color32 = Color32::from_rgb(0x58, 0x65, 0xf2);
 const GREEN: Color32 = Color32::from_rgb(0x2e, 0xa0, 0x43);
@@ -295,7 +291,6 @@ impl AgentApp {
     /// back (and saves) only when something changed.
     fn render_settings(&mut self, ui: &mut egui::Ui) {
         let mut s = self.shared.settings.lock().unwrap().clone();
-        let before = s.clone();
 
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -312,7 +307,7 @@ impl AgentApp {
                 egui::ComboBox::from_id_salt("activity_type")
                     .selected_text(activity_name(s.activity_type))
                     .show_ui(ui, |ui| {
-                        for (val, name) in ACTIVITY_TYPES {
+                        for (val, name) in crate::settings::ACTIVITY_TYPES {
                             ui.selectable_value(&mut s.activity_type, val, name);
                         }
                     });
@@ -331,15 +326,18 @@ impl AgentApp {
             });
         });
 
-        if s != before {
-            *self.shared.settings.lock().unwrap() = s.clone();
+        // Persist only when the user actually changed something.
+        let mut guard = self.shared.settings.lock().unwrap();
+        if *guard != s {
+            *guard = s.clone();
+            drop(guard);
             let _ = s.save();
         }
     }
 }
 
 fn activity_name(value: i32) -> &'static str {
-    ACTIVITY_TYPES
+    crate::settings::ACTIVITY_TYPES
         .iter()
         .find(|(v, _)| *v == value)
         .map(|(_, n)| *n)

@@ -15,7 +15,7 @@
 //! The parsing semantics — daily token totals, the "active work" timer that
 //! excludes idle gaps, repo-name resolution via git — match the Swift version.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,9 +36,6 @@ pub struct ClaudeSession {
     /// are still on the same calendar day. See [`Self::aggregate`].
     cache: HashMap<PathBuf, CacheEntry>,
     repo_name_cache: HashMap<String, String>,
-    /// Local UTC offset in minutes, detected once at startup (accounts for the
-    /// current DST state). Used only to find local midnight.
-    tz_offset_min: i64,
 }
 
 impl ClaudeSession {
@@ -49,7 +46,6 @@ impl ClaudeSession {
             active_window: Duration::from_secs(5 * 60),
             cache: HashMap::new(),
             repo_name_cache: HashMap::new(),
-            tz_offset_min: detect_utc_offset_minutes(),
         }
     }
 
@@ -86,23 +82,20 @@ impl ClaudeSession {
         // an elapsed timer reflecting the combined working time of all of today's
         // sessions (idle gaps excluded). "Today" is the local calendar day, so
         // the totals reset at midnight.
-        let day_start_ms = local_day_start_ms(self.tz_offset_min, now_ms);
+        let day_start_ms = local_day_start_ms();
 
         let mut total_tokens_today: i64 = 0;
         let mut total_active_ms: i64 = 0;
-        let mut active_agg = DayAggregate::default();
         for (path, mtime) in &files {
             let agg = self.aggregate(path, *mtime, day_start_ms);
             total_tokens_today += agg.tokens_today;
             total_active_ms += agg.active_ms_today;
-            if *path == newest.0 {
-                active_agg = agg;
-            }
         }
+        // The active session is the newest file; its aggregate is already cached.
+        let active_agg = self.aggregate(&newest.0, newest.1, day_start_ms);
 
         // Drop cache entries for transcripts that no longer exist.
-        let live: HashSet<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
-        self.cache.retain(|k, _| live.contains(k));
+        self.cache.retain(|k, _| files.iter().any(|(p, _)| p == k));
 
         Some(self.make_session_info(&newest, &active_agg, total_tokens_today, total_active_ms, now_ms))
     }
@@ -313,7 +306,7 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<(PathBuf, i64)>) {
     }
 }
 
-fn home_dir() -> PathBuf {
+pub fn home_dir() -> PathBuf {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -328,43 +321,19 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-const MS_PER_DAY: i64 = 86_400_000;
-
-/// Epoch ms at the start of today in the local timezone, given the local UTC
-/// offset in minutes. Shift into local time, truncate to the day, shift back.
-fn local_day_start_ms(offset_min: i64, now_ms: i64) -> i64 {
-    let offset_ms = offset_min * 60_000;
-    let local_now = now_ms + offset_ms;
-    let local_midnight = local_now - local_now.rem_euclid(MS_PER_DAY);
-    local_midnight - offset_ms
-}
-
-/// Ask Windows for the current local UTC offset (DST-aware) in minutes. We do
-/// this with a one-shot PowerShell call rather than linking the OS timezone
-/// APIs, which would drag the MSVC import-lib tooling into a GNU build. Falls
-/// back to UTC (0) if the call fails.
-fn detect_utc_offset_minutes() -> i64 {
-    let output = command("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[int][math]::Round([System.TimeZoneInfo]::Local.GetUtcOffset((Get-Date)).TotalMinutes)",
-        ])
-        .output();
-    if let Ok(o) = output {
-        if o.status.success() {
-            if let Ok(v) = String::from_utf8_lossy(&o.stdout).trim().parse::<i64>() {
-                return v;
-            }
-        }
-    }
-    0
+/// Epoch ms at the start of today in the local timezone.
+fn local_day_start_ms() -> i64 {
+    chrono::Local::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|midnight| midnight.and_local_timezone(chrono::Local).single())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or_else(now_ms)
 }
 
 /// Parse an ISO-8601 / RFC-3339 timestamp (with or without fractional seconds)
 /// to epoch milliseconds.
-fn epoch_ms_from_iso(s: &str) -> Option<i64> {
+pub fn epoch_ms_from_iso(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.timestamp_millis())
@@ -374,9 +343,8 @@ fn epoch_ms_from_iso(s: &str) -> Option<i64> {
 /// path separators with hyphens. As a fallback (no `cwd` field) we take the
 /// trailing segment.
 fn derive_project_name(dir: &str) -> String {
-    dir.split('-')
-        .filter(|s| !s.is_empty())
-        .next_back()
+    dir.rsplit('-')
+        .find(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| dir.to_string())
 }

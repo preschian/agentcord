@@ -97,8 +97,6 @@ impl SetActivityCommand {
     }
 }
 
-// MARK: - Claude Code session
-
 // MARK: - Claude subscription usage
 
 /// One rate-limit window: how much is used and when it resets. Port of
@@ -110,13 +108,6 @@ pub struct UsageWindow {
     pub severity: String,
     /// Reset time as epoch milliseconds, if known.
     pub resets_at_ms: Option<i64>,
-}
-
-impl UsageWindow {
-    /// True once the window is past "normal", so the UI can highlight it.
-    pub fn is_elevated(&self) -> bool {
-        self.severity.to_lowercase() != "normal"
-    }
 }
 
 /// The user's current subscription usage, as shown by Claude Code's `/usage`.

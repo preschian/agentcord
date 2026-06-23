@@ -28,7 +28,7 @@ use std::time::Duration;
 use crate::claude_session::ClaudeSession;
 use crate::discord_ipc::{handshake_payload, open_pipe, opcode, read_frame, write_activity, write_frame};
 use crate::models::{Assets, PresenceButton, RichPresence, SessionInfo, Timestamps, UsageInfo};
-use crate::settings::{Settings, ALLOWED_ACTIVITY_TYPES};
+use crate::settings::{is_allowed_activity, Settings};
 
 /// Discord throttles rapid activity updates, so we never push more often than
 /// this. The loop period also serves as the debounce interval.
@@ -273,7 +273,7 @@ fn build_presence(s: &Settings, info: &SessionInfo) -> RichPresence {
         small_text: Some("Active session".to_string()),
     };
 
-    let activity_type = if ALLOWED_ACTIVITY_TYPES.contains(&s.activity_type) {
+    let activity_type = if is_allowed_activity(s.activity_type) {
         s.activity_type
     } else {
         0

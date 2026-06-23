@@ -72,16 +72,13 @@ pub fn fetch_throttled(min_secs: u64) -> Option<UsageInfo> {
 /// Reads Claude Code's OAuth access token from
 /// `%USERPROFILE%\.claude\.credentials.json`.
 fn read_access_token() -> Option<String> {
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-    let path = std::path::Path::new(&home).join(".claude").join(".credentials.json");
+    let path = crate::claude_session::home_dir()
+        .join(".claude")
+        .join(".credentials.json");
     let contents = std::fs::read_to_string(path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&contents).ok()?;
     let token = json.get("claudeAiOauth")?.get("accessToken")?.as_str()?;
-    if token.is_empty() {
-        None
-    } else {
-        Some(token.to_string())
-    }
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 /// The poll interval the macOS app uses (the numbers move slowly and the
@@ -121,11 +118,11 @@ impl UsageResponse {
         // to the flat top-level windows for the raw percentage and reset time.
         let session = limits
             .iter()
-            .find(|l| as_deref(&l.kind) == Some("session") || as_deref(&l.group) == Some("session"));
+            .find(|l| l.kind.as_deref() == Some("session") || l.group.as_deref() == Some("session"));
         let weekly = limits
             .iter()
-            .find(|l| as_deref(&l.kind) == Some("weekly_all"))
-            .or_else(|| limits.iter().find(|l| as_deref(&l.group) == Some("weekly")));
+            .find(|l| l.kind.as_deref() == Some("weekly_all"))
+            .or_else(|| limits.iter().find(|l| l.group.as_deref() == Some("weekly")));
 
         UsageInfo {
             five_hour: UsageWindow {
@@ -150,21 +147,12 @@ impl UsageResponse {
     }
 }
 
-fn as_deref(s: &Option<String>) -> Option<&str> {
-    s.as_deref()
-}
-
 fn percent(primary: Option<f64>, fallback: Option<f64>) -> u32 {
     primary.or(fallback).unwrap_or(0.0).round().max(0.0) as u32
 }
 
 /// Parse timestamps like "2026-06-26T04:59:59.083560+00:00" to epoch ms.
 fn parse_date(s: Option<&str>) -> Option<i64> {
-    let s = s?;
-    if s.is_empty() {
-        return None;
-    }
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
+    let s = s.filter(|x| !x.is_empty())?;
+    crate::claude_session::epoch_ms_from_iso(s)
 }

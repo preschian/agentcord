@@ -47,9 +47,15 @@ impl Default for Settings {
     }
 }
 
-/// Activity types Discord permits for RPC updates. Streaming (1) and Custom (4)
-/// are intentionally excluded.
-pub const ALLOWED_ACTIVITY_TYPES: [i32; 4] = [0, 2, 3, 5];
+/// Activity types Discord permits for RPC updates (value, UI label). Streaming
+/// (1) and Custom (4) are intentionally excluded.
+pub const ACTIVITY_TYPES: [(i32, &str); 4] =
+    [(0, "Playing"), (2, "Listening"), (3, "Watching"), (5, "Competing")];
+
+/// Whether `value` is one of the allowed Discord activity types.
+pub fn is_allowed_activity(value: i32) -> bool {
+    ACTIVITY_TYPES.iter().any(|(v, _)| *v == value)
+}
 
 impl Settings {
     pub fn config_path() -> PathBuf {

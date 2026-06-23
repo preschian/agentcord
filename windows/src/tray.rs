@@ -18,7 +18,7 @@ use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
 
 use crate::claude_session::now_ms;
-use crate::presence_controller::{PresenceController, SharedState};
+use crate::presence_controller::{PresenceController, SessionDisplay, SharedState};
 use crate::settings::Settings;
 
 const WIDTH: f32 = 300.0;
@@ -103,16 +103,15 @@ impl AgentApp {
             _tray: tray,
             visible: false,
             seen_focus: false,
-            autostart_on: false,
+            autostart_on: crate::autostart::is_enabled(),
             show_settings: false,
             applied_height: -1.0,
         }
     }
 
     fn show(&mut self, ctx: &egui::Context) {
-        self.autostart_on = crate::autostart::is_enabled();
-        self.show_settings = false;
-        self.applied_height = -1.0; // force apply_geometry to size + position
+        // Geometry only — settings panel state is preserved across open/close.
+        self.applied_height = -1.0;
         self.seen_focus = false;
         self.visible = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -157,9 +156,6 @@ impl eframe::App for AgentApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // Force light every frame — eframe otherwise follows the (dark) OS theme.
-        ctx.set_theme(egui::ThemePreference::Light);
-        ctx.set_visuals(egui::Visuals::light());
 
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
             if let TrayIconEvent::Click {
@@ -196,10 +192,11 @@ impl AgentApp {
     }
 
     fn render_inner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let (conn, line1, line2, start_ms) = {
+        let (conn, session) = {
             let s = self.shared.status.lock().unwrap();
-            (s.connection.clone(), s.line1.clone(), s.line2.clone(), s.session_start_ms)
+            (s.connection.clone(), s.session.clone())
         };
+        let (headline, tokens_line, start_ms) = format_session_card(&session);
         let usage = self.shared.usage.lock().unwrap().clone();
         let mut presence_on = self.shared.settings.lock().unwrap().presence_enabled;
 
@@ -227,9 +224,8 @@ impl AgentApp {
                 });
             });
             ui.add_space(2.0);
-            let project = if line1.is_empty() { "No active session".to_string() } else { line1 };
-            ui.label(RichText::new(project).size(13.5).strong());
-            if !line2.is_empty() {
+            ui.label(RichText::new(headline).size(13.5).strong());
+            if let Some(line2) = tokens_line {
                 ui.label(RichText::new(line2).size(12.0).color(SECONDARY));
             }
         });
@@ -260,8 +256,11 @@ impl AgentApp {
             let _ = s.save();
         }
         if ui.checkbox(&mut self.autostart_on, "Launch at login").changed() {
-            crate::autostart::set_enabled(self.autostart_on);
-            self.autostart_on = crate::autostart::is_enabled();
+            if crate::autostart::set_enabled(self.autostart_on) {
+                // Trust the toggle; no need to shell out to `reg query` again.
+            } else {
+                self.autostart_on = !self.autostart_on;
+            }
         }
 
         ui.add_space(2.0);
@@ -287,51 +286,65 @@ impl AgentApp {
     }
 
     /// The expandable settings panel — the GUI equivalent of editing the JSON.
-    /// Reads a copy of the settings, renders controls against it, and writes
-    /// back (and saves) only when something changed.
+    /// Holds one lock for the whole panel and saves only when a control changes.
     fn render_settings(&mut self, ui: &mut egui::Ui) {
-        let mut s = self.shared.settings.lock().unwrap().clone();
+        let mut guard = self.shared.settings.lock().unwrap();
+        let mut changed = false;
 
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new("DISPLAY").size(10.5).color(SECONDARY).strong());
             ui.add_space(2.0);
-            ui.checkbox(&mut s.show_project, "Show project");
-            ui.checkbox(&mut s.show_model, "Show model");
-            ui.checkbox(&mut s.show_tokens, "Show tokens");
-            ui.checkbox(&mut s.do_not_disturb, "Do Not Disturb");
+            changed |= ui.checkbox(&mut guard.show_project, "Show project").changed();
+            changed |= ui.checkbox(&mut guard.show_model, "Show model").changed();
+            changed |= ui.checkbox(&mut guard.show_tokens, "Show tokens").changed();
+            changed |= ui.checkbox(&mut guard.do_not_disturb, "Do Not Disturb").changed();
 
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label("Activity");
                 egui::ComboBox::from_id_salt("activity_type")
-                    .selected_text(activity_name(s.activity_type))
+                    .selected_text(activity_name(guard.activity_type))
                     .show_ui(ui, |ui| {
                         for (val, name) in crate::settings::ACTIVITY_TYPES {
-                            ui.selectable_value(&mut s.activity_type, val, name);
+                            changed |= ui.selectable_value(&mut guard.activity_type, val, name).changed();
                         }
                     });
             });
 
             ui.add_space(4.0);
-            let mut mins = (s.idle_window_seconds / 60.0).round();
+            let mut mins = (guard.idle_window_seconds / 60.0).round();
             ui.horizontal(|ui| {
                 ui.label("Idle window");
                 if ui
                     .add(egui::Slider::new(&mut mins, 5.0..=30.0).step_by(5.0).suffix(" min"))
                     .changed()
                 {
-                    s.idle_window_seconds = mins * 60.0;
+                    guard.idle_window_seconds = mins * 60.0;
+                    changed = true;
                 }
             });
         });
 
-        // Persist only when the user actually changed something.
-        let mut guard = self.shared.settings.lock().unwrap();
-        if *guard != s {
-            *guard = s.clone();
-            drop(guard);
-            let _ = s.save();
+        if changed {
+            let _ = guard.save();
+        }
+    }
+}
+
+fn format_session_card(display: &SessionDisplay) -> (String, Option<String>, Option<i64>) {
+    match display {
+        SessionDisplay::Idle => ("No active session".to_string(), None, None),
+        SessionDisplay::Disabled => ("Presence disabled".to_string(), None, None),
+        SessionDisplay::DoNotDisturb => ("Do Not Disturb".to_string(), None, None),
+        SessionDisplay::Active { model, project, tokens_line, start_ms } => {
+            let headline = match (model.is_empty(), project.is_empty()) {
+                (false, false) => format!("{model} · {project}"),
+                (false, true) => model.clone(),
+                (true, false) => project.clone(),
+                (true, true) => "Active session".to_string(),
+            };
+            (headline, tokens_line.clone(), Some(*start_ms))
         }
     }
 }

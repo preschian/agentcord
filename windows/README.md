@@ -77,8 +77,7 @@ Launch-at-login adds this exe (no args, so it starts in tray mode) to
 `main` also exposes headless modes for isolating issues.
 
 **Headless** — same as the tray app but without the icon. Reads settings from
-`%APPDATA%\AgentCord\settings.json`, falling back to defaults (including the
-shipped Application ID):
+`%APPDATA%\AgentCord\settings.json`, falling back to defaults:
 
 ```sh
 cd windows
@@ -121,8 +120,8 @@ from the Win32 work area) on a tray left-click, dismissing itself when it loses
 focus. The presence controller and usage poller run on background threads and
 publish into `SharedState`; the egui UI reads that each frame and renders.
 
-Two egui quirks worth noting: the light theme is forced every frame with
-`ctx.set_theme(ThemePreference::Light)` (eframe otherwise follows the OS dark
+Two egui quirks worth noting: the light theme is forced once at startup via
+`theme_preference` and `set_visuals` (eframe otherwise follows the OS dark
 theme), and the status dot is painted (egui's default font lacks `●`). The tray
 and window icons are decoded from embedded PNGs with the `image` crate.
 
@@ -137,7 +136,7 @@ uses. A background thread polls every 5 minutes (opening the popover triggers a
 throttled refresh); a failed poll keeps the last good value. Reset times are
 shown relatively ("resets in 1h 20m"), which needs no timezone math. All of this
 is best-effort — any failure just shows a dash. Subprocess spawns (`curl`,
-`git`, `reg`, `powershell`) use `CREATE_NO_WINDOW` (`util.rs`) so they don't
+`git`, `reg`) use `CREATE_NO_WINDOW` (`util.rs`) so they don't
 flash a console in the windowless release build.
 
 ## Notes on session detection
@@ -147,9 +146,8 @@ the same fallback scan; a live `notify` watcher for instant updates can be added
 later). It parses each `.jsonl` defensively, sums today's tokens, and computes
 the "active work" elapsed timer by summing inter-message gaps while excluding
 idle breaks — matching the Swift semantics. Repo names come from `git` (remote,
-then toplevel, then the directory). `chrono` is used for timestamp parsing only;
-the local UTC offset for the midnight reset is read once via PowerShell so the
-build needs no MSVC/mingw toolchain (see the `chrono` note in `Cargo.toml`).
+then toplevel, then the directory). `chrono::Local` supplies the local timezone
+for the midnight reset and ISO-8601 timestamp parsing (see `Cargo.toml`).
 
 ## Notes on the named-pipe port
 

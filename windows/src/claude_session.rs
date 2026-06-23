@@ -15,8 +15,10 @@
 //! The parsing semantics — daily token totals, the "active work" timer that
 //! excludes idle gaps, repo-name resolution via git — match the Swift version.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -36,6 +38,18 @@ pub struct ClaudeSession {
     /// are still on the same calendar day. See [`Self::aggregate`].
     cache: HashMap<PathBuf, CacheEntry>,
     repo_name_cache: HashMap<String, String>,
+    /// When the transcript tree is unchanged, reuse the last result and only
+    /// refresh the elapsed timer (avoids re-walking aggregates every tick).
+    last_scan: Option<ScanSnapshot>,
+}
+
+struct ScanSnapshot {
+    files_sig: u64,
+    day_start_ms: i64,
+    total_active_ms: i64,
+    newest: (PathBuf, i64),
+    active_last_today_ms: Option<i64>,
+    session: SessionInfo,
 }
 
 impl ClaudeSession {
@@ -46,7 +60,12 @@ impl ClaudeSession {
             active_window: Duration::from_secs(5 * 60),
             cache: HashMap::new(),
             repo_name_cache: HashMap::new(),
+            last_scan: None,
         }
+    }
+
+    pub fn set_active_window(&mut self, window: Duration) {
+        self.active_window = window;
     }
 
     pub fn with_active_window(mut self, window: Duration) -> Self {
@@ -64,6 +83,7 @@ impl ClaudeSession {
         let mut files: Vec<(PathBuf, i64)> = Vec::new();
         collect_jsonl(&self.projects_dir, &mut files);
         if files.is_empty() {
+            self.last_scan = None;
             return None;
         }
 
@@ -75,14 +95,26 @@ impl ClaudeSession {
 
         let now_ms = now_ms();
         if now_ms - newest.1 > self.active_window.as_millis() as i64 {
+            self.last_scan = None;
             return None;
+        }
+
+        let day_start_ms = local_day_start_ms();
+        let files_sig = files_signature(&files);
+
+        if let Some(prev) = &self.last_scan {
+            if prev.files_sig == files_sig
+                && prev.day_start_ms == day_start_ms
+                && prev.newest == newest
+            {
+                return Some(self.refresh_elapsed(prev, now_ms));
+            }
         }
 
         // Daily totals: tokens summed across every transcript touched today, and
         // an elapsed timer reflecting the combined working time of all of today's
         // sessions (idle gaps excluded). "Today" is the local calendar day, so
         // the totals reset at midnight.
-        let day_start_ms = local_day_start_ms();
 
         let mut total_tokens_today: i64 = 0;
         let mut total_active_ms: i64 = 0;
@@ -97,7 +129,33 @@ impl ClaudeSession {
         // Drop cache entries for transcripts that no longer exist.
         self.cache.retain(|k, _| files.iter().any(|(p, _)| p == k));
 
-        Some(self.make_session_info(&newest, &active_agg, total_tokens_today, total_active_ms, now_ms))
+        let session =
+            self.make_session_info(&newest, &active_agg, total_tokens_today, total_active_ms, now_ms);
+        self.last_scan = Some(ScanSnapshot {
+            files_sig,
+            day_start_ms,
+            total_active_ms,
+            newest: newest.clone(),
+            active_last_today_ms: active_agg.last_today_ms,
+            session: session.clone(),
+        });
+        Some(session)
+    }
+
+    /// Recompute only the elapsed timer when the transcript tree is unchanged.
+    fn refresh_elapsed(&self, prev: &ScanSnapshot, now_ms: i64) -> SessionInfo {
+        let mut elapsed_ms = prev.total_active_ms;
+        if let Some(last) = prev.active_last_today_ms {
+            let tail = now_ms - last;
+            if tail > 0 && tail <= ACTIVE_GAP_TOLERANCE_MS {
+                elapsed_ms += tail;
+            }
+        }
+        SessionInfo {
+            start_epoch_ms: now_ms - elapsed_ms,
+            last_modified_ms: prev.newest.1,
+            ..prev.session.clone()
+        }
     }
 
     /// Parse one transcript into its today-only figures, memoizing the result.
@@ -274,6 +332,15 @@ struct CacheEntry {
 }
 
 // MARK: - Free helpers
+
+fn files_signature(files: &[(PathBuf, i64)]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for (path, mtime) in files {
+        path.hash(&mut hasher);
+        mtime.hash(&mut hasher);
+    }
+    hasher.finish()
+}
 
 /// Recursively collect every `.jsonl` file under `dir` with its mtime (epoch
 /// ms). Hidden entries are skipped, matching the macOS enumerator options.

@@ -11,12 +11,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Discord Application ID baked into the app. Not a secret; not user-configurable.
+pub const DISCORD_CLIENT_ID: &str = "1517099756063686677";
+
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    /// The Discord Application ID this app reports as. Not a secret; safe to
-    /// ship. Same default as the macOS app.
-    pub client_id: String,
     pub presence_enabled: bool,
     pub show_model: bool,
     pub show_tokens: bool,
@@ -33,7 +33,6 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            client_id: "1517099756063686677".to_string(),
             presence_enabled: true,
             show_model: true,
             show_tokens: true,
@@ -68,8 +67,15 @@ impl Settings {
     /// Load from disk, falling back to defaults on any error (missing file,
     /// malformed JSON). Writes nothing.
     pub fn load() -> Self {
-        match fs::read_to_string(Self::config_path()) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        let path = Self::config_path();
+        match fs::read_to_string(&path) {
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    eprintln!("[settings] ignoring malformed {}: {e}", path.display());
+                    Self::default()
+                }
+            },
             Err(_) => Self::default(),
         }
     }

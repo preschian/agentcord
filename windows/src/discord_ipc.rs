@@ -84,6 +84,49 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(u32, Vec<u8>)>> {
     Ok(Some((opcode, payload)))
 }
 
+/// Result of handling one inbound IPC frame.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FrameAction {
+    /// Keep reading; no terminal state change.
+    Continue,
+    /// Discord sent READY — handshake complete.
+    Ready,
+    /// Discord sent ERROR with a message.
+    Error(String),
+    /// Peer closed the connection.
+    Closed,
+}
+
+/// Handle one inbound frame: answer PINGs, detect READY/ERROR/CLOSE.
+pub fn handle_inbound_frame<W: Write>(op: u32, payload: &[u8], pipe: &mut W) -> FrameAction {
+    match op {
+        opcode::FRAME => {
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) else {
+                return FrameAction::Continue;
+            };
+            match v.get("evt").and_then(|e| e.as_str()) {
+                Some("READY") => FrameAction::Ready,
+                Some("ERROR") => {
+                    let msg = v
+                        .get("data")
+                        .and_then(|d| d.get("message"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("Discord reported an error")
+                        .to_string();
+                    FrameAction::Error(msg)
+                }
+                _ => FrameAction::Continue,
+            }
+        }
+        opcode::PING => {
+            let _ = write_frame(pipe, opcode::PONG, payload);
+            FrameAction::Continue
+        }
+        opcode::CLOSE => FrameAction::Closed,
+        _ => FrameAction::Continue,
+    }
+}
+
 /// Build and write a `SET_ACTIVITY` frame (or, with `None`, a clear). The nonce
 /// counter is shared so every command gets a unique nonce.
 pub fn write_activity(
@@ -148,32 +191,21 @@ impl DiscordIpc {
 
     /// Read and handle one inbound frame. `Ok(false)` => connection closed.
     pub fn pump(&mut self) -> io::Result<bool> {
-        let frame = match self.pipe.as_mut() {
-            Some(p) => read_frame(p)?,
+        let pipe = match self.pipe.as_mut() {
+            Some(p) => p,
             None => return Ok(false),
         };
-        let (op, payload) = match frame {
+        let (op, payload) = match read_frame(pipe)? {
             Some(f) => f,
             None => return Ok(false),
         };
-        match op {
-            opcode::FRAME => {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                    if v.get("evt").and_then(|e| e.as_str()) == Some("READY") {
-                        self.ready = true;
-                    }
-                }
-            }
-            opcode::PING => {
-                if let Some(p) = self.pipe.as_mut() {
-                    let _ = write_frame(p, opcode::PONG, &payload);
-                }
-            }
-            opcode::CLOSE => {
+        match handle_inbound_frame(op, &payload, pipe) {
+            FrameAction::Ready => self.ready = true,
+            FrameAction::Closed => {
                 self.ready = false;
                 return Ok(false);
             }
-            _ => {}
+            FrameAction::Error(_) | FrameAction::Continue => {}
         }
         Ok(true)
     }

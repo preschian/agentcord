@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     /// The Discord Application ID this app reports as. Not a secret; safe to

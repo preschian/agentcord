@@ -23,6 +23,11 @@ use crate::settings::Settings;
 
 const WIDTH: f32 = 300.0;
 const HEIGHT: f32 = 384.0;
+const HEIGHT_EXPANDED: f32 = 628.0;
+
+/// Discord activity types allowed for RPC (value, label).
+const ACTIVITY_TYPES: [(i32, &str); 4] =
+    [(0, "Playing"), (2, "Listening"), (3, "Watching"), (5, "Competing")];
 
 const SECONDARY: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x72);
 const BLUE: Color32 = Color32::from_rgb(0x58, 0x65, 0xf2);
@@ -80,6 +85,10 @@ struct AgentApp {
     seen_focus: bool,
     /// Cached so we don't shell out to `reg.exe` every frame.
     autostart_on: bool,
+    /// Whether the inline settings panel is expanded (grows the window).
+    show_settings: bool,
+    /// Last window height we applied, so we only resize on change.
+    applied_height: f32,
 }
 
 impl AgentApp {
@@ -99,18 +108,17 @@ impl AgentApp {
             visible: false,
             seen_focus: false,
             autostart_on: false,
+            show_settings: false,
+            applied_height: -1.0,
         }
     }
 
     fn show(&mut self, ctx: &egui::Context) {
-        let wa = work_area();
-        let ppp = ctx.pixels_per_point();
-        let x = wa.right as f32 / ppp - WIDTH - 12.0;
-        let y = wa.bottom as f32 / ppp - HEIGHT - 12.0;
         self.autostart_on = crate::autostart::is_enabled();
+        self.show_settings = false;
+        self.applied_height = -1.0; // force apply_geometry to size + position
         self.seen_focus = false;
         self.visible = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 
@@ -126,6 +134,22 @@ impl AgentApp {
     fn hide(&mut self, ctx: &egui::Context) {
         self.visible = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+
+    /// Resize + reposition the window (bottom-right of the work area) to match
+    /// the current expanded/collapsed state. No-op when already correct.
+    fn apply_geometry(&mut self, ctx: &egui::Context) {
+        let h = if self.show_settings { HEIGHT_EXPANDED } else { HEIGHT };
+        if (h - self.applied_height).abs() < 0.5 {
+            return;
+        }
+        self.applied_height = h;
+        let wa = work_area();
+        let ppp = ctx.pixels_per_point();
+        let x = wa.right as f32 / ppp - WIDTH - 12.0;
+        let y = wa.bottom as f32 / ppp - h - 12.0;
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(WIDTH, h)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
     }
 }
 
@@ -158,6 +182,7 @@ impl eframe::App for AgentApp {
                 Some(false) if self.seen_focus => self.hide(&ctx),
                 _ => {}
             }
+            self.apply_geometry(&ctx);
             self.render(ui, &ctx);
         }
 
@@ -245,24 +270,80 @@ impl AgentApp {
 
         ui.add_space(2.0);
 
-        // Buttons.
-        ui.horizontal(|ui| {
-            if ui.button("Open settings").clicked() {
-                {
-                    let s = self.shared.settings.lock().unwrap();
-                    let _ = s.save();
-                }
-                let _ = crate::util::command("notepad").arg(Settings::config_path()).spawn();
-                self.hide(ctx);
+        // Inline settings panel (expands the window).
+        let toggle = if self.show_settings { "Hide settings" } else { "Settings" };
+        if ui.button(toggle).clicked() {
+            self.show_settings = !self.show_settings;
+        }
+        if self.show_settings {
+            self.render_settings(ui);
+        }
+
+        ui.add_space(4.0);
+
+        // Quit (right-aligned).
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Quit").clicked() {
+                self.shared.quit.store(true, std::sync::atomic::Ordering::Relaxed);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Quit").clicked() {
-                    self.shared.quit.store(true, std::sync::atomic::Ordering::Relaxed);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        });
+    }
+
+    /// The expandable settings panel — the GUI equivalent of editing the JSON.
+    /// Reads a copy of the settings, renders controls against it, and writes
+    /// back (and saves) only when something changed.
+    fn render_settings(&mut self, ui: &mut egui::Ui) {
+        let mut s = self.shared.settings.lock().unwrap().clone();
+        let before = s.clone();
+
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("DISPLAY").size(10.5).color(SECONDARY).strong());
+            ui.add_space(2.0);
+            ui.checkbox(&mut s.show_project, "Show project");
+            ui.checkbox(&mut s.show_model, "Show model");
+            ui.checkbox(&mut s.show_tokens, "Show tokens");
+            ui.checkbox(&mut s.do_not_disturb, "Do Not Disturb");
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Activity");
+                egui::ComboBox::from_id_salt("activity_type")
+                    .selected_text(activity_name(s.activity_type))
+                    .show_ui(ui, |ui| {
+                        for (val, name) in ACTIVITY_TYPES {
+                            ui.selectable_value(&mut s.activity_type, val, name);
+                        }
+                    });
+            });
+
+            ui.add_space(4.0);
+            let mut mins = (s.idle_window_seconds / 60.0).round();
+            ui.horizontal(|ui| {
+                ui.label("Idle window");
+                if ui
+                    .add(egui::Slider::new(&mut mins, 5.0..=30.0).step_by(5.0).suffix(" min"))
+                    .changed()
+                {
+                    s.idle_window_seconds = mins * 60.0;
                 }
             });
         });
+
+        if s != before {
+            *self.shared.settings.lock().unwrap() = s.clone();
+            let _ = s.save();
+        }
     }
+}
+
+fn activity_name(value: i32) -> &'static str {
+    ACTIVITY_TYPES
+        .iter()
+        .find(|(v, _)| *v == value)
+        .map(|(_, n)| *n)
+        .unwrap_or("Playing")
 }
 
 fn status_pill(presence_on: bool, conn: &str) -> (&'static str, Color32) {

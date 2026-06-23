@@ -216,8 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             string: "5h \(window.percent)%",
             attributes: [.font: font, .foregroundColor: color]
         ))
-        // Tie the 5-hour reset countdown to its figure, e.g. "5h 46% (1h 23m)".
-        if let reset = MenuContentView.timeUntilReset(window) {
+        // Tie the 5-hour reset time to its figure, e.g. "5h 46% (12.29 pm)".
+        if let reset = MenuContentView.formatResetTime(window, style: .time) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
@@ -470,8 +470,8 @@ struct MenuContentView: View {
                 .tracking(0.5)
                 .foregroundStyle(Palette.secondary.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            usageRow("5-hour session", usage.current?.fiveHour)
-            usageRow("Weekly limit", usage.current?.weekly)
+            usageRow("5-hour session", usage.current?.fiveHour, resetStyle: .time)
+            usageRow("Weekly limit", usage.current?.weekly, resetStyle: .date)
 
             if let error = controller.lastError {
                 Text(error)
@@ -485,12 +485,12 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
-    private func usageRow(_ label: String, _ window: UsageInfo.Window?) -> some View {
+    private func usageRow(_ label: String, _ window: UsageInfo.Window?, resetStyle: ResetDisplayStyle) -> some View {
         VStack(spacing: 5) {
             HStack {
                 Text(label).font(.system(size: 12.5))
                 Spacer()
-                Text(usageDetail(window))
+                Text(usageDetail(window, resetStyle: resetStyle))
                     .font(.system(size: 12.5, weight: .semibold))
                     .monospacedDigit()
             }
@@ -506,12 +506,17 @@ struct MenuContentView: View {
         }
     }
 
-    private func usageDetail(_ window: UsageInfo.Window?) -> String {
+    private func usageDetail(_ window: UsageInfo.Window?, resetStyle: ResetDisplayStyle) -> String {
         guard let window else { return "—" }
-        if let reset = Self.timeUntilReset(window) {
+        if let reset = Self.formatResetTime(window, style: resetStyle) {
             return "\(window.percent)% · resets \(reset)"
         }
         return "\(window.percent)%"
+    }
+
+    enum ResetDisplayStyle {
+        case time   // e.g. "12.29 pm"
+        case date   // e.g. "Jun 29"
     }
 
     private func barFraction(_ window: UsageInfo.Window?) -> CGFloat {
@@ -529,19 +534,33 @@ struct MenuContentView: View {
         }
     }
 
-    /// Formats the time remaining until a window resets, e.g. "1h 23m", "45m",
-    /// "6d 4h". Returns nil when there's no reset time, "now" once it's due.
-    static func timeUntilReset(_ window: UsageInfo.Window) -> String? {
+    /// Formats when a window resets as a clock time or calendar date, e.g.
+    /// "12.29 pm" or "Jun 29". Returns nil when there's no reset time, "now"
+    /// once it's due.
+    static func formatResetTime(_ window: UsageInfo.Window, style: ResetDisplayStyle) -> String? {
         guard let reset = window.resetsAt else { return nil }
-        let seconds = Int(reset.timeIntervalSinceNow)
-        guard seconds > 0 else { return "now" }
-        let days = seconds / 86400
-        let hours = (seconds % 86400) / 3600
-        let minutes = (seconds % 3600) / 60
-        if days > 0 { return hours > 0 ? "\(days)d \(hours)h" : "\(days)d" }
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        return "\(minutes)m"
+        guard reset.timeIntervalSinceNow > 0 else { return "now" }
+        switch style {
+        case .time: return formatResetClock(reset)
+        case .date: return resetDateFormatter.string(from: reset)
+        }
     }
+
+    private static func formatResetClock(_ date: Date) -> String {
+        resetClockFormatter.string(from: date).lowercased()
+    }
+
+    private static let resetClockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h.mm a"
+        return f
+    }()
+
+    private static let resetDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("MMMd")
+        return f
+    }()
 
     // MARK: Primary toggles
 

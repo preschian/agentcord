@@ -13,8 +13,7 @@
 //! This module is the low-level toolkit: pipe discovery and frame read/write.
 //! The connection lifecycle (handshake, reconnect-with-backoff, ping/pong) is
 //! orchestrated by `presence_controller`, the way `PresenceController.swift`
-//! drives `DiscordIPC` on macOS. The small [`DiscordIpc`] struct at the bottom
-//! is a single-connection convenience used only by the `ipc` smoke test.
+//! drives `DiscordIPC` on macOS.
 //!
 //! Frame format on the wire:
 //!   [ opcode: u32 LE ][ payloadLength: u32 LE ][ JSON bytes ]
@@ -165,79 +164,6 @@ pub fn write_activity(
     let cmd = SetActivityCommand::new(nonce_str, pid, activity);
     let payload = serde_json::to_vec(&cmd).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     write_frame(w, opcode::FRAME, &payload)
-}
-
-// MARK: - Single-connection convenience (used by the `ipc` smoke test)
-
-/// A minimal blocking client over one pipe. Wraps the free helpers above.
-pub struct DiscordIpc {
-    client_id: String,
-    pid: u32,
-    pipe: Option<File>,
-    ready: bool,
-    nonce: AtomicU64,
-}
-
-impl DiscordIpc {
-    pub fn new(client_id: impl Into<String>) -> Self {
-        Self {
-            client_id: client_id.into(),
-            pid: std::process::id(),
-            pipe: None,
-            ready: false,
-            nonce: AtomicU64::new(0),
-        }
-    }
-
-    pub fn is_ready(&self) -> bool {
-        self.ready
-    }
-
-    pub fn connect(&mut self) -> io::Result<()> {
-        self.pipe = None;
-        self.ready = false;
-        let pipe = connect_handshake(&self.client_id)?;
-        self.ready = true;
-        self.pipe = Some(pipe);
-        Ok(())
-    }
-
-    pub fn set_activity(&mut self, activity: Option<RichPresence>) -> io::Result<()> {
-        if !self.ready {
-            return Ok(());
-        }
-        let pipe = self
-            .pipe
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "not connected"))?;
-        write_activity(pipe, self.pid, &self.nonce, activity)
-    }
-
-    /// Read and handle one inbound frame. `Ok(false)` => connection closed.
-    pub fn pump(&mut self) -> io::Result<bool> {
-        let pipe = match self.pipe.as_mut() {
-            Some(p) => p,
-            None => return Ok(false),
-        };
-        let (op, payload) = match read_frame(pipe)? {
-            Some(f) => f,
-            None => return Ok(false),
-        };
-        match handle_inbound_frame(op, &payload, pipe) {
-            FrameAction::Ready => self.ready = true,
-            FrameAction::Closed => {
-                self.ready = false;
-                return Ok(false);
-            }
-            FrameAction::Error(msg) => {
-                eprintln!("[discord] error: {msg}");
-                self.ready = false;
-                return Ok(false);
-            }
-            FrameAction::Continue => {}
-        }
-        Ok(true)
-    }
 }
 
 #[cfg(test)]

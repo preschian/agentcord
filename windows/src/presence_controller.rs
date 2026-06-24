@@ -129,12 +129,37 @@ pub struct SharedState {
 
 impl SharedState {
     pub fn new(settings: Settings) -> Self {
+        let presence_enabled = settings.presence_enabled;
         Self {
             settings: Mutex::new(settings),
-            ui: Mutex::new(UiSnapshot::default()),
+            ui: Mutex::new(UiSnapshot {
+                presence_enabled,
+                ..UiSnapshot::default()
+            }),
             quit: AtomicBool::new(false),
             usage_refresh: AtomicBool::new(false),
         }
+    }
+
+    /// Single write path for the presence toggle (settings file + tray snapshot).
+    pub fn set_presence_enabled(&self, on: bool) {
+        {
+            let mut settings = self.settings.lock().unwrap();
+            settings.presence_enabled = on;
+            let _ = settings.save();
+        }
+        self.ui.lock().unwrap().presence_enabled = on;
+    }
+
+    pub fn toggle_presence_enabled(&self) {
+        let on = {
+            let mut settings = self.settings.lock().unwrap();
+            settings.presence_enabled = !settings.presence_enabled;
+            let on = settings.presence_enabled;
+            let _ = settings.save();
+            on
+        };
+        self.ui.lock().unwrap().presence_enabled = on;
     }
 
     pub fn publish_ui(&self, connection: ConnectionStatus, session: SessionDisplay) {
@@ -319,6 +344,8 @@ impl PresenceController {
     /// Run the controller. Blocks the calling thread until `quit` is set.
     pub fn run(mut self) {
         while !self.shared.quit.load(Ordering::Relaxed) {
+            // `Off` — presence disabled before we connect. `Disabled` — user toggled
+            // presence off mid-connection inside `connect_and_serve`.
             if !self.shared.settings.lock().unwrap().presence_enabled {
                 self.idle_tick(ConnectionStatus::Off);
                 sleep(UPDATE_INTERVAL);
@@ -334,10 +361,7 @@ impl PresenceController {
                 }
                 ConnectionEnd::Dropped => {
                     self.attempt = 0;
-                    self.shared.publish_ui(
-                        ConnectionStatus::Disconnected,
-                        self.shared.ui.lock().unwrap().session.clone(),
-                    );
+                    self.idle_tick(ConnectionStatus::Disconnected);
                     self.backoff();
                 }
             }

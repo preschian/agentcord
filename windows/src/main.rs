@@ -20,12 +20,13 @@ mod tray;
 mod usage_poller;
 mod util;
 
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
 use claude_session::{now_ms, ClaudeSession};
-use discord_ipc::DiscordIpc;
+use discord_ipc::{connect_handshake, handle_inbound_frame, read_frame, write_activity, FrameAction};
 use models::{Assets, RichPresence, SessionInfo, Timestamps};
 use presence_controller::{PresenceController, SharedState};
 use settings::Settings;
@@ -94,47 +95,43 @@ fn print_session(session: &Option<SessionInfo>) {
 /// Connect to Discord over the named pipe, wait for READY, and set a sample
 /// presence. Ctrl-C to stop.
 fn run_ipc(client_id: &str) {
-    let mut ipc = DiscordIpc::new(client_id);
-    match ipc.connect() {
-        Ok(()) => println!("connected"),
+    let pid = std::process::id();
+    let nonce = AtomicU64::new(0);
+
+    let mut pipe = match connect_handshake(client_id) {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("connect failed (is Discord running?): {e}");
             std::process::exit(1);
         }
+    };
+    println!("connected");
+
+    let now = now_ms();
+    let presence = RichPresence {
+        details: Some("Coding with Claude Code".into()),
+        state: Some("agentcord (windows port)".into()),
+        timestamps: Some(Timestamps { start: Some(now), end: None }),
+        assets: Some(Assets {
+            large_image: Some("claude".into()),
+            small_image: Some("coding".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    match write_activity(&mut pipe, pid, &nonce, Some(presence)) {
+        Ok(()) => println!("presence set — check your Discord profile"),
+        Err(e) => eprintln!("set_activity failed: {e}"),
     }
 
-    let mut sent = false;
     loop {
-        match ipc.pump() {
-            Ok(true) => {
-                if ipc.is_ready() && !sent {
-                    let now = now_ms();
-                    let presence = RichPresence {
-                        details: Some("Coding with Claude Code".into()),
-                        state: Some("agentcord (windows port)".into()),
-                        timestamps: Some(Timestamps { start: Some(now), end: None }),
-                        assets: Some(Assets {
-                            large_image: Some("claude".into()),
-                            small_image: Some("coding".into()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    };
-                    match ipc.set_activity(Some(presence)) {
-                        Ok(()) => println!("presence set — check your Discord profile"),
-                        Err(e) => eprintln!("set_activity failed: {e}"),
-                    }
-                    sent = true;
-                }
-            }
-            Ok(false) => {
-                eprintln!("connection closed");
-                break;
-            }
-            Err(e) => {
-                eprintln!("read error: {e}");
-                break;
-            }
+        match read_frame(&mut pipe) {
+            Ok(Some((op, payload))) => match handle_inbound_frame(op, &payload, &mut pipe) {
+                FrameAction::Closed | FrameAction::Error(_) => break,
+                _ => {}
+            },
+            Ok(None) | Err(_) => break,
         }
     }
+    eprintln!("connection closed");
 }

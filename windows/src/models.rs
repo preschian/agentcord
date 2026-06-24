@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 
-// MARK: - Rich Presence payload
+// --- Rich Presence payload
 
 /// A Discord activity (Rich Presence). Every field is optional so we only
 /// encode what we actually want to display; `skip_serializing_if` drops the
@@ -60,7 +60,7 @@ pub struct PresenceButton {
     pub url: String,
 }
 
-// MARK: - IPC command payloads
+// --- IPC command payloads
 
 /// Sent as opcode 0 immediately after connecting.
 #[derive(Serialize)]
@@ -97,7 +97,7 @@ impl SetActivityCommand {
     }
 }
 
-// MARK: - Claude subscription usage
+// --- Claude subscription usage
 
 /// One rate-limit window: how much is used and when it resets. Port of
 /// `UsageInfo.Window` from the macOS app.

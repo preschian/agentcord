@@ -6,6 +6,8 @@
 //! code tiny and needs no extra bindings, consistent with how the session
 //! detector shells out to `git`.
 
+use std::path::{Path, PathBuf};
+
 use crate::util::command;
 
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -21,13 +23,50 @@ fn exe_command() -> String {
     format!("\"{exe}\"")
 }
 
-/// True if the Run value currently exists.
+fn current_exe_path() -> Option<PathBuf> {
+    std::env::current_exe().ok()
+}
+
+/// True when the Run value exists and points at this executable.
 pub fn is_enabled() -> bool {
-    command("reg")
+    let Some(stored) = read_run_value() else {
+        return false;
+    };
+    let Some(expected) = current_exe_path() else {
+        return false;
+    };
+    paths_match(&stored, &expected)
+}
+
+fn read_run_value() -> Option<String> {
+    let output = command("reg")
         .args(["query", RUN_KEY, "/v", VALUE_NAME])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.starts_with(VALUE_NAME) {
+            continue;
+        }
+        let (_, rest) = line.split_once("REG_SZ")?;
+        return Some(rest.trim().trim_matches('"').to_string());
+    }
+    None
+}
+
+fn paths_match(stored: &str, expected: &Path) -> bool {
+    let stored_path = Path::new(stored.trim().trim_matches('"'));
+    if stored_path == expected {
+        return true;
+    }
+    match (stored_path.canonicalize(), expected.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Add or remove the Run value. Returns whether the change succeeded.

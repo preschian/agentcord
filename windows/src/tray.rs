@@ -117,12 +117,7 @@ impl AgentApp {
     }
 
     fn toggle_presence(&mut self) {
-        let mut s = self.shared.settings.lock().unwrap();
-        s.presence_enabled = !s.presence_enabled;
-        let on = s.presence_enabled;
-        let _ = s.save();
-        drop(s);
-        self.shared.ui.lock().unwrap().presence_enabled = on;
+        self.shared.toggle_presence_enabled();
     }
 
     fn quit(&mut self, ctx: &egui::Context) {
@@ -268,12 +263,7 @@ impl AgentApp {
         ui.add_space(2.0);
 
         if ui.checkbox(&mut presence_on, "Presence enabled").changed() {
-            {
-                let mut s = self.shared.settings.lock().unwrap();
-                s.presence_enabled = presence_on;
-                let _ = s.save();
-            }
-            self.shared.ui.lock().unwrap().presence_enabled = presence_on;
+            self.shared.set_presence_enabled(presence_on);
         }
         if ui.checkbox(&mut self.autostart_on, "Launch at login").changed() {
             if !crate::autostart::set_enabled(self.autostart_on) {

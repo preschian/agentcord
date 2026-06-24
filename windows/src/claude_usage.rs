@@ -79,7 +79,7 @@ struct OAuthCredentials {
 /// endpoint rate-limits aggressively).
 pub const POLL_INTERVAL: Duration = Duration::from_secs(300);
 
-// MARK: - Wire format
+// --- Wire format
 
 /// The subset of the `/api/oauth/usage` response we care about. Every field is
 /// optional so decoding never throws on a missing or renamed key.

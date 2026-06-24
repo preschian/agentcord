@@ -16,14 +16,14 @@
 //! excludes idle gaps, repo-name resolution via git — match the Swift version.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::models::SessionInfo;
-use crate::util::command;
+use crate::util::{self, command};
 
 /// When summing the day's working time, a gap between two consecutive messages
 /// longer than this is treated as a break (idle), not work, so a session left
@@ -54,7 +54,7 @@ struct ScanSnapshot {
 
 impl ClaudeSession {
     pub fn new() -> Self {
-        let projects_dir = home_dir().join(".claude").join("projects");
+        let projects_dir = util::claude_dir().join("projects");
         Self {
             projects_dir,
             active_window: Duration::from_secs(5 * 60),
@@ -82,14 +82,13 @@ impl ClaudeSession {
             return None;
         }
 
-        files.sort_by(|a, b| a.0.cmp(&b.0));
         let newest = files
             .iter()
             .max_by_key(|(_, mtime)| *mtime)
             .cloned()
             .expect("non-empty");
 
-        let now_ms = now_ms();
+        let now_ms = util::now_ms();
         if now_ms - newest.1 > self.active_window.as_millis() as i64 {
             self.last_scan = None;
             return None;
@@ -116,7 +115,8 @@ impl ClaudeSession {
         }
         let active_agg = self.aggregate(&newest.0, newest.1, day_start_ms);
 
-        self.cache.retain(|k, _| files.iter().any(|(p, _)| p == k));
+        let file_paths: HashSet<&Path> = files.iter().map(|(p, _)| p.as_path()).collect();
+        self.cache.retain(|k, _| file_paths.contains(k.as_path()));
 
         let session =
             self.make_session_info(&newest, &active_agg, total_tokens_today, total_active_ms, now_ms);
@@ -132,13 +132,7 @@ impl ClaudeSession {
     }
 
     fn refresh_elapsed(&self, prev: &ScanSnapshot, now_ms: i64) -> SessionInfo {
-        let mut elapsed_ms = prev.total_active_ms;
-        if let Some(last) = prev.active_last_today_ms {
-            let tail = now_ms - last;
-            if tail > 0 && tail <= ACTIVE_GAP_TOLERANCE_MS {
-                elapsed_ms += tail;
-            }
-        }
+        let elapsed_ms = extend_elapsed_ms(prev.total_active_ms, prev.active_last_today_ms, now_ms);
         SessionInfo {
             start_epoch_ms: now_ms - elapsed_ms,
             last_modified_ms: prev.newest.1,
@@ -178,7 +172,7 @@ impl ClaudeSession {
                 let line_ms = obj
                     .get("timestamp")
                     .and_then(|v| v.as_str())
-                    .and_then(epoch_ms_from_iso);
+                    .and_then(util::epoch_ms_from_iso);
                 let is_today = line_ms.is_some_and(|ms| ms >= day_start_ms);
 
                 if let Some(message) = obj.get("message").filter(|m| m.is_object()) {
@@ -238,13 +232,7 @@ impl ClaudeSession {
             project_name = self.repo_name(cwd);
         }
 
-        let mut elapsed_ms = total_active_ms;
-        if let Some(last) = active.last_today_ms {
-            let tail = now_ms - last;
-            if tail > 0 && tail <= ACTIVE_GAP_TOLERANCE_MS {
-                elapsed_ms += tail;
-            }
-        }
+        let elapsed_ms = extend_elapsed_ms(total_active_ms, active.last_today_ms, now_ms);
         let start_ms = now_ms - elapsed_ms;
 
         SessionInfo {
@@ -301,9 +289,22 @@ struct CacheEntry {
     aggregate: DayAggregate,
 }
 
+fn extend_elapsed_ms(total: i64, last_today_ms: Option<i64>, now_ms: i64) -> i64 {
+    let mut elapsed_ms = total;
+    if let Some(last) = last_today_ms {
+        let tail = now_ms - last;
+        if tail > 0 && tail <= ACTIVE_GAP_TOLERANCE_MS {
+            elapsed_ms += tail;
+        }
+    }
+    elapsed_ms
+}
+
 fn files_signature(files: &[(PathBuf, i64)]) -> u64 {
+    let mut sorted = files.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
     let mut hasher = DefaultHasher::new();
-    for (path, mtime) in files {
+    for (path, mtime) in &sorted {
         path.hash(&mut hasher);
         mtime.hash(&mut hasher);
     }
@@ -339,33 +340,13 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<(PathBuf, i64)>) {
     }
 }
 
-pub fn home_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn local_day_start_ms() -> i64 {
     chrono::Local::now()
         .date_naive()
         .and_hms_opt(0, 0, 0)
         .and_then(|midnight| midnight.and_local_timezone(chrono::Local).single())
         .map(|dt| dt.timestamp_millis())
-        .unwrap_or_else(now_ms)
-}
-
-pub fn epoch_ms_from_iso(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
+        .unwrap_or_else(util::now_ms)
 }
 
 fn derive_project_name(dir: &str) -> String {
@@ -447,12 +428,6 @@ mod tests {
     }
 
     #[test]
-    fn epoch_ms_from_iso_parses_zulu() {
-        let ms = epoch_ms_from_iso("2026-01-15T12:00:00Z").unwrap();
-        assert!(ms > 0);
-    }
-
-    #[test]
     fn aggregate_sums_tokens_and_active_gaps() {
         let dir = std::env::temp_dir().join("agentcord_test_projects");
         let _ = fs::remove_dir_all(&dir);
@@ -496,7 +471,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.jsonl");
-        let now = now_ms();
+        let now = util::now_ms();
         let t0 = now - 30_000;
         let t1 = t0 + 10_000;
         let mut file = fs::File::create(&path).unwrap();

@@ -54,9 +54,7 @@ pub fn fetch() -> Option<UsageInfo> {
 /// Reads Claude Code's OAuth access token from
 /// `%USERPROFILE%\.claude\.credentials.json`.
 fn read_access_token() -> Option<String> {
-    let path = crate::claude_session::home_dir()
-        .join(".claude")
-        .join(".credentials.json");
+    let path = util::credentials_path();
     let contents = std::fs::read_to_string(path).ok()?;
     let creds: CredentialsFile = serde_json::from_str(&contents).ok()?;
     let token = creds.claude_ai_oauth?.access_token;
@@ -119,34 +117,30 @@ impl UsageResponse {
             .or_else(|| limits.iter().find(|l| l.group.as_deref() == Some("weekly")));
 
         UsageInfo {
-            five_hour: UsageWindow {
-                percent: percent(session.and_then(|l| l.percent), self.five_hour.as_ref().and_then(|w| w.utilization)),
-                severity: session.and_then(|l| l.severity.clone()).unwrap_or_else(|| "normal".to_string()),
-                resets_at_ms: parse_date(
-                    session
-                        .and_then(|l| l.resets_at.as_deref())
-                        .or_else(|| self.five_hour.as_ref().and_then(|w| w.resets_at.as_deref())),
-                ),
-            },
-            weekly: UsageWindow {
-                percent: percent(weekly.and_then(|l| l.percent), self.seven_day.as_ref().and_then(|w| w.utilization)),
-                severity: weekly.and_then(|l| l.severity.clone()).unwrap_or_else(|| "normal".to_string()),
-                resets_at_ms: parse_date(
-                    weekly
-                        .and_then(|l| l.resets_at.as_deref())
-                        .or_else(|| self.seven_day.as_ref().and_then(|w| w.resets_at.as_deref())),
-                ),
-            },
+            five_hour: usage_window(session, self.five_hour.as_ref()),
+            weekly: usage_window(weekly, self.seven_day.as_ref()),
         }
     }
 }
 
-fn percent(primary: Option<f64>, fallback: Option<f64>) -> u32 {
-    primary.or(fallback).unwrap_or(0.0).round().max(0.0) as u32
+fn usage_window(limit: Option<&RespLimit>, fallback: Option<&RespWindow>) -> UsageWindow {
+    UsageWindow {
+        percent: percent(limit.and_then(|l| l.percent), fallback.and_then(|w| w.utilization)),
+        severity: limit
+            .and_then(|l| l.severity.clone())
+            .unwrap_or_else(|| "normal".to_string()),
+        resets_at_ms: resets_at_ms(limit, fallback),
+    }
 }
 
-/// Parse timestamps like "2026-06-26T04:59:59.083560+00:00" to epoch ms.
-fn parse_date(s: Option<&str>) -> Option<i64> {
-    let s = s.filter(|x| !x.is_empty())?;
-    crate::claude_session::epoch_ms_from_iso(s)
+fn resets_at_ms(limit: Option<&RespLimit>, fallback: Option<&RespWindow>) -> Option<i64> {
+    limit
+        .and_then(|l| l.resets_at.as_deref())
+        .or_else(|| fallback.and_then(|w| w.resets_at.as_deref()))
+        .filter(|x| !x.is_empty())
+        .and_then(util::epoch_ms_from_iso)
+}
+
+fn percent(primary: Option<f64>, fallback: Option<f64>) -> u32 {
+    primary.or(fallback).unwrap_or(0.0).round().max(0.0) as u32
 }

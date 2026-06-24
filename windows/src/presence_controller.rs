@@ -103,7 +103,6 @@ pub struct UiSnapshot {
     /// Latest scan result; tray applies display settings when rendering.
     pub session_info: Option<SessionInfo>,
     pub usage: Option<UsageInfo>,
-    pub presence_enabled: bool,
 }
 
 impl Default for UiSnapshot {
@@ -112,7 +111,6 @@ impl Default for UiSnapshot {
             connection: ConnectionStatus::Disconnected,
             session_info: None,
             usage: None,
-            presence_enabled: true,
         }
     }
 }
@@ -128,39 +126,36 @@ pub struct SharedState {
 
 impl SharedState {
     pub fn new(settings: Settings) -> Self {
-        let presence_enabled = settings.presence_enabled;
         Self {
             settings: Mutex::new(settings),
-            ui: Mutex::new(UiSnapshot {
-                presence_enabled,
-                ..UiSnapshot::default()
-            }),
+            ui: Mutex::new(UiSnapshot::default()),
             quit: AtomicBool::new(false),
             usage_refresh: AtomicBool::new(false),
         }
     }
 
-    /// Single write path for the presence toggle (settings file + tray snapshot).
+    /// Single write path for the presence toggle (persists to settings file).
     pub fn set_presence_enabled(&self, on: bool) {
         {
             let mut settings = self.settings.lock().unwrap();
             settings.presence_enabled = on;
             let _ = settings.save();
         }
-        self.ui.lock().unwrap().presence_enabled = on;
     }
 
     pub fn toggle_presence_enabled(&self) {
-        let on = !self.settings.lock().unwrap().presence_enabled;
-        self.set_presence_enabled(on);
+        let mut settings = self.settings.lock().unwrap();
+        settings.presence_enabled = !settings.presence_enabled;
+        let _ = settings.save();
     }
 
     pub fn publish_ui(&self, connection: ConnectionStatus, session_info: Option<SessionInfo>) {
-        let presence_enabled = self.settings.lock().unwrap().presence_enabled;
         let mut ui = self.ui.lock().unwrap();
+        if ui.connection == connection && ui.session_info == session_info {
+            return;
+        }
         ui.connection = connection;
         ui.session_info = session_info;
-        ui.presence_enabled = presence_enabled;
     }
 
     pub fn set_usage(&self, usage: Option<UsageInfo>) {
@@ -326,8 +321,8 @@ impl PresenceController {
     /// Run the controller. Blocks the calling thread until `quit` is set.
     pub fn run(mut self) {
         while !self.shared.quit.load(Ordering::Relaxed) {
-            // `Off` — presence disabled before we connect. `Disabled` — user toggled
-            // presence off mid-connection inside `connect_and_serve`.
+            // `Off` when presence is disabled before connect; `ConnectionEnd::Disabled`
+            // when the user toggles it off mid-connection inside `connect_and_serve`.
             if !self.shared.settings.lock().unwrap().presence_enabled {
                 self.idle_tick(ConnectionStatus::Off);
                 sleep(UPDATE_INTERVAL);
@@ -364,7 +359,10 @@ impl PresenceController {
 
         let mut pipe = match connect_handshake(DISCORD_CLIENT_ID) {
             Ok(p) => p,
-            Err(_) => return ConnectionEnd::CouldNotConnect,
+            Err(e) => {
+                eprintln!("[discord] connect failed: {e}");
+                return ConnectionEnd::CouldNotConnect;
+            }
         };
 
         println!("[discord] connected");
@@ -394,7 +392,10 @@ impl PresenceController {
                         self.last_sent.mark_sent(&presence);
                         log_presence(&presence);
                     }
-                    Err(_) => return ConnectionEnd::Dropped,
+                    Err(e) => {
+                        eprintln!("[discord] write_activity failed: {e}");
+                        return ConnectionEnd::Dropped;
+                    }
                 }
             }
 

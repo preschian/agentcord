@@ -23,7 +23,7 @@ const MAX_STALENESS: Duration = Duration::from_secs(30 * 60);
 pub fn run(shared: Arc<SharedState>) {
     let mut next_poll = Instant::now();
     let mut last_success = Instant::now();
-    let mut cached: Option<UsageInfo> = None;
+    let mut published: Option<UsageInfo> = None;
 
     loop {
         if shared.quit.load(Ordering::Relaxed) {
@@ -34,18 +34,15 @@ pub fn run(shared: Arc<SharedState>) {
         if refresh_now || Instant::now() >= next_poll {
             match claude_usage::fetch() {
                 Some(info) => {
-                    cached = Some(info.clone());
-                    shared.set_usage(Some(info));
+                    publish_usage(&shared, &mut published, Some(info));
                     last_success = Instant::now();
                 }
                 None if last_success.elapsed() > MAX_STALENESS => {
-                    cached = None;
-                    shared.set_usage(None);
+                    publish_usage(&shared, &mut published, None);
                 }
                 None => {
-                    if let Some(info) = &cached {
-                        shared.set_usage(Some(info.clone()));
-                    }
+                    let stale = published.clone();
+                    publish_usage(&shared, &mut published, stale);
                 }
             }
             next_poll = Instant::now() + claude_usage::POLL_INTERVAL;
@@ -53,4 +50,12 @@ pub fn run(shared: Arc<SharedState>) {
 
         sleep(TICK);
     }
+}
+
+fn publish_usage(shared: &SharedState, published: &mut Option<UsageInfo>, next: Option<UsageInfo>) {
+    if published.as_ref() == next.as_ref() {
+        return;
+    }
+    *published = next.clone();
+    shared.set_usage(next);
 }

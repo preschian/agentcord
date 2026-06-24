@@ -15,9 +15,9 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
 
-use crate::claude_session::now_ms;
 use crate::presence_controller::{build_session_display, ConnectionStatus, PresenceController, SharedState};
-use crate::settings::Settings;
+use crate::settings::{activity_label, Settings};
+use crate::util::now_ms;
 use crate::usage_poller;
 
 const WIDTH: f32 = 300.0;
@@ -34,6 +34,9 @@ const GREEN: Color32 = Color32::from_rgb(0x2e, 0xa0, 0x43);
 const ORANGE: Color32 = Color32::from_rgb(0xd1, 0x8b, 0x16);
 const RED: Color32 = Color32::from_rgb(0xcf, 0x3b, 0x3b);
 
+/// eframe reveals the root window after the first paint; keep it off-screen until the user opens the popover.
+const OFF_SCREEN_POS: [f32; 2] = [-10_000.0, -10_000.0];
+
 pub fn run() {
     let shared = Arc::new(SharedState::new(Settings::load()));
 
@@ -45,6 +48,7 @@ pub fn run() {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([WIDTH, HEIGHT])
+        .with_position(OFF_SCREEN_POS)
         .with_decorations(false)
         .with_resizable(false)
         .with_always_on_top()
@@ -62,6 +66,8 @@ pub fn run() {
         Box::new(move |cc| {
             cc.egui_ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Light);
             cc.egui_ctx.set_visuals(egui::Visuals::light());
+            cc.egui_ctx
+                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
             Ok(Box::new(AgentApp::new(app_shared)) as Box<dyn eframe::App>)
         }),
     );
@@ -72,6 +78,7 @@ struct AgentApp {
     _tray: Option<TrayIcon>,
     visible: bool,
     seen_focus: bool,
+    parked: bool,
     autostart_on: bool,
     show_settings: bool,
     applied_height: f32,
@@ -96,6 +103,7 @@ impl AgentApp {
             _tray: tray,
             visible: false,
             seen_focus: false,
+            parked: false,
             autostart_on: crate::autostart::is_enabled(),
             show_settings: false,
             applied_height: -1.0,
@@ -105,14 +113,29 @@ impl AgentApp {
     fn show(&mut self, ctx: &egui::Context) {
         self.applied_height = -1.0;
         self.seen_focus = false;
+        self.parked = false;
+        self.apply_geometry(ctx);
         self.visible = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         self.shared.request_usage_refresh();
+        ctx.request_repaint();
     }
 
     fn hide(&mut self, ctx: &egui::Context) {
         self.visible = false;
+        self.park_off_screen(ctx);
+    }
+
+    fn park_off_screen(&mut self, ctx: &egui::Context) {
+        if self.parked {
+            return;
+        }
+        self.parked = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            OFF_SCREEN_POS[0],
+            OFF_SCREEN_POS[1],
+        )));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
@@ -176,21 +199,37 @@ impl eframe::App for AgentApp {
         [0.95, 0.95, 0.96, 1.0]
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        self.handle_tray_events(&ctx);
-
-        if self.visible {
-            match ctx.input(|i| i.viewport().focused) {
-                Some(true) => self.seen_focus = true,
-                Some(false) if self.seen_focus => self.hide(&ctx),
-                _ => {}
+    /// Runs every frame, even when the viewport is hidden. Tray clicks are handled here
+    /// because eframe skips [`Self::ui`] while the window is not visible.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.visible && !self.parked {
+            let shown = ctx.input(|i| i.viewport().visible()).unwrap_or(false);
+            if shown {
+                self.park_off_screen(ctx);
             }
-            self.apply_geometry(&ctx);
-            self.render(ui, &ctx);
+        }
+        self.handle_tray_events(ctx);
+        let delay = if self.visible {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_millis(500)
+        };
+        ctx.request_repaint_after(delay);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if !self.visible {
+            return;
         }
 
-        ctx.request_repaint_after(Duration::from_millis(250));
+        let ctx = ui.ctx().clone();
+        match ctx.input(|i| i.viewport().focused) {
+            Some(true) => self.seen_focus = true,
+            Some(false) if self.seen_focus => self.hide(&ctx),
+            _ => {}
+        }
+        self.apply_geometry(&ctx);
+        self.render(ui, &ctx);
     }
 }
 
@@ -203,14 +242,10 @@ impl AgentApp {
 
     fn render_inner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let settings = self.shared.settings.lock().unwrap().clone();
-        let (conn, session_info, usage, mut presence_on) = {
+        let mut presence_on = settings.presence_enabled;
+        let (conn, session_info, usage) = {
             let snap = self.shared.ui.lock().unwrap();
-            (
-                snap.connection,
-                snap.session_info.clone(),
-                snap.usage.clone(),
-                snap.presence_enabled,
-            )
+            (snap.connection, snap.session_info.clone(), snap.usage.clone())
         };
         let session = build_session_display(&settings, session_info.as_ref());
 
@@ -308,7 +343,7 @@ impl AgentApp {
             ui.horizontal(|ui| {
                 ui.label("Activity");
                 egui::ComboBox::from_id_salt("activity_type")
-                    .selected_text(activity_name(guard.activity_type))
+                    .selected_text(activity_label(guard.activity_type))
                     .show_ui(ui, |ui| {
                         for (val, name) in crate::settings::ACTIVITY_TYPES {
                             changed |= ui.selectable_value(&mut guard.activity_type, val, name).changed();
@@ -334,14 +369,6 @@ impl AgentApp {
             let _ = guard.save();
         }
     }
-}
-
-fn activity_name(value: i32) -> &'static str {
-    crate::settings::ACTIVITY_TYPES
-        .iter()
-        .find(|(v, _)| *v == value)
-        .map(|(_, n)| *n)
-        .unwrap_or("Playing")
 }
 
 fn status_pill(presence_on: bool, conn: ConnectionStatus) -> (&'static str, Color32) {
@@ -380,9 +407,9 @@ fn usage_detail(w: &crate::models::UsageWindow) -> String {
 }
 
 fn severity_color(w: &crate::models::UsageWindow) -> Color32 {
-    match w.severity.to_lowercase().as_str() {
+    match w.severity.as_str() {
         "normal" => BLUE,
-        s if s.contains("warn") => ORANGE,
+        s if s.contains("warn") || s.contains("Warn") => ORANGE,
         _ => RED,
     }
 }

@@ -25,7 +25,8 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
-use claude_session::{now_ms, ClaudeSession};
+use claude_session::ClaudeSession;
+use util::now_ms;
 use discord_ipc::{connect_handshake, handle_inbound_frame, read_frame, write_activity, FrameAction};
 use models::{Assets, RichPresence, SessionInfo, Timestamps};
 use presence_controller::{PresenceController, SharedState};

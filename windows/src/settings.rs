@@ -51,7 +51,18 @@ pub const ACTIVITY_TYPES: [(i32, &str); 4] =
 
 /// Whether `value` is one of the allowed Discord activity types.
 pub fn is_allowed_activity(value: i32) -> bool {
-    ACTIVITY_TYPES.iter().any(|(v, _)| *v == value)
+    activity_name(value).is_some()
+}
+
+pub fn activity_label(value: i32) -> &'static str {
+    activity_name(value).unwrap_or("Playing")
+}
+
+fn activity_name(value: i32) -> Option<&'static str> {
+    ACTIVITY_TYPES
+        .iter()
+        .find(|(v, _)| *v == value)
+        .map(|(_, n)| *n)
 }
 
 impl Settings {

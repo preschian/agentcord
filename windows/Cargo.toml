@@ -17,13 +17,18 @@ serde_json = "1"
 # `windows-*` crates.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 eframe = "0.34.3"
-tray-icon = "0.24.1"
+# `default-features = false` drops the Linux-only `gtk`/`libxdo` features, which
+# pull in the gtk-rs 0.18 stack (libappindicator → gtk → glib 0.18). That stack
+# never compiles on Windows anyway, but it lands in Cargo.lock and trips a
+# Dependabot advisory (glib < 0.20 VariantStrIter unsoundness, RUSTSEC). Disabling
+# the features removes the whole stack from the lockfile.
+tray-icon = { version = "0.24.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 # Win32 bindings used only to read the work area (so the popover anchors above
 # the taskbar). The tray icon and window come from tray-icon/eframe.
 [target.'cfg(windows)'.dependencies.windows-sys]
-version = "0.59"
+version = "0.61"
 features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"]
 
 # Possible later: `notify` for instant transcript updates (we re-scan on a timer

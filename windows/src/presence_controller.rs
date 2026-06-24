@@ -39,7 +39,6 @@ const UPDATE_INTERVAL: Duration = Duration::from_secs(3);
 pub enum SessionDisplay {
     #[default]
     Idle,
-    Disabled,
     Active {
         model: String,
         project: String,
@@ -52,7 +51,6 @@ impl SessionDisplay {
     pub fn headline(&self) -> String {
         match self {
             Self::Idle => "No active session".to_string(),
-            Self::Disabled => "Presence disabled".to_string(),
             Self::Active { model, project, .. } => match (model.is_empty(), project.is_empty()) {
                 (false, false) => format!("{model} · {project}"),
                 (false, true) => model.clone(),
@@ -102,7 +100,8 @@ impl std::fmt::Display for ConnectionStatus {
 #[derive(Clone)]
 pub struct UiSnapshot {
     pub connection: ConnectionStatus,
-    pub session: SessionDisplay,
+    /// Latest scan result; tray applies display settings when rendering.
+    pub session_info: Option<SessionInfo>,
     pub usage: Option<UsageInfo>,
     pub presence_enabled: bool,
 }
@@ -111,7 +110,7 @@ impl Default for UiSnapshot {
     fn default() -> Self {
         Self {
             connection: ConnectionStatus::Disconnected,
-            session: SessionDisplay::default(),
+            session_info: None,
             usage: None,
             presence_enabled: true,
         }
@@ -152,21 +151,15 @@ impl SharedState {
     }
 
     pub fn toggle_presence_enabled(&self) {
-        let on = {
-            let mut settings = self.settings.lock().unwrap();
-            settings.presence_enabled = !settings.presence_enabled;
-            let on = settings.presence_enabled;
-            let _ = settings.save();
-            on
-        };
-        self.ui.lock().unwrap().presence_enabled = on;
+        let on = !self.settings.lock().unwrap().presence_enabled;
+        self.set_presence_enabled(on);
     }
 
-    pub fn publish_ui(&self, connection: ConnectionStatus, session: SessionDisplay) {
+    pub fn publish_ui(&self, connection: ConnectionStatus, session_info: Option<SessionInfo>) {
         let presence_enabled = self.settings.lock().unwrap().presence_enabled;
         let mut ui = self.ui.lock().unwrap();
         ui.connection = connection;
-        ui.session = session;
+        ui.session_info = session_info;
         ui.presence_enabled = presence_enabled;
     }
 
@@ -189,48 +182,37 @@ struct SessionFields {
     start_ms: i64,
 }
 
-/// Combined tray display + Discord payload for one scan tick.
-pub struct SessionView {
-    pub display: SessionDisplay,
-    pub presence: Option<RichPresence>,
+/// Discord payload for one scan tick (`None` when presence is off or idle).
+pub fn build_session_presence(settings: &Settings, session: Option<&SessionInfo>) -> Option<RichPresence> {
+    match (settings.presence_enabled, session) {
+        (true, Some(info)) => Some(build_presence_from_fields(settings, &session_fields(settings, info))),
+        _ => None,
+    }
 }
 
-pub fn build_session_view(settings: &Settings, session: Option<&SessionInfo>) -> SessionView {
-    if !settings.presence_enabled {
-        return SessionView {
-            display: SessionDisplay::Disabled,
-            presence: None,
-        };
-    }
+pub fn build_session_display(settings: &Settings, session: Option<&SessionInfo>) -> SessionDisplay {
     let Some(info) = session else {
-        return SessionView {
-            display: SessionDisplay::Idle,
-            presence: None,
-        };
+        return SessionDisplay::Idle;
     };
-
     let fields = session_fields(settings, info);
-    SessionView {
-        display: SessionDisplay::Active {
-            model: fields.model_label.clone(),
-            project: fields.project.clone(),
-            tokens_line: fields.tokens_line.clone(),
-            start_ms: fields.start_ms,
-        },
-        presence: Some(build_presence_from_fields(settings, &fields)),
+    SessionDisplay::Active {
+        model: fields.model_label,
+        project: fields.project,
+        tokens_line: fields.tokens_line,
+        start_ms: fields.start_ms,
     }
 }
 
 fn session_fields(settings: &Settings, info: &SessionInfo) -> SessionFields {
-    let effective_name = if settings.show_model {
+    let model_label = if settings.show_model {
         info.model.clone().unwrap_or_else(|| "agentcord".to_string())
     } else {
-        "agentcord".to_string()
-    };
-    let model_label = if settings.show_model {
-        effective_name.clone()
-    } else {
         String::new()
+    };
+    let title = if model_label.is_empty() {
+        "agentcord".to_string()
+    } else {
+        model_label.clone()
     };
     let project = if settings.show_project {
         info.project_name.clone()
@@ -243,7 +225,7 @@ fn session_fields(settings: &Settings, info: &SessionInfo) -> SessionFields {
         None
     };
     SessionFields {
-        title: effective_name,
+        title,
         model_label,
         project,
         tokens_line,
@@ -305,10 +287,10 @@ impl LastPayload {
         }
     }
 
-    fn mark_sent(&mut self, presence: Option<RichPresence>) {
+    fn mark_sent(&mut self, presence: &Option<RichPresence>) {
         *self = match presence {
             None => LastPayload::Cleared,
-            Some(p) => LastPayload::Active(p),
+            Some(p) => LastPayload::Active(p.clone()),
         };
     }
 
@@ -373,8 +355,7 @@ impl PresenceController {
         let settings = self.shared.settings.lock().unwrap().clone();
         sync_session_window(&mut self.session, &settings);
         let session_info = self.session.scan();
-        let view = build_session_view(&settings, session_info.as_ref());
-        self.shared.publish_ui(connection, view.display);
+        self.shared.publish_ui(connection, session_info);
     }
 
     fn connect_and_serve(&mut self) -> ConnectionEnd {
@@ -399,20 +380,18 @@ impl PresenceController {
             let settings = self.shared.settings.lock().unwrap().clone();
             if !settings.presence_enabled {
                 let _ = write_activity(&mut pipe, self.pid, &self.nonce, None);
-                self.last_sent.mark_sent(None);
+                self.last_sent.mark_sent(&None);
                 return ConnectionEnd::Disabled;
             }
 
             sync_session_window(&mut self.session, &settings);
             let session_info = self.session.scan();
-            let view = build_session_view(&settings, session_info.as_ref());
-            self.shared.publish_ui(ConnectionStatus::Connected, view.display);
-
-            let presence = view.presence;
+            let presence = build_session_presence(&settings, session_info.as_ref());
+            self.shared.publish_ui(ConnectionStatus::Connected, session_info);
             if self.last_sent.needs_send(&presence) {
                 match write_activity(&mut pipe, self.pid, &self.nonce, presence.clone()) {
                     Ok(()) => {
-                        self.last_sent.mark_sent(presence.clone());
+                        self.last_sent.mark_sent(&presence);
                         log_presence(&presence);
                     }
                     Err(_) => return ConnectionEnd::Dropped,
@@ -492,8 +471,8 @@ mod tests {
         s.show_model = false;
         s.show_project = true;
         s.show_tokens = false;
-        let view = build_session_view(&s, Some(&sample_info()));
-        match view.display {
+        let info = sample_info();
+        match build_session_display(&s, Some(&info)) {
             SessionDisplay::Active { model, project, tokens_line, .. } => {
                 assert!(model.is_empty());
                 assert_eq!(project, "agentcord");
@@ -501,24 +480,30 @@ mod tests {
             }
             _ => panic!("expected active"),
         }
-        assert_eq!(view.presence.as_ref().unwrap().name.as_deref(), Some("agentcord"));
-        assert!(view.presence.as_ref().unwrap().state.is_none());
+        let presence = build_session_presence(&s, Some(&info)).unwrap();
+        assert_eq!(presence.name.as_deref(), Some("agentcord"));
+        assert!(presence.state.is_none());
     }
 
     #[test]
-    fn view_disabled_skips_presence() {
+    fn view_presence_off_still_shows_session() {
         let mut s = Settings::default();
         s.presence_enabled = false;
-        let view = build_session_view(&s, Some(&sample_info()));
-        assert_eq!(view.display, SessionDisplay::Disabled);
-        assert!(view.presence.is_none());
+        let info = sample_info();
+        match build_session_display(&s, Some(&info)) {
+            SessionDisplay::Active { model, project, .. } => {
+                assert_eq!(model, "Opus 4.5");
+                assert_eq!(project, "agentcord");
+            }
+            _ => panic!("expected active session card"),
+        }
+        assert!(build_session_presence(&s, Some(&info)).is_none());
     }
 
     #[test]
     fn view_idle_without_session() {
         let s = Settings::default();
-        let view = build_session_view(&s, None);
-        assert_eq!(view.display, SessionDisplay::Idle);
-        assert!(view.presence.is_none());
+        assert_eq!(build_session_display(&s, None), SessionDisplay::Idle);
+        assert!(build_session_presence(&s, None).is_none());
     }
 }

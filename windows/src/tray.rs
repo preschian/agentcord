@@ -16,7 +16,7 @@ use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
 
 use crate::claude_session::now_ms;
-use crate::presence_controller::{ConnectionStatus, PresenceController, SharedState};
+use crate::presence_controller::{build_session_display, ConnectionStatus, PresenceController, SharedState};
 use crate::settings::Settings;
 use crate::usage_poller;
 
@@ -202,15 +202,17 @@ impl AgentApp {
     }
 
     fn render_inner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let (conn, session, usage, mut presence_on) = {
+        let settings = self.shared.settings.lock().unwrap().clone();
+        let (conn, session_info, usage, mut presence_on) = {
             let snap = self.shared.ui.lock().unwrap();
             (
                 snap.connection,
-                snap.session.clone(),
+                snap.session_info.clone(),
                 snap.usage.clone(),
                 snap.presence_enabled,
             )
         };
+        let session = build_session_display(&settings, session_info.as_ref());
 
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 

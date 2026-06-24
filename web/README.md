@@ -6,7 +6,7 @@ The marketing site for [AgentCord](https://github.com/preschian/agentcord), the 
 
 ```text
 /
-├── public/                 # static assets (icons, og-image, AgentCord.dmg)
+├── public/                 # static assets (icons, og-image)
 ├── src/
 │   └── pages/
 │       └── index.astro     # the whole landing page
@@ -14,7 +14,7 @@ The marketing site for [AgentCord](https://github.com/preschian/agentcord), the 
 └── wrangler.jsonc          # Cloudflare Workers config
 ```
 
-The page is a single `index.astro` file with inline styles and a small client script that animates the Discord presence demo. The downloadable `AgentCord.dmg` ships from `public/`.
+The page is a single `index.astro` file with inline styles and a small client script that animates the Discord presence demo. The macOS download button links to the latest `AgentCord.dmg` on [GitHub Releases](https://github.com/preschian/agentcord/releases/latest).
 
 ## Commands
 

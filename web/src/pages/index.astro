@@ -7,6 +7,8 @@ const description =
 	"A tiny macOS menu bar app that shows your active Claude Code session as a Discord Rich Presence: project, model, token count, and elapsed time, updated as you work.";
 const canonical = new URL(Astro.url.pathname, Astro.site).href;
 const ogImage = new URL("/assets/og-image.png", Astro.site).href;
+const macDownloadUrl =
+	"https://github.com/preschian/agentcord/releases/latest/download/AgentCord.dmg";
 
 const jsonLd = {
 	"@context": "https://schema.org",
@@ -18,7 +20,7 @@ const jsonLd = {
 	operatingSystem: "macOS",
 	offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
 	image: ogImage,
-	downloadUrl: new URL("/AgentCord.dmg", Astro.site).href,
+	downloadUrl: macDownloadUrl,
 	author: { "@type": "Person", name: "Preschian Febryantara" },
 };
 ---
@@ -202,8 +204,8 @@ const jsonLd = {
 						>GitHub</a
 					>
 					<a
-						href="/AgentCord.dmg"
-						download
+						href={macDownloadUrl}
+						download="AgentCord.dmg"
 						class="ac-download-nav"
 						style="font-size: 14px; font-weight: 700; color: #fff; background: var(--accent, #5865F2); padding: 9px 18px; border-radius: 10px; text-decoration: none; box-shadow: 0 5px 16px rgba(88,101,242,0.32);"
 						>Download</a
@@ -242,8 +244,8 @@ const jsonLd = {
 					style="margin-top: 36px; display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap;"
 				>
 					<a
-						href="/AgentCord.dmg"
-						download
+						href={macDownloadUrl}
+						download="AgentCord.dmg"
 						class="ac-cta-primary"
 						style="display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #fff; background: var(--accent, #5865F2); padding: 14px 26px; border-radius: 13px; text-decoration: none; box-shadow: 0 10px 26px rgba(88,101,242,0.34);"
 					>

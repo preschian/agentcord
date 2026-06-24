@@ -63,3 +63,6 @@ fastlane/test_output
 
 # macOS
 .DS_Store
+
+# Prebuilt app binaries (distributed via GitHub Releases)
+web/public/AgentCord.dmg

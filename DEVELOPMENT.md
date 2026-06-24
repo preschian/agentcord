@@ -18,6 +18,21 @@ xcodebuild -project AgentCord.xcodeproj -scheme AgentCord -configuration Debug b
 
 Or open `AgentCord.xcodeproj` in Xcode and press Run. The app appears in the menu bar (a sparkles icon); there is no Dock icon and no app window.
 
+## Releases
+
+Prebuilt macOS (`.dmg`) and Windows (`.exe`) binaries are published on [GitHub Releases](https://github.com/preschian/agentcord/releases). They are not checked into git.
+
+To cut a release, push a semver tag (`v*`):
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The [release workflow](.github/workflows/release.yml) builds both platforms and attaches `AgentCord.dmg` and `agentcord.exe` to the release. You can also trigger it manually from the Actions tab with a tag name.
+
+Windows install notes (including SmartScreen) live in [windows/dist/README.md](windows/dist/README.md).
+
 ## One-time Discord setup
 
 You do this once, by hand, in Discord's developer portal.

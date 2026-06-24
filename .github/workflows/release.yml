@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+
+      - name: Build agentcord.exe
+        working-directory: windows
+        run: cargo build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentcord-windows
+          path: windows/target/release/agentcord.exe
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build AgentCord.app
+        run: |
+          xcodebuild \
+            -project AgentCord.xcodeproj \
+            -scheme AgentCord \
+            -configuration Release \
+            -derivedDataPath DerivedData \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: Package DMG
+        run: |
+          APP="DerivedData/Build/Products/Release/AgentCord.app"
+          test -d "$APP"
+          mkdir -p release
+          hdiutil create -volname "AgentCord" -srcfolder "$APP" -ov -format UDZO release/AgentCord.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentcord-macos
+          path: release/AgentCord.dmg
+          if-no-files-found: error
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            artifacts/agentcord-windows/agentcord.exe
+            artifacts/agentcord-macos/AgentCord.dmg

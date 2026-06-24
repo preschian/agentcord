@@ -47,7 +47,8 @@ pub fn open_pipe() -> Option<File> {
 
 /// Encode the opcode-0 handshake payload for a client id.
 pub fn handshake_payload(client_id: &str) -> Vec<u8> {
-    serde_json::to_vec(&HandshakePayload { v: 1, client_id }).unwrap_or_default()
+    serde_json::to_vec(&HandshakePayload { v: 1, client_id })
+        .expect("HandshakePayload serialization is infallible")
 }
 
 /// Write one framed message: `[opcode LE][len LE][payload]`.

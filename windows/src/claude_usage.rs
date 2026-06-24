@@ -16,24 +16,17 @@
 //! Everything is best-effort: any failure (no token, expired token, endpoint
 //! changed, offline) yields `None` and the popover shows a dash.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::claude_session::now_ms;
 use crate::models::{UsageInfo, UsageWindow};
 use crate::util;
 
 const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 
-/// Epoch seconds of the last fetch attempt, to throttle on-demand refreshes.
-static LAST_ATTEMPT_SECS: AtomicU64 = AtomicU64::new(0);
-
 /// Fetch the current usage, or `None` on any failure.
 pub fn fetch() -> Option<UsageInfo> {
-    LAST_ATTEMPT_SECS.store((now_ms() / 1000) as u64, Ordering::Relaxed);
-
     let token = read_access_token()?;
     let output = util::command("curl")
         .args(["-s", "--max-time", "15"])
@@ -65,9 +58,21 @@ fn read_access_token() -> Option<String> {
         .join(".claude")
         .join(".credentials.json");
     let contents = std::fs::read_to_string(path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&contents).ok()?;
-    let token = json.get("claudeAiOauth")?.get("accessToken")?.as_str()?;
-    (!token.is_empty()).then(|| token.to_string())
+    let creds: CredentialsFile = serde_json::from_str(&contents).ok()?;
+    let token = creds.claude_ai_oauth?.access_token;
+    (!token.is_empty()).then_some(token)
+}
+
+#[derive(Deserialize)]
+struct CredentialsFile {
+    #[serde(rename = "claudeAiOauth")]
+    claude_ai_oauth: Option<OAuthCredentials>,
+}
+
+#[derive(Deserialize)]
+struct OAuthCredentials {
+    #[serde(rename = "accessToken")]
+    access_token: String,
 }
 
 /// The poll interval the macOS app uses (the numbers move slowly and the

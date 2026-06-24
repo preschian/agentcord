@@ -16,7 +16,7 @@ use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
 
 use crate::claude_session::now_ms;
-use crate::presence_controller::{PresenceController, SharedState};
+use crate::presence_controller::{ConnectionStatus, PresenceController, SharedState};
 use crate::settings::Settings;
 use crate::usage_poller;
 
@@ -119,7 +119,10 @@ impl AgentApp {
     fn toggle_presence(&mut self) {
         let mut s = self.shared.settings.lock().unwrap();
         s.presence_enabled = !s.presence_enabled;
+        let on = s.presence_enabled;
         let _ = s.save();
+        drop(s);
+        self.shared.ui.lock().unwrap().presence_enabled = on;
     }
 
     fn quit(&mut self, ctx: &egui::Context) {
@@ -204,18 +207,22 @@ impl AgentApp {
     }
 
     fn render_inner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let (conn, session, usage) = {
+        let (conn, session, usage, mut presence_on) = {
             let snap = self.shared.ui.lock().unwrap();
-            (snap.connection.clone(), snap.session.clone(), snap.usage.clone())
+            (
+                snap.connection,
+                snap.session.clone(),
+                snap.usage.clone(),
+                snap.presence_enabled,
+            )
         };
-        let mut presence_on = self.shared.settings.lock().unwrap().presence_enabled;
 
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("agentcord").size(15.0).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (label, color) = status_pill(presence_on, &conn);
+                let (label, color) = status_pill(presence_on, conn);
                 ui.label(RichText::new(label).size(11.5).color(color));
                 let (r, _) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
                 ui.painter().circle_filled(r.center(), 4.0, color);
@@ -261,9 +268,12 @@ impl AgentApp {
         ui.add_space(2.0);
 
         if ui.checkbox(&mut presence_on, "Presence enabled").changed() {
-            let mut s = self.shared.settings.lock().unwrap();
-            s.presence_enabled = presence_on;
-            let _ = s.save();
+            {
+                let mut s = self.shared.settings.lock().unwrap();
+                s.presence_enabled = presence_on;
+                let _ = s.save();
+            }
+            self.shared.ui.lock().unwrap().presence_enabled = presence_on;
         }
         if ui.checkbox(&mut self.autostart_on, "Launch at login").changed() {
             if !crate::autostart::set_enabled(self.autostart_on) {
@@ -342,15 +352,15 @@ fn activity_name(value: i32) -> &'static str {
         .unwrap_or("Playing")
 }
 
-fn status_pill(presence_on: bool, conn: &str) -> (&'static str, Color32) {
+fn status_pill(presence_on: bool, conn: ConnectionStatus) -> (&'static str, Color32) {
     if !presence_on {
         ("Off", SECONDARY)
-    } else if conn == "Connected" {
-        ("Connected", GREEN)
-    } else if conn.starts_with("Connecting") {
-        ("Connecting", ORANGE)
     } else {
-        ("Disconnected", SECONDARY)
+        match conn {
+            ConnectionStatus::Connected => ("Connected", GREEN),
+            ConnectionStatus::Connecting => ("Connecting", ORANGE),
+            ConnectionStatus::Disconnected | ConnectionStatus::Off => ("Disconnected", SECONDARY),
+        }
     }
 }
 

@@ -68,11 +68,6 @@ impl ClaudeSession {
         self.active_window = window;
     }
 
-    pub fn with_active_window(mut self, window: Duration) -> Self {
-        self.active_window = window;
-        self
-    }
-
     pub fn projects_dir(&self) -> &Path {
         &self.projects_dir
     }
@@ -87,6 +82,7 @@ impl ClaudeSession {
             return None;
         }
 
+        files.sort_by(|a, b| a.0.cmp(&b.0));
         let newest = files
             .iter()
             .max_by_key(|(_, mtime)| *mtime)
@@ -479,7 +475,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut session = ClaudeSession::new().with_active_window(Duration::from_secs(3600));
+        let mut session = ClaudeSession::new();
+        session.set_active_window(Duration::from_secs(3600));
         session.projects_dir = dir.clone();
         let mtime = fs::metadata(&path).unwrap().modified().unwrap();
         let mtime_ms = mtime
@@ -489,6 +486,44 @@ mod tests {
         let agg = session.aggregate(&path, mtime_ms, day);
         assert_eq!(agg.tokens_today, 20);
         assert_eq!(agg.active_ms_today, 30_000);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_refresh_elapsed_without_rescan() {
+        let dir = std::env::temp_dir().join("agentcord_test_refresh");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let now = now_ms();
+        let t0 = now - 30_000;
+        let t1 = t0 + 10_000;
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"{}","message":{{"model":"claude-opus-4-5","usage":{{"input_tokens":1,"output_tokens":1}}}}}}"#,
+            chrono::DateTime::from_timestamp_millis(t0).unwrap().to_rfc3339()
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"{}","message":{{"usage":{{"input_tokens":1,"output_tokens":1}}}}}}"#,
+            chrono::DateTime::from_timestamp_millis(t1).unwrap().to_rfc3339()
+        )
+        .unwrap();
+
+        let mut session = ClaudeSession::new();
+        session.set_active_window(Duration::from_secs(3600));
+        session.projects_dir = dir.clone();
+        let first = session.scan().expect("active session");
+        let start1 = first.start_epoch_ms;
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let second = session.scan().expect("still active");
+        assert_eq!(second.total_tokens, first.total_tokens);
+        assert_eq!(second.start_epoch_ms, start1);
 
         let _ = fs::remove_dir_all(&dir);
     }

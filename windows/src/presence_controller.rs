@@ -77,13 +77,45 @@ impl SessionDisplay {
     }
 }
 
+/// Discord pipe state shown in the tray status pill.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum ConnectionStatus {
+    #[default]
+    Disconnected,
+    Connected,
+    Connecting,
+    Off,
+}
+
+impl std::fmt::Display for ConnectionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connected => write!(f, "Connected"),
+            Self::Connecting => write!(f, "Connecting…"),
+            Self::Disconnected => write!(f, "Disconnected"),
+            Self::Off => write!(f, "Off"),
+        }
+    }
+}
+
 /// Tray-facing state published atomically each controller tick.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct UiSnapshot {
-    /// "Connected", "Connecting…", "Disconnected", or "Off".
-    pub connection: String,
+    pub connection: ConnectionStatus,
     pub session: SessionDisplay,
     pub usage: Option<UsageInfo>,
+    pub presence_enabled: bool,
+}
+
+impl Default for UiSnapshot {
+    fn default() -> Self {
+        Self {
+            connection: ConnectionStatus::Disconnected,
+            session: SessionDisplay::default(),
+            usage: None,
+            presence_enabled: true,
+        }
+    }
 }
 
 /// State shared between the controller, usage worker, and tray UI.
@@ -105,10 +137,12 @@ impl SharedState {
         }
     }
 
-    pub fn publish_ui(&self, connection: &str, session: SessionDisplay) {
+    pub fn publish_ui(&self, connection: ConnectionStatus, session: SessionDisplay) {
+        let presence_enabled = self.settings.lock().unwrap().presence_enabled;
         let mut ui = self.ui.lock().unwrap();
-        ui.connection = connection.to_string();
+        ui.connection = connection;
         ui.session = session;
+        ui.presence_enabled = presence_enabled;
     }
 
     pub fn set_usage(&self, usage: Option<UsageInfo>) {
@@ -163,13 +197,13 @@ pub fn build_session_view(settings: &Settings, session: Option<&SessionInfo>) ->
 }
 
 fn session_fields(settings: &Settings, info: &SessionInfo) -> SessionFields {
-    let title = if settings.show_model {
+    let effective_name = if settings.show_model {
         info.model.clone().unwrap_or_else(|| "agentcord".to_string())
     } else {
         "agentcord".to_string()
     };
     let model_label = if settings.show_model {
-        info.model.clone().unwrap_or_else(|| "agentcord".to_string())
+        effective_name.clone()
     } else {
         String::new()
     };
@@ -184,7 +218,7 @@ fn session_fields(settings: &Settings, info: &SessionInfo) -> SessionFields {
         None
     };
     SessionFields {
-        title,
+        title: effective_name,
         model_label,
         project,
         tokens_line,
@@ -269,8 +303,9 @@ pub struct PresenceController {
 
 impl PresenceController {
     pub fn new(shared: Arc<SharedState>) -> Self {
-        let idle_window = shared.settings.lock().unwrap().idle_window_seconds.max(1.0);
-        let session = ClaudeSession::new().with_active_window(Duration::from_secs_f64(idle_window));
+        let settings = shared.settings.lock().unwrap().clone();
+        let mut session = ClaudeSession::new();
+        sync_session_window(&mut session, &settings);
         Self {
             shared,
             pid: std::process::id(),
@@ -285,38 +320,34 @@ impl PresenceController {
     pub fn run(mut self) {
         while !self.shared.quit.load(Ordering::Relaxed) {
             if !self.shared.settings.lock().unwrap().presence_enabled {
-                self.idle_tick("Off");
+                self.idle_tick(ConnectionStatus::Off);
                 sleep(UPDATE_INTERVAL);
                 continue;
             }
 
-            let end = self.connect_and_serve();
-            match end {
+            match self.connect_and_serve() {
                 ConnectionEnd::Quit => break,
-                ConnectionEnd::Disabled => {
-                    self.last_sent.force_resend();
-                    continue;
+                ConnectionEnd::Disabled => self.last_sent.force_resend(),
+                ConnectionEnd::CouldNotConnect => {
+                    self.idle_tick(ConnectionStatus::Disconnected);
+                    self.backoff();
                 }
-                ConnectionEnd::Dropped => self.attempt = 0,
-                ConnectionEnd::CouldNotConnect => self.idle_tick("Disconnected"),
-            }
-            if !matches!(end, ConnectionEnd::Disabled | ConnectionEnd::Quit) {
-                if !matches!(end, ConnectionEnd::CouldNotConnect) {
+                ConnectionEnd::Dropped => {
+                    self.attempt = 0;
                     self.shared.publish_ui(
-                        "Disconnected",
+                        ConnectionStatus::Disconnected,
                         self.shared.ui.lock().unwrap().session.clone(),
                     );
+                    self.backoff();
                 }
-                self.backoff();
             }
         }
     }
 
     /// Scan session and publish tray state while Discord is disconnected.
-    fn idle_tick(&mut self, connection: &str) {
+    fn idle_tick(&mut self, connection: ConnectionStatus) {
         let settings = self.shared.settings.lock().unwrap().clone();
-        self.session
-            .set_active_window(Duration::from_secs_f64(settings.idle_window_seconds.max(1.0)));
+        sync_session_window(&mut self.session, &settings);
         let session_info = self.session.scan();
         let view = build_session_view(&settings, session_info.as_ref());
         self.shared.publish_ui(connection, view.display);
@@ -324,7 +355,7 @@ impl PresenceController {
 
     fn connect_and_serve(&mut self) -> ConnectionEnd {
         println!("[discord] connecting");
-        self.idle_tick("Connecting…");
+        self.idle_tick(ConnectionStatus::Connecting);
 
         let mut pipe = match connect_handshake(DISCORD_CLIENT_ID) {
             Ok(p) => p,
@@ -348,11 +379,10 @@ impl PresenceController {
                 return ConnectionEnd::Disabled;
             }
 
-            self.session
-                .set_active_window(Duration::from_secs_f64(settings.idle_window_seconds.max(1.0)));
+            sync_session_window(&mut self.session, &settings);
             let session_info = self.session.scan();
             let view = build_session_view(&settings, session_info.as_ref());
-            self.shared.publish_ui("Connected", view.display);
+            self.shared.publish_ui(ConnectionStatus::Connected, view.display);
 
             let presence = view.presence;
             if self.last_sent.needs_send(&presence) {
@@ -381,6 +411,10 @@ enum ConnectionEnd {
     Dropped,
     Quit,
     Disabled,
+}
+
+fn sync_session_window(session: &mut ClaudeSession, settings: &Settings) {
+    session.set_active_window(Duration::from_secs_f64(settings.idle_window_seconds.max(1.0)));
 }
 
 fn non_empty(s: &str) -> Option<String> {

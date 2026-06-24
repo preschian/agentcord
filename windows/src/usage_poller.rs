@@ -25,8 +25,9 @@ pub fn run(shared: Arc<SharedState>) {
 
         let refresh_now = shared.usage_refresh.swap(false, Ordering::Relaxed);
         if refresh_now || Instant::now() >= next_poll {
-            if let Some(info) = claude_usage::fetch() {
-                shared.set_usage(Some(info));
+            match claude_usage::fetch() {
+                Some(info) => shared.set_usage(Some(info)),
+                None => shared.set_usage(None),
             }
             next_poll = Instant::now() + claude_usage::POLL_INTERVAL;
         }

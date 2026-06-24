@@ -7,8 +7,7 @@
 //! Default (no args) launches the tray app: a notification-area icon with a
 //! status popover (left-click) and context menu (right-click), driving the
 //! presence controller. The other subcommands (`run`, `session`, `ipc`) are
-//! subcommands (`run`, `session`, `ipc`) are headless modes for debugging —
-//! see the usage text in `main`.
+//! headless modes for debugging — see the usage text in `main`.
 
 mod autostart;
 mod claude_session;

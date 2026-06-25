@@ -4,7 +4,7 @@
 //
 //  Polls Anthropic's public status page (https://status.claude.com) so the
 //  popover can surface when Claude Code / the API / claude.ai are having
-//  trouble. The page is an Atlassian Statuspage, which exposes an unauthbed
+//  trouble. The page is an Atlassian Statuspage, which exposes an unauthed
 //  JSON summary at `/api/v2/summary.json` carrying the overall indicator, each
 //  component's status, and any unresolved incidents.
 //
@@ -95,7 +95,7 @@ final class AnthropicStatus: ObservableObject {
                     return
                 }
                 self.lastSuccess = Date()
-                self.publish(decoded.toStatusInfo())
+                self.publish(decoded.toStatusInfo(fetchedAt: Date()))
             }
         }.resume()
     }
@@ -118,10 +118,12 @@ final class AnthropicStatus: ObservableObject {
 
 // MARK: - Snapshot
 
-/// What the popover renders: the overall indicator/description, the components
-/// that are *not* operational, and any unresolved incidents.
+/// What the popover renders: the overall indicator, every component's status,
+/// any unresolved incidents, and when the snapshot was fetched (for the
+/// "updated …" line).
 struct StatusInfo: Equatable {
 
+    /// Overall severity, mapped from the page's `status.indicator`.
     enum Level: String {
         case none, minor, major, critical, maintenance, unknown
 
@@ -130,32 +132,61 @@ struct StatusInfo: Equatable {
         }
     }
 
-    struct Component: Equatable {
-        let name: String
-        /// Raw Statuspage status, e.g. "degraded_performance".
-        let status: String
+    /// A component's status, mapped from Statuspage's raw status strings.
+    enum ComponentStatus {
+        case operational, degraded, partialOutage, majorOutage, maintenance, unknown
 
-        /// Human-readable, e.g. "Degraded Performance".
-        var statusText: String {
-            status.split(separator: "_")
-                .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-                .joined(separator: " ")
+        init(raw: String) {
+            switch raw {
+            case "operational": self = .operational
+            case "degraded_performance": self = .degraded
+            case "partial_outage": self = .partialOutage
+            case "major_outage": self = .majorOutage
+            case "under_maintenance": self = .maintenance
+            default: self = .unknown
+            }
         }
+
+        var isOperational: Bool { self == .operational }
+
+        /// Short label shown in the breakdown, e.g. "Degraded".
+        var label: String {
+            switch self {
+            case .operational: return "Operational"
+            case .degraded: return "Degraded"
+            case .partialOutage: return "Partial Outage"
+            case .majorOutage: return "Major Outage"
+            case .maintenance: return "Maintenance"
+            case .unknown: return "Unknown"
+            }
+        }
+    }
+
+    struct Component: Equatable {
+        /// Display name with the Statuspage parenthetical stripped, e.g.
+        /// "Claude API" rather than "Claude API (api.anthropic.com)".
+        let name: String
+        let status: ComponentStatus
     }
 
     struct Incident: Equatable {
         let name: String
+        /// "investigating" / "identified" / "monitoring" / …
+        let status: String
         let impact: String
+        let startedAt: Date?
     }
 
-    /// Overall severity, mapped from the page's `status.indicator`.
     let level: Level
-    /// Overall description, e.g. "All Systems Operational".
-    let description: String
-    /// Components whose status is anything other than "operational".
-    let problems: [Component]
+    /// Short pill label for the overall state, e.g. "Operational" / "Degraded".
+    let summaryLabel: String
+    let components: [Component]
     /// Unresolved incidents (the page only lists active ones here).
     let incidents: [Incident]
+    let fetchedAt: Date
+
+    /// Number of components that aren't fully operational.
+    var degradedCount: Int { components.filter { !$0.status.isOperational }.count }
 }
 
 // MARK: - Wire format
@@ -166,7 +197,6 @@ private struct SummaryResponse: Decodable {
 
     struct Status: Decodable {
         let indicator: String?
-        let description: String?
     }
 
     struct Component: Decodable {
@@ -178,32 +208,78 @@ private struct SummaryResponse: Decodable {
 
     struct Incident: Decodable {
         let name: String?
+        let status: String?
         let impact: String?
+        let started_at: String?
     }
 
     let status: Status?
     let components: [Component]?
     let incidents: [Incident]?
 
-    func toStatusInfo() -> StatusInfo {
-        let problems: [StatusInfo.Component] = (components ?? []).compactMap { c in
-            guard c.group != true,
-                  let name = c.name,
-                  let status = c.status,
-                  status != "operational" else { return nil }
-            return StatusInfo.Component(name: name, status: status)
+    func toStatusInfo(fetchedAt: Date) -> StatusInfo {
+        let components: [StatusInfo.Component] = (self.components ?? []).compactMap { c in
+            guard c.group != true, let name = c.name, let status = c.status else { return nil }
+            return StatusInfo.Component(
+                name: Self.shortName(name),
+                status: StatusInfo.ComponentStatus(raw: status)
+            )
         }
 
-        let incidents: [StatusInfo.Incident] = (incidents ?? []).compactMap { i in
+        let incidents: [StatusInfo.Incident] = (self.incidents ?? []).compactMap { i in
             guard let name = i.name else { return nil }
-            return StatusInfo.Incident(name: name, impact: i.impact ?? "none")
+            return StatusInfo.Incident(
+                name: name,
+                status: i.status ?? "investigating",
+                impact: i.impact ?? "none",
+                startedAt: Self.parseDate(i.started_at)
+            )
         }
 
+        let level = StatusInfo.Level(indicator: status?.indicator)
         return StatusInfo(
-            level: StatusInfo.Level(indicator: status?.indicator),
-            description: status?.description ?? "Status unknown",
-            problems: problems,
-            incidents: incidents
+            level: level,
+            summaryLabel: Self.summaryLabel(for: level),
+            components: components,
+            incidents: incidents,
+            fetchedAt: fetchedAt
         )
+    }
+
+    /// Drops the trailing parenthetical so names stay compact in the popover,
+    /// e.g. "Claude API (api.anthropic.com)" -> "Claude API".
+    private static func shortName(_ name: String) -> String {
+        guard let paren = name.firstIndex(of: "(") else { return name }
+        return name[..<paren].trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func summaryLabel(for level: StatusInfo.Level) -> String {
+        switch level {
+        case .none: return "Operational"
+        case .minor: return "Degraded"
+        case .major: return "Partial Outage"
+        case .critical: return "Major Outage"
+        case .maintenance: return "Maintenance"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let isoPlain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    /// Parses timestamps like "2026-06-13T00:50:43.823Z", tolerating the
+    /// presence or absence of fractional seconds.
+    private static func parseDate(_ string: String?) -> Date? {
+        guard let string, !string.isEmpty else { return nil }
+        return isoFractional.date(from: string) ?? isoPlain.date(from: string)
     }
 }

@@ -16,6 +16,7 @@
 		BB0000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000009 /* Assets.xcassets */; };
 		BB0000000000000000000008 /* LoginItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000A /* LoginItem.swift */; };
 		BB0000000000000000000009 /* ClaudeUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* ClaudeUsage.swift */; };
+		BB000000000000000000000A /* AnthropicStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000C /* AnthropicStatus.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 		AA0000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA000000000000000000000A /* LoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItem.swift; sourceTree = "<group>"; };
 		AA000000000000000000000B /* ClaudeUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeUsage.swift; sourceTree = "<group>"; };
+		AA000000000000000000000C /* AnthropicStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnthropicStatus.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -62,6 +64,7 @@
 				AA0000000000000000000006 /* Models.swift */,
 				AA000000000000000000000A /* LoginItem.swift */,
 				AA000000000000000000000B /* ClaudeUsage.swift */,
+				AA000000000000000000000C /* AnthropicStatus.swift */,
 				AA0000000000000000000009 /* Assets.xcassets */,
 				AA0000000000000000000007 /* AgentCord.entitlements */,
 			);
@@ -153,6 +156,7 @@
 				BB0000000000000000000006 /* Models.swift in Sources */,
 				BB0000000000000000000008 /* LoginItem.swift in Sources */,
 				BB0000000000000000000009 /* ClaudeUsage.swift in Sources */,
+				BB000000000000000000000A /* AnthropicStatus.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

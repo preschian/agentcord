@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
+    let anthropicStatus = AnthropicStatus()
     lazy var controller = PresenceController(settings: settings)
 
     private var statusItem: NSStatusItem!
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         controller.start()
         usage.start()
+        anthropicStatus.start()
 
         setupStatusItem()
         setupPopover()
@@ -90,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller)
             .environmentObject(loginItem)
             .environmentObject(usage)
+            .environmentObject(anthropicStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
         // Settings section made the popover wobble. Pushing the size through a
@@ -119,8 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            // Pull fresh usage numbers as the popover opens so they're current.
+            // Pull fresh usage numbers and Anthropic status as the popover
+            // opens so they're current.
             usage.refresh()
+            anthropicStatus.refresh()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
@@ -286,6 +291,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var usage: ClaudeUsage
+    @EnvironmentObject private var anthropicStatus: AnthropicStatus
 
     @State private var expandDisplay = false
     @State private var expandActivity = false
@@ -297,6 +303,7 @@ struct MenuContentView: View {
             header
             activeSessionCard
             usageCard
+            statusCard
             primaryToggles
             advancedSections
             Rectangle()
@@ -561,6 +568,116 @@ struct MenuContentView: View {
         f.setLocalizedDateFormatFromTemplate("MMMd")
         return f
     }()
+
+    // MARK: Anthropic status card
+
+    /// Surfaces Anthropic's status page. Hidden entirely until the first
+    /// successful fetch (so a brief offline moment shows nothing rather than a
+    /// broken card). Collapses to a single green line when all is well, and
+    /// expands to list the affected components and active incidents otherwise.
+    @ViewBuilder
+    private var statusCard: some View {
+        if let status = anthropicStatus.current {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Text("ANTHROPIC STATUS")
+                        .font(.system(size: 11, weight: .semibold))
+                        .tracking(0.5)
+                        .foregroundStyle(Palette.secondary.opacity(0.55))
+                    Spacer()
+                    Link(destination: URL(string: "https://status.claude.com")!) {
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Palette.secondary.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(statusColor(status.level))
+                        .frame(width: 7, height: 7)
+                    Text(status.description)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Palette.text)
+                }
+
+                if !status.problems.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(status.problems, id: \.name) { component in
+                            HStack(spacing: 6) {
+                                Text(component.name)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Palette.secondary.opacity(0.8))
+                                Spacer(minLength: 8)
+                                Text(component.statusText)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundStyle(componentColor(component.status))
+                            }
+                        }
+                    }
+                    .padding(.leading, 14)
+                }
+
+                if !status.incidents.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(status.incidents, id: \.name) { incident in
+                            HStack(alignment: .top, spacing: 6) {
+                                Circle()
+                                    .fill(impactColor(incident.impact))
+                                    .frame(width: 5, height: 5)
+                                    .padding(.top, 4)
+                                Text(incident.name)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(Palette.secondary.opacity(0.8))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    .padding(.leading, 14)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 11).padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        }
+    }
+
+    /// Color for the overall page indicator.
+    private func statusColor(_ level: StatusInfo.Level) -> Color {
+        switch level {
+        case .none: return Palette.green
+        case .minor: return Palette.yellow
+        case .major: return Palette.orange
+        case .critical: return Palette.red
+        case .maintenance: return Palette.blue
+        case .unknown: return Palette.track
+        }
+    }
+
+    /// Color for a single component's raw status string.
+    private func componentColor(_ status: String) -> Color {
+        switch status {
+        case "operational": return Palette.green
+        case "degraded_performance": return Palette.yellow
+        case "under_maintenance": return Palette.blue
+        case "partial_outage": return Palette.orange
+        case "major_outage": return Palette.red
+        default: return Palette.orange
+        }
+    }
+
+    /// Color for an incident's impact level.
+    private func impactColor(_ impact: String) -> Color {
+        switch impact {
+        case "none", "maintenance": return Palette.blue
+        case "minor": return Palette.yellow
+        case "major": return Palette.orange
+        case "critical": return Palette.red
+        default: return Palette.orange
+        }
+    }
 
     // MARK: Primary toggles
 

@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
+    let anthropicStatus = AnthropicStatus()
     lazy var controller = PresenceController(settings: settings)
 
     private var statusItem: NSStatusItem!
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         controller.start()
         usage.start()
+        anthropicStatus.start()
 
         setupStatusItem()
         setupPopover()
@@ -90,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller)
             .environmentObject(loginItem)
             .environmentObject(usage)
+            .environmentObject(anthropicStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
         // Settings section made the popover wobble. Pushing the size through a
@@ -119,8 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            // Pull fresh usage numbers as the popover opens so they're current.
+            // Pull fresh usage numbers and Anthropic status as the popover
+            // opens so they're current.
             usage.refresh()
+            anthropicStatus.refresh()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
@@ -286,9 +291,11 @@ struct MenuContentView: View {
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var usage: ClaudeUsage
+    @EnvironmentObject private var anthropicStatus: AnthropicStatus
 
     @State private var expandDisplay = false
     @State private var expandActivity = false
+    @State private var expandStatus = false
 
     private let idleSteps = [5, 10, 15, 20, 25, 30]
 
@@ -297,6 +304,7 @@ struct MenuContentView: View {
             header
             activeSessionCard
             usageCard
+            statusCard
             primaryToggles
             advancedSections
             Rectangle()
@@ -562,6 +570,210 @@ struct MenuContentView: View {
         return f
     }()
 
+    // MARK: Claude status card
+
+    /// Surfaces status.claude.com: a severity pill in the header, any active
+    /// incident as a callout, and an expandable per-component breakdown. Hidden
+    /// entirely until the first successful fetch, so a brief offline moment
+    /// shows nothing rather than a broken card.
+    @ViewBuilder
+    private var statusCard: some View {
+        if let status = anthropicStatus.current {
+            VStack(alignment: .leading, spacing: 9) {
+                statusHeader(status)
+
+                ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
+                    incidentCallout(incident)
+                }
+
+                if expandStatus {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(Array(status.components.enumerated()), id: \.offset) { _, comp in
+                            componentRow(comp)
+                        }
+                    }
+                    .padding(.top, 9)
+                    .overlay(alignment: .top) {
+                        Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
+                    }
+                }
+
+                statusFooter(status)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 11).padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        }
+    }
+
+    /// Section label, severity pill, and the expand chevron. The whole row
+    /// toggles the per-component breakdown.
+    private func statusHeader(_ status: StatusInfo) -> some View {
+        let pill = statusPillStyle(status.level)
+        return Button {
+            expandStatus.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Text("CLAUDE STATUS")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Spacer()
+                HStack(spacing: 5) {
+                    Circle().fill(pill.dot).frame(width: 6, height: 6)
+                    Text(status.summaryLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(pill.text)
+                }
+                .padding(.leading, 6).padding(.trailing, 8).padding(.vertical, 2)
+                .background(Capsule().fill(pill.bg))
+                .overlay(Capsule().stroke(pill.border, lineWidth: 0.5))
+                Image(systemName: expandStatus ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Palette.secondary.opacity(0.35))
+                    // Pin the chevron's slot: chevron.down and chevron.right have
+                    // different widths, so without a fixed frame the pill beside
+                    // it shifts a pixel each time the section toggles.
+                    .frame(width: 10, alignment: .center)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// An active incident, tinted by its impact.
+    private func incidentCallout(_ incident: StatusInfo.Incident) -> some View {
+        let tint = impactColor(incident.impact)
+        return HStack(alignment: .top, spacing: 8) {
+            Circle().fill(tint).frame(width: 6, height: 6).padding(.top, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(incident.name)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.text)
+                    .lineSpacing(1)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(incidentMeta(incident))
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 9).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tint.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(tint.opacity(0.2), lineWidth: 0.5))
+    }
+
+    /// One row of the per-component breakdown.
+    private func componentRow(_ comp: StatusInfo.Component) -> some View {
+        let color = componentColor(comp.status)
+        return HStack(spacing: 10) {
+            Text(comp.name)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Palette.text)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 5) {
+                Circle().fill(color).frame(width: 6, height: 6)
+                Text(comp.status.label)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(color)
+                    .fixedSize()
+            }
+        }
+    }
+
+    /// Footer summary line plus a link out to the full status page.
+    private func statusFooter(_ status: StatusInfo) -> some View {
+        let count = status.degradedCount
+        let summary = count > 0
+            ? "\(count) of \(status.components.count) degraded · updated \(relativeUpdated(status.fetchedAt))"
+            : "All systems operational · updated \(relativeUpdated(status.fetchedAt))"
+        return Link(destination: URL(string: "https://status.claude.com")!) {
+            HStack {
+                Text(summary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.secondary.opacity(0.5))
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Palette.secondary.opacity(0.35))
+            }
+            .padding(.top, 8)
+            .contentShape(Rectangle())
+            .overlay(alignment: .top) {
+                Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Status formatting
+
+    private func statusPillStyle(_ level: StatusInfo.Level) -> (bg: Color, border: Color, dot: Color, text: Color) {
+        switch level {
+        case .none:
+            return (Palette.green.opacity(0.12), Palette.green.opacity(0.28), Palette.green, Palette.greenText)
+        case .minor, .major:
+            return (Palette.orange.opacity(0.12), Palette.orange.opacity(0.3), Palette.orange, Palette.orangeText)
+        case .critical:
+            return (Palette.red.opacity(0.12), Palette.red.opacity(0.3), Palette.red, Palette.redText)
+        case .maintenance:
+            return (Palette.blue.opacity(0.12), Palette.blue.opacity(0.3), Palette.blue, Palette.blueText)
+        case .unknown:
+            return (Palette.track.opacity(0.14), Palette.track.opacity(0.28), Palette.track, Palette.secondary.opacity(0.7))
+        }
+    }
+
+    private func componentColor(_ status: StatusInfo.ComponentStatus) -> Color {
+        switch status {
+        case .operational: return Palette.green
+        case .degraded, .partialOutage: return Palette.orange
+        case .majorOutage: return Palette.red
+        case .maintenance: return Palette.blue
+        case .unknown: return Palette.track
+        }
+    }
+
+    private func impactColor(_ impact: String) -> Color {
+        switch impact {
+        case "critical": return Palette.red
+        case "minor": return Palette.yellow
+        case "maintenance": return Palette.blue
+        default: return Palette.orange   // "major" and anything else
+        }
+    }
+
+    /// Capitalized incident status plus how long ago it started, e.g.
+    /// "Monitoring · started 22m ago".
+    private func incidentMeta(_ incident: StatusInfo.Incident) -> String {
+        let status = incident.status.prefix(1).uppercased() + incident.status.dropFirst()
+        guard let started = incident.startedAt else { return status }
+        return "\(status) · started \(compactDuration(since: started)) ago"
+    }
+
+    /// Compact "since" duration: "45s", "22m", "1h 12m", "3d".
+    private func compactDuration(since date: Date) -> String {
+        let secs = max(0, Int(Date().timeIntervalSince(date)))
+        if secs < 60 { return "\(secs)s" }
+        if secs < 3600 { return "\(secs / 60)m" }
+        if secs < 86400 {
+            let h = secs / 3600, m = (secs % 3600) / 60
+            return m > 0 ? "\(h)h \(m)m" : "\(h)h"
+        }
+        return "\(secs / 86400)d"
+    }
+
+    /// Relative freshness for the footer: "just now", "5m ago", "2h ago".
+    private func relativeUpdated(_ date: Date) -> String {
+        let secs = max(0, Int(Date().timeIntervalSince(date)))
+        if secs < 60 { return "just now" }
+        if secs < 3600 { return "\(secs / 60)m ago" }
+        if secs < 86400 { return "\(secs / 3600)h ago" }
+        return "\(secs / 86400)d ago"
+    }
+
     // MARK: Primary toggles
 
     private var primaryToggles: some View {
@@ -776,7 +988,10 @@ private enum Palette {
     static let discord = Color(.sRGB, red: 0.345, green: 0.396, blue: 0.949)
     static let yellow = Color(.sRGB, red: 0.9, green: 0.7, blue: 0.0)
     static let orange = Color(.sRGB, red: 1.0, green: 0.584, blue: 0.0)
+    static let orangeText = Color(.sRGB, red: 0.761, green: 0.4, blue: 0.039)
     static let red = Color(.sRGB, red: 1.0, green: 0.231, blue: 0.188)
+    static let redText = Color(.sRGB, red: 0.753, green: 0.153, blue: 0.122)
+    static let blueText = Color(.sRGB, red: 0.0, green: 0.341, blue: 0.714)
 }
 
 /// iOS-style toggle switch matching the design (28×17, green when on).

@@ -49,7 +49,11 @@ final class ClaudeUsage: ObservableObject {
     private var timer: DispatchSourceTimer?
 
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
-    private static let keychainService = "Claude Code-credentials"
+
+    /// The service name Claude Code stores its credentials under. Older versions
+    /// use exactly this; newer ones (v2.1.52+) append a per-install suffix, e.g.
+    /// "Claude Code-credentials-<hash>", so we match by prefix.
+    private static let keychainServicePrefix = "Claude Code-credentials"
 
     init() {
         let config = URLSessionConfiguration.ephemeral
@@ -131,27 +135,89 @@ final class ClaudeUsage: ObservableObject {
 
     // MARK: Keychain
 
-    /// Reads Claude Code's OAuth access token from the login keychain. The item
-    /// belongs to Claude Code, so the first read may prompt the user to allow
-    /// access; choosing "Always Allow" adds us to the item's ACL and silences
-    /// the prompt thereafter. A denial or missing item simply returns nil.
+    /// Reads Claude Code's OAuth access token from the login keychain without
+    /// spamming the keychain access dialog.
+    ///
+    /// The item belongs to Claude Code, not us, so two rules keep this quiet:
+    ///
+    ///  - We never fetch the secret through the Security framework
+    ///    (`SecItemCopyMatching` + `kSecReturnData`): for an item we don't own
+    ///    that call re-prompts on *every* read, so "Always Allow" only silences a
+    ///    single cycle. We use it solely for a metadata list query (attributes,
+    ///    no data), which does not prompt, to discover which service names exist.
+    ///  - The secret itself is read by shelling out to `/usr/bin/security`. That
+    ///    binary is stable and Apple-signed, so a one-time "Always Allow" sticks
+    ///    permanently rather than breaking every time our app is rebuilt.
+    ///
+    /// Newer Claude Code versions store the item under a suffixed service name
+    /// and may keep several entries, so we scan every `Claude Code-credentials*`
+    /// service and return the token that expires latest. Any failure yields nil.
     private static func readAccessToken() -> String? {
+        var best: (token: String, expiresAt: Double)?
+        for (service, account) in discoverCredentialServices() {
+            guard let oauth = readOAuthViaSecurityCLI(service: service, account: account),
+                  let token = oauth["accessToken"] as? String, !token.isEmpty else {
+                continue
+            }
+            let expiresAt = oauth["expiresAt"] as? Double ?? 0
+            if best == nil || expiresAt > best!.expiresAt {
+                best = (token, expiresAt)
+            }
+        }
+        return best?.token
+    }
+
+    /// Enumerate the keychain for every generic-password item whose service name
+    /// starts with `keychainServicePrefix`, returning their (service, account)
+    /// pairs. This list query returns attributes only — no secret data — so it
+    /// does not trigger the keychain access dialog. If the query fails (some
+    /// legacy login keychains reject it), fall back to the bare service name.
+    private static func discoverCredentialServices() -> [(service: String, account: String?)] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecReturnAttributes as String: true,
+            kSecReturnRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
         ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data,
+        var raw: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &raw) == errSecSuccess,
+              let items = raw as? [[String: Any]] else {
+            return [(keychainServicePrefix, nil)]
+        }
+
+        var result: [(service: String, account: String?)] = []
+        for item in items {
+            guard let service = item[kSecAttrService as String] as? String,
+                  service.hasPrefix(keychainServicePrefix) else { continue }
+            let account = item[kSecAttrAccount as String] as? String
+            result.append((service, (account?.isEmpty == false) ? account : nil))
+        }
+        return result.isEmpty ? [(keychainServicePrefix, nil)] : result
+    }
+
+    /// Read one credential item's `claudeAiOauth` dictionary via the `security`
+    /// CLI. Returns nil on any failure (missing item, denied access, bad JSON).
+    private static func readOAuthViaSecurityCLI(service: String, account: String?) -> [String: Any]? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        var args = ["find-generic-password", "-s", service]
+        if let account { args.append(contentsOf: ["-a", account]) }
+        args.append("-w")
+        process.arguments = args
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = json["claudeAiOauth"] as? [String: Any],
-              let token = oauth["accessToken"] as? String,
-              !token.isEmpty else {
+              let oauth = json["claudeAiOauth"] as? [String: Any] else {
             return nil
         }
-        return token
+        return oauth
     }
 }
 

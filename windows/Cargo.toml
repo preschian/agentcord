@@ -1,6 +1,6 @@
 [package]
 name = "agentcord"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Put your Claude Code activity on your Discord profile (Windows native tray app)"
 

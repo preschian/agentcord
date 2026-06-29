@@ -293,20 +293,43 @@ struct MenuContentView: View {
     @EnvironmentObject private var usage: ClaudeUsage
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
 
+    @State private var showSettings = false
     @State private var expandDisplay = false
     @State private var expandActivity = false
     @State private var expandStatus = false
 
     private let idleSteps = [5, 10, 15, 20, 25, 30]
 
+    // Screens slide horizontally: going to Settings pushes left, going back
+    // pushes right. Using `.transition(.move)` (rather than animating an explicit
+    // height) keeps the popover height constant for the whole slide and lets it
+    // snap once at the end — that's what kept the earlier version from looking
+    // messy, where the height interpolated and the popover resized every frame.
     var body: some View {
+        ZStack(alignment: .top) {
+            if showSettings {
+                settingsScreen
+                    .transition(.move(edge: .trailing))
+            } else {
+                mainScreen
+                    .transition(.move(edge: .leading))
+            }
+        }
+        .frame(width: 300, alignment: .top)
+        .clipped()
+        .foregroundStyle(Palette.text)
+        .animation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32), value: showSettings)
+    }
+
+    // MARK: Screens
+
+    private var mainScreen: some View {
         VStack(alignment: .leading, spacing: 11) {
             header
             activeSessionCard
             usageCard
             statusCard
-            primaryToggles
-            advancedSections
+            settingsNavRow
             Rectangle()
                 .fill(Color.black.opacity(0.08))
                 .frame(height: 0.5)
@@ -314,8 +337,17 @@ struct MenuContentView: View {
             quitButton
         }
         .padding(13)
-        .frame(width: 300)
-        .foregroundStyle(Palette.text)
+        .frame(width: 300, alignment: .topLeading)
+    }
+
+    private var settingsScreen: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            settingsHeader
+            primaryToggles
+            advancedSections
+        }
+        .padding(13)
+        .frame(width: 300, alignment: .topLeading)
     }
 
     // MARK: Header
@@ -369,6 +401,57 @@ struct MenuContentView: View {
         .padding(.leading, 6).padding(.trailing, 8).padding(.vertical, 2)
         .background(Capsule().fill(accent.opacity(0.12)))
         .overlay(Capsule().stroke(accent.opacity(0.28), lineWidth: 0.5))
+    }
+
+    /// Settings screen header: a back chevron that returns to the main screen,
+    /// plus the title.
+    private var settingsHeader: some View {
+        HStack(spacing: 9) {
+            Button {
+                showSettings = false
+            } label: {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Palette.track.opacity(0.14))
+                    .frame(width: 26, height: 26)
+                    .overlay(
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Palette.text)
+                    )
+            }
+            .buttonStyle(.plain)
+
+            Text("Settings")
+                .font(.system(size: 15, weight: .semibold))
+            Spacer()
+        }
+    }
+
+    /// Main-screen row that slides over to the settings screen. Mirrors the
+    /// collapsible-section styling and summarizes presence state.
+    private var settingsNavRow: some View {
+        Button {
+            showSettings = true
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.secondary.opacity(0.65))
+                Text("Settings").font(.system(size: 13))
+                Spacer()
+                Text(settings.presenceEnabled ? "Presence on" : "Presence off")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondary.opacity(0.4))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.secondary.opacity(0.3))
+            }
+            .padding(.horizontal, 11).padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
     }
 
     // MARK: Active session card
@@ -572,53 +655,51 @@ struct MenuContentView: View {
 
     // MARK: Claude status card
 
-    /// Surfaces status.claude.com: a severity pill in the header, any active
-    /// incident as a callout, and an expandable per-component breakdown. Hidden
-    /// entirely until the first successful fetch, so a brief offline moment
-    /// shows nothing rather than a broken card.
+    /// Surfaces status.claude.com as a compact collapsible row: a severity pill
+    /// in the header that expands to any active incident plus a per-component
+    /// breakdown. Hidden entirely until the first successful fetch, so a brief
+    /// offline moment shows nothing rather than a broken card.
     @ViewBuilder
     private var statusCard: some View {
         if let status = anthropicStatus.current {
-            VStack(alignment: .leading, spacing: 9) {
+            VStack(spacing: 0) {
                 statusHeader(status)
 
-                ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
-                    incidentCallout(incident)
-                }
-
                 if expandStatus {
-                    VStack(alignment: .leading, spacing: 7) {
-                        ForEach(Array(status.components.enumerated()), id: \.offset) { _, comp in
-                            componentRow(comp)
+                    VStack(alignment: .leading, spacing: 9) {
+                        ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
+                            incidentCallout(incident)
                         }
+
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(Array(status.components.enumerated()), id: \.offset) { _, comp in
+                                componentRow(comp)
+                            }
+                        }
+
+                        statusFooter(status)
                     }
-                    .padding(.top, 9)
+                    .padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 10)
                     .overlay(alignment: .top) {
                         Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
                     }
                 }
-
-                statusFooter(status)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 11).padding(.horizontal, 12)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
         }
     }
 
-    /// Section label, severity pill, and the expand chevron. The whole row
-    /// toggles the per-component breakdown.
+    /// Collapsed row: "Claude status" label, severity pill, and expand chevron.
+    /// The whole row toggles the per-component breakdown.
     private func statusHeader(_ status: StatusInfo) -> some View {
         let pill = statusPillStyle(status.level)
         return Button {
             expandStatus.toggle()
         } label: {
             HStack(spacing: 6) {
-                Text("CLAUDE STATUS")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Text("Claude status").font(.system(size: 13))
                 Spacer()
                 HStack(spacing: 5) {
                     Circle().fill(pill.dot).frame(width: 6, height: 6)
@@ -637,6 +718,7 @@ struct MenuContentView: View {
                     // it shifts a pixel each time the section toggles.
                     .frame(width: 10, alignment: .center)
             }
+            .padding(.horizontal, 11).padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -1,0 +1,40 @@
+name: macOS CI
+
+on:
+  push:
+    paths:
+      - "AgentCord/**"
+      - "AgentCord.xcodeproj/**"
+      - ".github/workflows/macos.yml"
+  pull_request:
+    paths:
+      - "AgentCord/**"
+      - "AgentCord.xcodeproj/**"
+      - ".github/workflows/macos.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build AgentCord.app
+        run: |
+          xcodebuild \
+            -project AgentCord.xcodeproj \
+            -scheme AgentCord \
+            -configuration Debug \
+            -derivedDataPath DerivedData \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            build

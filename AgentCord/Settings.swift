@@ -21,6 +21,7 @@ final class SettingsStore: ObservableObject {
         static let showMenuBarStatus = "showMenuBarStatus"
         static let showUsageInMenuBar = "showUsageInMenuBar"
         static let doNotDisturb = "doNotDisturb"
+        static let preventSleep = "preventSleep"
         static let largeImageKey = "largeImageKey"
         static let smallImageKey = "smallImageKey"
         static let activityType = "activityType"
@@ -41,6 +42,7 @@ final class SettingsStore: ObservableObject {
     @Published var showMenuBarStatus: Bool { didSet { defaults.set(showMenuBarStatus, forKey: Key.showMenuBarStatus) } }
     @Published var showUsageInMenuBar: Bool { didSet { defaults.set(showUsageInMenuBar, forKey: Key.showUsageInMenuBar) } }
     @Published var doNotDisturb: Bool { didSet { defaults.set(doNotDisturb, forKey: Key.doNotDisturb) } }
+    @Published var preventSleep: Bool { didSet { defaults.set(preventSleep, forKey: Key.preventSleep) } }
     @Published var largeImageKey: String { didSet { defaults.set(largeImageKey, forKey: Key.largeImageKey) } }
     @Published var smallImageKey: String { didSet { defaults.set(smallImageKey, forKey: Key.smallImageKey) } }
     @Published var activityType: Int { didSet { defaults.set(activityType, forKey: Key.activityType) } }
@@ -57,6 +59,7 @@ final class SettingsStore: ObservableObject {
             Key.showMenuBarStatus: true,
             Key.showUsageInMenuBar: false,
             Key.doNotDisturb: false,
+            Key.preventSleep: false,
             Key.largeImageKey: "claude-color",
             Key.smallImageKey: "discord-presence-icon",
             Key.activityType: 0,
@@ -71,6 +74,7 @@ final class SettingsStore: ObservableObject {
         showMenuBarStatus = defaults.bool(forKey: Key.showMenuBarStatus)
         showUsageInMenuBar = defaults.bool(forKey: Key.showUsageInMenuBar)
         doNotDisturb = defaults.bool(forKey: Key.doNotDisturb)
+        preventSleep = defaults.bool(forKey: Key.preventSleep)
         largeImageKey = defaults.string(forKey: Key.largeImageKey) ?? "claude-color"
         smallImageKey = defaults.string(forKey: Key.smallImageKey) ?? "discord-presence-icon"
         activityType = defaults.integer(forKey: Key.activityType)

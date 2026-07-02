@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 @main
 struct AgentCordApp: App {
@@ -30,11 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
     let anthropicStatus = AnthropicStatus()
+    let sleepGuard = SleepGuard()
     lazy var controller = PresenceController(settings: settings)
 
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var refreshTimer: Timer?
+    private var cancellables = Set<AnyCancellable>()
     private lazy var connectedIcon = Self.icon(connected: true)
     private lazy var disconnectedIcon = Self.icon(connected: false)
     private var lastConnected: Bool?
@@ -46,6 +49,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         controller.start()
         usage.start()
         anthropicStatus.start()
+
+        // Keep the Mac awake whenever "Prevent sleep" is on, and follow the
+        // toggle thereafter. `setEnabled` is idempotent, so the initial apply
+        // plus every published change is safe.
+        sleepGuard.setEnabled(settings.preventSleep)
+        settings.$preventSleep
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in self?.sleepGuard.setEnabled(enabled) }
+            .store(in: &cancellables)
 
         setupStatusItem()
         setupPopover()
@@ -862,6 +874,7 @@ struct MenuContentView: View {
         VStack(spacing: 0) {
             toggleRow("Enable presence", presenceBinding, divider: false)
             toggleRow("Launch at login", launchBinding, divider: true)
+            toggleRow("Prevent sleep", $settings.preventSleep, divider: true)
         }
     }
 

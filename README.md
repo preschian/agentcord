@@ -6,5 +6,8 @@ The app lives in the menu bar with no Dock icon and no window in the way. The da
 
 **Downloads:** prebuilt binaries for [macOS](https://github.com/preschian/agentcord/releases/latest/download/AgentCord.dmg) and [Windows](https://github.com/preschian/agentcord/releases/latest/download/agentcord.exe) are on [GitHub Releases](https://github.com/preschian/agentcord/releases).
 
+> [!NOTE]
+> The macOS app isn't signed or notarized by Apple yet, so the first time you open it macOS will block it. To open it anyway: open the app once (macOS shows a warning and refuses), then go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the AgentCord message. This is only needed the first time.
+
 Curious how it's built, or want to set it up and run it yourself? See [CONTRIBUTING.md](CONTRIBUTING.md).
 

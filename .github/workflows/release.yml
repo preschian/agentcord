@@ -42,6 +42,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build AgentCord.app
+        working-directory: macos
         run: |
           xcodebuild \
             -project AgentCord.xcodeproj \
@@ -59,7 +60,7 @@ jobs:
 
       - name: Package DMG
         run: |
-          APP="DerivedData/Build/Products/Release/AgentCord.app"
+          APP="macos/DerivedData/Build/Products/Release/AgentCord.app"
           test -d "$APP"
           mkdir -p release
           hdiutil create -volname "AgentCord" -srcfolder "$APP" -ov -format UDZO release/AgentCord.dmg

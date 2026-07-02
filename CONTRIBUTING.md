@@ -1,4 +1,4 @@
-# Development
+# Contributing
 
 Technical documentation for building, signing, and understanding agentcord. For the user-facing overview and setup, see [README.md](README.md).
 
@@ -13,10 +13,10 @@ Pure Swift + SwiftUI. The Discord IPC client is hand-written from scratch with z
 ## Build and run
 
 ```sh
-xcodebuild -project AgentCord.xcodeproj -scheme AgentCord -configuration Debug build
+xcodebuild -project macos/AgentCord.xcodeproj -scheme AgentCord -configuration Debug build
 ```
 
-Or open `AgentCord.xcodeproj` in Xcode and press Run. The app appears in the menu bar (a sparkles icon); there is no Dock icon and no app window.
+Or open `macos/AgentCord.xcodeproj` in Xcode and press Run. The app appears in the menu bar (a sparkles icon); there is no Dock icon and no app window.
 
 ## Releases
 
@@ -60,7 +60,7 @@ Why it matters:
 - Discord exposes its IPC socket inside the system temp directory (`$TMPDIR/discord-ipc-N`). A sandboxed app gets a redirected `$TMPDIR` pointing into its own container, so it would never find Discord's socket and the connection would silently fail.
 - The app also needs to read `~/.claude/projects/`, which a sandbox would block.
 
-The Xcode project ships with App Sandbox disabled (see `AgentCord/AgentCord.entitlements`). Do not enable it.
+The Xcode project ships with App Sandbox disabled (see `macos/AgentCord/AgentCord.entitlements`). Do not enable it.
 
 For local development the project signs with "Sign to Run Locally" and Hardened Runtime is off. If you later distribute the app, sign with your Developer ID and turn Hardened Runtime on; the no-sandbox requirement still applies.
 

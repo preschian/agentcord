@@ -3,13 +3,11 @@ name: macOS CI
 on:
   push:
     paths:
-      - "AgentCord/**"
-      - "AgentCord.xcodeproj/**"
+      - "macos/**"
       - ".github/workflows/macos.yml"
   pull_request:
     paths:
-      - "AgentCord/**"
-      - "AgentCord.xcodeproj/**"
+      - "macos/**"
       - ".github/workflows/macos.yml"
 
 permissions:
@@ -26,6 +24,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build AgentCord.app
+        working-directory: macos
         run: |
           xcodebuild \
             -project AgentCord.xcodeproj \

@@ -109,8 +109,19 @@ struct UsageInfo: Equatable {
         var isElevated: Bool { severity.lowercased() != "normal" }
     }
 
+    /// A weekly limit scoped to a single model (e.g. "Fable"). Some plans get
+    /// these in addition to the all-models weekly limit.
+    struct ModelWindow: Equatable {
+        /// The model's display name as reported by the API, e.g. "Fable".
+        var modelName: String
+        var window: Window
+    }
+
     /// The rolling 5-hour session limit.
     var fiveHour: Window
     /// The weekly (all-models) limit.
     var weekly: Window
+    /// Per-model weekly limits, in the order the API returned them. Empty when
+    /// the plan has none.
+    var modelWeekly: [ModelWindow] = []
 }

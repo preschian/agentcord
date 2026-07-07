@@ -235,11 +235,20 @@ private struct UsageResponse: Decodable {
     }
 
     struct Limit: Decodable {
+        struct Scope: Decodable {
+            struct Model: Decodable {
+                let id: String?
+                let display_name: String?
+            }
+            let model: Model?
+        }
+
         let kind: String?
         let group: String?
         let percent: Double?
         let severity: String?
         let resets_at: String?
+        let scope: Scope?
     }
 
     let five_hour: Window?
@@ -252,7 +261,24 @@ private struct UsageResponse: Decodable {
         // to the flat top-level windows for the raw percentage and reset time.
         let session = limits.first { $0.kind == "session" || $0.group == "session" }
         let weekly = limits.first { $0.kind == "weekly_all" }
-            ?? limits.first { $0.group == "weekly" }
+            ?? limits.first { $0.group == "weekly" && $0.scope == nil }
+
+        // Weekly limits scoped to a single model (e.g. Fable on some plans)
+        // arrive as extra "weekly_scoped" entries carrying the model's name.
+        let modelWeekly: [UsageInfo.ModelWindow] = limits.compactMap { limit in
+            guard limit.group == "weekly",
+                  let name = limit.scope?.model?.display_name, !name.isEmpty else {
+                return nil
+            }
+            return UsageInfo.ModelWindow(
+                modelName: name,
+                window: UsageInfo.Window(
+                    percent: Self.percent(limit.percent, fallback: nil),
+                    severity: limit.severity ?? "normal",
+                    resetsAt: Self.parseDate(limit.resets_at)
+                )
+            )
+        }
 
         return UsageInfo(
             fiveHour: UsageInfo.Window(
@@ -264,7 +290,8 @@ private struct UsageResponse: Decodable {
                 percent: Self.percent(weekly?.percent, fallback: seven_day?.utilization),
                 severity: weekly?.severity ?? "normal",
                 resetsAt: Self.parseDate(weekly?.resets_at ?? seven_day?.resets_at)
-            )
+            ),
+            modelWeekly: modelWeekly
         )
     }
 

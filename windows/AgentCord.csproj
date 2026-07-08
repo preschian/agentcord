@@ -11,7 +11,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>assets\agentcord.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Description>Claude Code activity on your Discord profile</Description>
   </PropertyGroup>
 

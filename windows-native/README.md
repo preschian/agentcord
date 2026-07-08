@@ -1,14 +1,19 @@
 # AgentCord for Windows (C# / .NET)
 
-A native Windows port of the macOS menu bar app, written in C# on .NET 8 with
-Windows Forms. Same idea: while a Claude Code session is running, your Discord
-profile shows what you're working on, and it clears itself when the session
-goes quiet or you quit.
+A native Windows port of the macOS menu bar app, written in C# on .NET 8. Same
+idea: while a Claude Code session is running, your Discord profile shows what
+you're working on, and it clears itself when the session goes quiet or you
+quit.
 
-The app lives entirely in the system tray — no window, no taskbar entry. It
-uses only the .NET base class library (named pipes, `HttpClient`,
-`System.Text.Json`, the registry API); the Discord IPC client is hand-written
-with no third-party dependencies, matching the macOS app's ethos.
+The app lives entirely in the system tray — no taskbar entry. Left-clicking the
+tray icon opens a popover that mirrors the macOS one: rounded cards, a
+connection pill, colored usage bars, an expandable Claude status breakdown, and
+a settings screen with iOS-style switches.
+
+It uses only the .NET base class library (WinForms for the tray icon, WPF for
+the popover, named pipes, `HttpClient`, `System.Text.Json`, the registry API);
+the Discord IPC client is hand-written with no third-party dependencies,
+matching the macOS app's ethos.
 
 > There is also a Rust port in [`windows/`](../windows). Both implement the
 > same feature set and share the settings file at
@@ -26,7 +31,7 @@ with no third-party dependencies, matching the macOS app's ethos.
 | Usage limits (5h / weekly / per-model) | `ClaudeUsage.swift` (keychain) | `ClaudeUsage.cs` (credentials file + `HttpClient`) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
 | Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` (`Settings.cs`) |
-| UI | `NSStatusItem` + SwiftUI popover | `NotifyIcon` + native context menu (`TrayApplicationContext.cs`) |
+| UI | `NSStatusItem` + SwiftUI popover | `NotifyIcon` (`TrayApplicationContext.cs`) + WPF popover (`PopoverWindow.xaml`) |
 | Launch at login | `SMAppService` | `HKCU\...\Run` via the registry API (`Autostart.cs`) |
 | Prevent sleep | `IOPMAssertion` | `SetThreadExecutionState` (`SleepGuard.cs`) |
 
@@ -49,11 +54,16 @@ cd windows-native
 dotnet run
 ```
 
-Left- or right-click the tray icon for the menu: connection state, the active
-session (project, model, elapsed time, today's tokens), usage limits (5-hour,
-weekly, and any per-model weekly windows), the Claude status page summary, and
-toggles for presence, launch-at-login, prevent-sleep, display fields, activity
-type, and the idle window.
+**Left-click** the tray icon for the popover: connection pill, the active
+session (project, model, live elapsed timer, today's tokens), usage bars
+(5-hour, weekly, and any per-model weekly windows), an expandable Claude status
+breakdown, and a Settings screen with presence, launch-at-login, prevent-sleep,
+display fields, activity type, and the idle window. **Right-click** for a quick
+menu (show, toggle presence, quit).
+
+Two debug flags: `--popover` opens the popover at startup, and
+`--screenshot <path>` renders both popover screens to PNGs off-screen and exits
+(no tray interaction, no focus steal).
 
 ## Build a standalone exe
 
@@ -95,11 +105,20 @@ minutes (opening the menu triggers a throttled refresh); a failed poll keeps
 the last good snapshot for up to 30 minutes before showing a dash. Per-model
 weekly windows (e.g. a separate Fable limit) are shown when the plan has them.
 
-**Tray UI.** A `NotifyIcon` with a native `ContextMenuStrip` — informational
-rows (session, usage, Claude status) are disabled menu items refreshed while
-the menu is open, and settings are checkable items and radio submenus. The
-tooltip carries a compact session summary. Opening the menu on left-click uses
-the framework's internal `ShowContextMenu` (there is no public API for it).
+**UI.** WinForms owns the tray icon and the message loop; the popover is a WPF
+window (`PopoverWindow.xaml`) on that same thread, which is what makes the
+macOS look reachable — rounded cards, drop shadow, capsule pills, custom
+toggle switches, and progress bars whose fill is a star-sized grid column. It
+is borderless, transparent, topmost, and absent from the taskbar; it anchors
+itself to the bottom-right work-area corner and re-anchors whenever a section
+expands, so it grows upward like the macOS popover hangs off its status item.
+
+Two quirks worth knowing. `Show()` can be followed by a `Deactivated` before
+activation ever lands (the message loop may not be pumping yet), which would
+hide the popover the instant it opens — so it only dismisses on a deactivation
+that follows a real activation, the same `seen_focus` guard the Rust port uses.
+And the folder glyph (`E8B7`) is a real folder only in Segoe Fluent Icons
+(Windows 11); the style falls back to Segoe MDL2 Assets on Windows 10.
 
 **Quit behavior.** The presence is cleared synchronously (best-effort, 500ms
 budget) on quit and on logoff/shutdown via `Application.ApplicationExit`, so a

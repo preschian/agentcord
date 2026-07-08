@@ -6,6 +6,7 @@
 // Best-effort like ClaudeUsage: any failure (offline, endpoint moved, bad
 // JSON) just leaves Current null and the menu hides the row.
 
+using System.Net.Http;
 using System.Text.Json;
 
 namespace AgentCord;
@@ -77,31 +78,58 @@ public sealed class AnthropicStatus : IDisposable
             && ind.ValueKind == JsonValueKind.String
             ? ind.GetString() ?? "unknown" : "unknown";
 
-        var degraded = 0;
+        var components = new List<StatusComponent>();
         if (root.TryGetProperty("components", out var comps) && comps.ValueKind == JsonValueKind.Array)
         {
             foreach (var c in comps.EnumerateArray())
             {
                 // Statuspage marks container rows with group: true; skip those.
                 if (c.TryGetProperty("group", out var g) && g.ValueKind == JsonValueKind.True) continue;
-                if (c.TryGetProperty("status", out var s) && s.ValueKind == JsonValueKind.String
-                    && s.GetString() is { } st && st != "operational")
+                if (StringProp(c, "name") is not { Length: > 0 } name) continue;
+                components.Add(new StatusComponent
                 {
-                    degraded++;
-                }
+                    Name = ShortName(name),
+                    Status = StringProp(c, "status") ?? "unknown",
+                });
             }
         }
 
-        var incidents = root.TryGetProperty("incidents", out var inc) && inc.ValueKind == JsonValueKind.Array
-            ? inc.GetArrayLength() : 0;
+        var incidents = new List<StatusIncident>();
+        if (root.TryGetProperty("incidents", out var inc) && inc.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var i in inc.EnumerateArray())
+            {
+                if (StringProp(i, "name") is not { Length: > 0 } name) continue;
+                incidents.Add(new StatusIncident
+                {
+                    Name = name,
+                    Status = StringProp(i, "status") ?? "investigating",
+                    Impact = StringProp(i, "impact") ?? "none",
+                    StartedAtMs = ClaudeSession.EpochMsFromIso(StringProp(i, "started_at")),
+                });
+            }
+        }
 
         return new StatusInfo
         {
             Indicator = indicator,
             SummaryLabel = SummaryLabel(indicator),
-            DegradedCount = degraded,
-            IncidentCount = incidents,
+            Components = components,
+            Incidents = incidents,
+            FetchedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
+    }
+
+    private static string? StringProp(JsonElement obj, string name) =>
+        obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() : null;
+
+    /// <summary>Drops the trailing parenthetical so names stay compact, e.g.
+    /// "Claude API (api.anthropic.com)" -> "Claude API".</summary>
+    private static string ShortName(string name)
+    {
+        var paren = name.IndexOf('(');
+        return paren < 0 ? name : name[..paren].Trim();
     }
 
     private static string SummaryLabel(string indicator) => indicator switch

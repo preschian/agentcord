@@ -4,6 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
     <RootNamespace>AgentCord</RootNamespace>
     <AssemblyName>AgentCord</AssemblyName>
     <Nullable>enable</Nullable>
@@ -13,5 +14,14 @@
     <Version>0.3.0</Version>
     <Description>Claude Code activity on your Discord profile</Description>
   </PropertyGroup>
+
+  <!-- The project mixes WinForms (tray icon) and WPF (popover). Drop the
+       WinForms implicit usings so WPF files aren't flooded with ambiguous
+       type names (Color, Button, HorizontalAlignment, ...); WinForms files
+       import their namespaces explicitly instead. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
 
 </Project>

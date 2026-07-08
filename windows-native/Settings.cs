@@ -6,6 +6,7 @@
 // ignored on load and missing fields fall back to defaults, so old files keep
 // loading as new fields are added.
 
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 

@@ -2,6 +2,8 @@
 // app uses SMAppService; the Windows equivalent is a value under
 // HKCU\Software\Microsoft\Windows\CurrentVersion\Run.
 
+using System.IO;
+using System.Windows.Forms;
 using Microsoft.Win32;
 
 namespace AgentCord;

@@ -13,6 +13,8 @@
 // Everything is best-effort: any failure (no token, expired token, endpoint
 // changed, offline) just leaves Current null and the menu shows a dash.
 
+using System.IO;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
 

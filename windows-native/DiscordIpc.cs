@@ -12,6 +12,7 @@
 // Frame format on the wire:
 //   [ opcode: UInt32 LE ][ payloadLength: UInt32 LE ][ JSON bytes ]
 
+using System.IO;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;

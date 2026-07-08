@@ -8,6 +8,7 @@
 // re-scan here; the per-file cache keeps that cheap).
 
 using System.Diagnostics;
+using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 

@@ -93,15 +93,40 @@ public sealed record UsageInfo
 
 // --- Anthropic status page
 
-/// <summary>Snapshot of status.claude.com for the tray menu.</summary>
+/// <summary>One status-page component, e.g. "Claude API" (Statuspage
+/// parenthetical stripped). Status is the raw Statuspage string:
+/// operational / degraded_performance / partial_outage / major_outage /
+/// under_maintenance.</summary>
+public sealed record StatusComponent
+{
+    public required string Name { get; init; }
+    public required string Status { get; init; }
+}
+
+/// <summary>An unresolved incident from the status page.</summary>
+public sealed record StatusIncident
+{
+    public required string Name { get; init; }
+    /// <summary>"investigating" / "identified" / "monitoring" / ...</summary>
+    public string Status { get; init; } = "investigating";
+    public string Impact { get; init; } = "none";
+    public long? StartedAtMs { get; init; }
+}
+
+/// <summary>Snapshot of status.claude.com for the popover and tray menu.</summary>
 public sealed record StatusInfo
 {
     /// <summary>Overall indicator: none / minor / major / critical / maintenance.</summary>
     public required string Indicator { get; init; }
     /// <summary>Short label, e.g. "Operational" / "Degraded".</summary>
     public required string SummaryLabel { get; init; }
+    public IReadOnlyList<StatusComponent> Components { get; init; } = [];
+    /// <summary>Unresolved incidents (the page only lists active ones here).</summary>
+    public IReadOnlyList<StatusIncident> Incidents { get; init; } = [];
+    /// <summary>When the snapshot was fetched (for the "updated …" line).</summary>
+    public long FetchedAtMs { get; init; }
+
     /// <summary>Number of components that aren't fully operational.</summary>
-    public int DegradedCount { get; init; }
-    /// <summary>Number of unresolved incidents.</summary>
-    public int IncidentCount { get; init; }
+    public int DegradedCount => Components.Count(c => c.Status != "operational");
+    public int IncidentCount => Incidents.Count;
 }

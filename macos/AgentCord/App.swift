@@ -573,8 +573,11 @@ struct MenuContentView: View {
                 .tracking(0.5)
                 .foregroundStyle(Palette.secondary.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            usageRow("5-hour session", usage.current?.fiveHour, resetStyle: .time)
-            usageRow("Weekly limit", usage.current?.weekly, resetStyle: .date)
+            usageRow("Current session", usage.current?.fiveHour, resetStyle: .time)
+            usageRow("All models", usage.current?.weekly, resetStyle: .date)
+            ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
+                usageRow(scoped.modelName, scoped.window, resetStyle: .date)
+            }
 
             if let error = controller.lastError {
                 Text(error)

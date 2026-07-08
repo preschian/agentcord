@@ -1,10 +1,9 @@
 // User-configurable settings. Port of AgentCord/Settings.swift.
 //
 // macOS persists these in UserDefaults; here they live in a JSON file at
-// %APPDATA%\AgentCord\settings.json — the same path and snake_case schema as
-// the Rust port, so either app picks up the other's config. Unknown fields are
-// ignored on load and missing fields fall back to defaults, so old files keep
-// loading as new fields are added.
+// %APPDATA%\AgentCord\settings.json. Unknown fields are ignored on load and
+// missing fields fall back to defaults, so old config files keep loading as
+// new fields are added.
 
 using System.IO;
 using System.Text.Json;

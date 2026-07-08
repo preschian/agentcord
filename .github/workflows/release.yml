@@ -20,20 +20,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-dotnet@v4
         with:
-          workspaces: windows
+          dotnet-version: "8.0.x"
 
-      - name: Build agentcord.exe
+      - name: Publish agentcord.exe
         working-directory: windows
-        run: cargo build --release
+        # Self-contained single file so users can run it without installing the
+        # .NET runtime. Renamed to lowercase to keep the release download URL
+        # (releases/latest/download/agentcord.exe) stable.
+        run: |
+          dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+          Rename-Item publish/AgentCord.exe agentcord.exe
 
       - uses: actions/upload-artifact@v7
         with:
           name: agentcord-windows
-          path: windows/target/release/agentcord.exe
+          path: windows/publish/agentcord.exe
           if-no-files-found: error
 
   build-macos:

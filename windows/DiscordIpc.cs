@@ -3,11 +3,11 @@
 // handshake, SET_ACTIVITY, and clearing. Port of AgentCord/DiscordIPC.swift.
 //
 // Transport: macOS uses a Unix domain socket at $TMPDIR/discord-ipc-{0..9};
-// Windows uses a named pipe at \\.\pipe\discord-ipc-{0..9}. Unlike the Rust
-// port (which is write-only after READY because synchronous pipe I/O
-// serializes reads and writes on one file object), .NET's
-// NamedPipeClientStream with PipeOptions.Asynchronous uses overlapped I/O,
-// so a concurrent read loop and writer are safe — matching the macOS design.
+// Windows uses a named pipe at \\.\pipe\discord-ipc-{0..9}. Opened with
+// NamedPipeClientStream and PipeOptions.Asynchronous, so it uses overlapped
+// I/O: a concurrent read loop and writer are safe — matching the macOS design.
+// (A synchronous pipe would serialize reads and writes on one file object and
+// deadlock a blocking reader against a writer, forcing a write-only loop.)
 //
 // Frame format on the wire:
 //   [ opcode: UInt32 LE ][ payloadLength: UInt32 LE ][ JSON bytes ]

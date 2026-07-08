@@ -1,160 +1,126 @@
-# AgentCord for Windows (Rust)
+# AgentCord for Windows (C# / .NET)
 
-A native, lightweight Windows port of the macOS menu-bar app. Same idea: while a
-Claude Code session is running, your Discord profile shows what you're working
-on, and it clears itself when the session goes quiet or you quit.
+A native Windows port of the macOS menu bar app, written in C# on .NET 8. Same
+idea: while a Claude Code session is running, your Discord profile shows what
+you're working on, and it clears itself when the session goes quiet or you
+quit.
 
-Built in Rust to stay close to the macOS app's ethos — a small single binary,
-native APIs, and a hand-written Discord IPC client with no RPC dependencies.
+The app lives entirely in the system tray — no taskbar entry. Left-clicking the
+tray icon opens a popover that mirrors the macOS one: rounded cards, a
+connection pill, colored usage bars, an expandable Claude status breakdown, and
+a settings screen with iOS-style switches.
 
-## Status
+It uses only the .NET base class library (WinForms for the tray icon, WPF for
+the popover, named pipes, `HttpClient`, `System.Text.Json`, the registry API);
+the Discord IPC client is hand-written with no third-party dependencies,
+matching the macOS app's ethos.
 
-Feature-complete relative to the macOS app: run it and your active Claude Code
-session shows up on your Discord profile, with a system-tray icon and a status
-popover (Discord state, project/model/tokens, 5-hour + weekly usage, and
-toggles). Release builds are a windowless GUI app with the app icon embedded.
+## Feature map
 
-| Component | macOS (Swift) | Windows (Rust) | State |
-|---|---|---|---|
-| Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` | ✅ ported (`discord_ipc.rs`) |
-| IPC payload models | `Models.swift` (Codable) | `models.rs` (serde) | ✅ ported |
-| Session detection | `FSEvents` on `~/.claude/projects` | timer re-scan of `%USERPROFILE%\.claude\projects` | ✅ ported (`claude_session.rs`) |
-| Presence controller | `PresenceController.swift` | `presence_controller.rs` | ✅ ported |
-| Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` | ✅ ported (`settings.rs`) |
-| Tray UI + popover | `MenuBarExtra` + popover | `eframe`/`egui` popover + `tray-icon` | ✅ ported (`tray.rs`) |
-| Tray + exe icon | app icon | multi-size `.ico` (exe via `windres`) + PNG (tray/window via `image`) | ✅ done |
-| Launch at login | `SMAppService` | `HKCU\...\Run` via `reg.exe` | ✅ ported (`autostart.rs`) |
-| Hide console window | — (GUI app) | `#![windows_subsystem = "windows"]` (release) | ✅ done |
-| Usage parsing | `ClaudeUsage.swift` (keychain) | `claude_usage.rs` (creds file + `curl`) | ✅ ported |
+| Component | macOS (Swift) | Windows (C#) |
+|---|---|---|
+| Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` (`DiscordIpc.cs`) |
+| IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
+| Session detection | `FSEvents` on `~/.claude/projects` | timer re-scan of `%USERPROFILE%\.claude\projects` (`ClaudeSession.cs`) |
+| Presence controller | `PresenceController.swift` | `PresenceController.cs` |
+| Usage limits (5h / weekly / per-model) | `ClaudeUsage.swift` (keychain) | `ClaudeUsage.cs` (credentials file + `HttpClient`) |
+| Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
+| Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` (`Settings.cs`) |
+| UI | `NSStatusItem` + SwiftUI popover | `NotifyIcon` (`TrayApplicationContext.cs`) + WPF popover (`PopoverWindow.xaml`) |
+| Launch at login | `SMAppService` | `HKCU\...\Run` via the registry API (`Autostart.cs`) |
+| Prevent sleep | `IOPMAssertion` | `SetThreadExecutionState` (`SleepGuard.cs`) |
 
 ## Prerequisites
 
-Rust is installed (rustup + stable 1.96). This crate uses the **GNU** toolchain
-(`stable-x86_64-pc-windows-gnu`), pinned for the `windows/` directory via
-`rustup override`, because it ships a self-contained linker — no Visual Studio
-required. The build produces a native Windows `.exe` all the same.
-
-If you'd rather target MSVC later (the more conventional choice for distributed
-Windows apps), install the Visual Studio Build Tools with the "Desktop
-development with C++" workload to get `link.exe`, then
-`rustup override set stable-x86_64-pc-windows-msvc`.
-
-**mingw-w64 is required on PATH.** The GUI crates (`eframe`/`tray-icon` →
-`windows-*`) generate import libraries at build time with `dlltool`, which the
-Rust GNU toolchain doesn't bundle. Install a mingw-w64 that provides it (and
-`windres`, used to embed the exe icon):
+The [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (or newer).
+No Visual Studio required:
 
 ```sh
-winget install BrechtSanders.WinLibs.POSIX.UCRT
+winget install Microsoft.DotNet.SDK.8
 ```
-
-Then make sure its `mingw64\bin` is on `PATH` (winget adds it). `build.rs` finds
-`windres` there automatically (or set the `WINDRES` env var to its full path); if
-`windres` is missing the build still succeeds, just with the default exe icon.
 
 ## Run it
 
-The default (no arguments) launches the tray app — a hidden window plus a
-notification-area icon. **Left-click** the icon for a status popover (Discord
-connection, current project/model/tokens, and toggles for presence and
-launch-at-login); **right-click** for a quick context menu. Needs the Discord
-desktop client running (Rich Presence does not work in the browser).
+Needs the Discord desktop client running (Rich Presence does not work in the
+browser).
 
 ```sh
 cd windows
-cargo run --release       # windowless tray app (no console)
-cargo run                 # debug: same, but keeps a console for the logs
+dotnet run
 ```
 
-Debug builds keep a console so the `[discord]`/`[presence]` logs are visible;
-release builds are a GUI app with no console window.
+**Left-click** the tray icon for the popover: connection pill, the active
+session (project, model, live elapsed timer, today's tokens), usage bars
+(5-hour, weekly, and any per-model weekly windows), an expandable Claude status
+breakdown, and a Settings screen with presence, launch-at-login, prevent-sleep,
+display fields, activity type, and the idle window. **Right-click** for a quick
+menu (show, toggle presence, quit).
 
-Launch-at-login adds this exe (no args, so it starts in tray mode) to
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+Two debug flags: `--popover` opens the popover at startup, and
+`--screenshot <path>` renders both popover screens to PNGs off-screen and exits
+(no tray interaction, no focus steal).
 
-## Other modes (debugging)
+## Build a standalone exe
 
-`main` also exposes headless modes for isolating issues.
-
-**Headless** — same as the tray app but without the icon. Reads settings from
-`%APPDATA%\AgentCord\settings.json`, falling back to defaults:
+The release build (see [`.github/workflows/release.yml`](../.github/workflows/release.yml))
+is a self-contained single file, so users can double-click it without installing
+the .NET runtime:
 
 ```sh
-cd windows
-cargo run -- run
+dotnet publish -c Release -r win-x64 --self-contained true \
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 ```
 
-**Session detection** — print the active session whenever it changes (no
-Discord needed):
+The exe lands in `bin/Release/net8.0-windows/win-x64/publish/` (~150 MB, since
+it bundles the WPF/WinForms runtime). Drop `--self-contained true` for a tiny
+exe that instead requires the .NET 8 Desktop Runtime on the target machine.
 
-```sh
-cargo run -- session
-```
+## Notes on the port
 
-**Discord IPC** — connect with an explicit Application ID and set a sample
-presence, for isolating transport issues:
-
-```sh
-cargo run -- ipc <YOUR_DISCORD_APPLICATION_ID>
-```
-
-Ctrl-C to stop any of them.
-
-## Notes on the presence controller
-
-Unlike the macOS app, the controller is single-threaded. A Windows named pipe
-opened in the default synchronous mode serializes all I/O on the file object, so
-a write blocks behind any in-flight blocking read — a dedicated reader thread
-deadlocks the writer. The controller therefore reads frames only until READY
-(no write is pending then), then runs a write-only update loop; a failed write
-means Discord closed the pipe and triggers a reconnect. See the module header in
-`presence_controller.rs` for the full rationale.
-
-## Notes on the tray UI
-
-`tray.rs` is an `eframe`/`egui` app with a `tray-icon` notification-area icon —
-chosen over a hand-rolled Win32 popover so the popover can match the macOS
-`MenuBarExtra` look (rounded cards, a status pill, colored usage bars). The
-window starts hidden and is shown bottom-right (above the taskbar, positioned
-from the Win32 work area) on a tray left-click, dismissing itself when it loses
-focus. The presence controller and usage poller run on background threads and
-publish into `SharedState`; the egui UI reads that each frame and renders.
-
-Two egui quirks worth noting: the light theme is forced once at startup via
-`theme_preference` and `set_visuals` (eframe otherwise follows the OS dark
-theme), and the status dot is painted (egui's default font lacks `●`). The tray
-and window icons are decoded from embedded PNGs with the `image` crate.
-
-## Notes on usage polling
-
-`claude_usage.rs` shows the `/usage` quotas (5-hour + weekly) in the popover. The
-macOS app reads Claude Code's OAuth token from the keychain; on Windows that
-token lives in `%USERPROFILE%\.claude\.credentials.json`, so we read it there.
-Rather than pull an HTTPS/TLS client crate, we shell out to the `curl.exe`
-bundled with Windows to hit the same undocumented OAuth endpoint Claude Code
-uses. A background thread polls every 5 minutes (opening the popover triggers a
-throttled refresh); a failed poll keeps the last good value. Reset times are
-shown relatively ("resets in 1h 20m"), which needs no timezone math. All of this
-is best-effort — any failure just shows a dash. Subprocess spawns (`curl`,
-`git`, `reg`) use `CREATE_NO_WINDOW` (`util.rs`) so they don't
-flash a console in the windowless release build.
-
-## Notes on session detection
-
-`claude_session.rs` re-scans the transcript tree on a timer (the macOS app runs
-the same fallback scan; a live `notify` watcher for instant updates can be added
-later). It parses each `.jsonl` defensively, sums today's tokens, and computes
-the "active work" elapsed timer by summing inter-message gaps while excluding
-idle breaks — matching the Swift semantics. Repo names come from `git` (remote,
-then toplevel, then the directory). `chrono::Local` supplies the local timezone
-for the midnight reset and ISO-8601 timestamp parsing (see `Cargo.toml`).
-
-## Notes on the named-pipe port
-
-On Windows a Discord IPC endpoint is a named pipe, which is just a file handle —
-so `discord_ipc.rs` opens it with the standard library's `OpenOptions` and reads
-and writes through `Read`/`Write`. The 8-byte little-endian frame header, the
+**Discord IPC.** On Windows a Discord IPC endpoint is a named pipe
+(`\\.\pipe\discord-ipc-{0..9}`). The 8-byte little-endian frame header, the
 handshake, `SET_ACTIVITY`, ping/pong, and clear-on-quit are all unchanged from
-the Swift client. The blocking client here is intentionally low-level; the
-reconnect-with-backoff loop and threading will live in `presence_controller.rs`,
-mirroring how `PresenceController` drives `DiscordIPC` on macOS.
+the Swift client. .NET's `NamedPipeClientStream` with `PipeOptions.Asynchronous`
+uses overlapped I/O (a synchronous pipe would serialize reads and writes on one
+file object and deadlock a reader against a writer), so the client keeps a
+concurrent read loop (answering PINGs, catching
+ERROR/CLOSE) alongside its writes, matching the macOS design. Reconnects use
+exponential backoff capped at 30s, and the current activity is re-sent on
+every READY.
+
+**Session detection.** `ClaudeSession.cs` re-scans the transcript tree on the
+controller's 3-second tick, parsing each `.jsonl` defensively: today's tokens
+are summed across all transcripts, and the elapsed timer reflects combined
+working time with idle gaps (>5 min between messages) excluded — matching the
+Swift semantics, including the midnight reset. Per-file aggregates are
+memoized by mtime so re-scans stay cheap. Repo names come from `git` (remote
+origin, then toplevel, then the directory name), spawned with
+`CreateNoWindow` so nothing flashes a console.
+
+**Usage limits.** The macOS app reads Claude Code's OAuth token from the
+keychain; on Windows that token lives in
+`%USERPROFILE%\.claude\.credentials.json`, so `ClaudeUsage.cs` reads it there
+and hits the same undocumented endpoint with `HttpClient`. Polls run every 5
+minutes (opening the menu triggers a throttled refresh); a failed poll keeps
+the last good snapshot for up to 30 minutes before showing a dash. Per-model
+weekly windows (e.g. a separate Fable limit) are shown when the plan has them.
+
+**UI.** WinForms owns the tray icon and the message loop; the popover is a WPF
+window (`PopoverWindow.xaml`) on that same thread, which is what makes the
+macOS look reachable — rounded cards, drop shadow, capsule pills, custom
+toggle switches, and progress bars whose fill is a star-sized grid column. It
+is borderless, transparent, topmost, and absent from the taskbar; it anchors
+itself to the bottom-right work-area corner and re-anchors whenever a section
+expands, so it grows upward like the macOS popover hangs off its status item.
+
+Two quirks worth knowing. `Show()` can be followed by a `Deactivated` before
+activation ever lands (the message loop may not be pumping yet), which would
+hide the popover the instant it opens — so it only dismisses on a deactivation
+that follows a real activation (a `seen_focus` guard).
+And the folder glyph (`E8B7`) is a real folder only in Segoe Fluent Icons
+(Windows 11); the style falls back to Segoe MDL2 Assets on Windows 10.
+
+**Quit behavior.** The presence is cleared synchronously (best-effort, 500ms
+budget) on quit and on logoff/shutdown via `Application.ApplicationExit`, so a
+dead process doesn't leave a stuck status. A named mutex keeps a second
+instance from fighting over the pipe and tray icon.

@@ -26,14 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-dotnet@v4
         with:
-          workspaces: windows
-
-      - name: Run tests
-        run: cargo test
+          dotnet-version: "8.0.x"
 
       - name: Build release
-        run: cargo build --release
+        run: dotnet build -c Release

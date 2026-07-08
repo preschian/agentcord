@@ -9,11 +9,11 @@ Direct link: [agentcord.exe](https://github.com/preschian/agentcord/releases/lat
 
 1. Download `agentcord.exe` from the release page.
 2. Place it somewhere permanent (e.g. `%LOCALAPPDATA%\Programs\AgentCord\`).
-3. Double-click to run, or add that folder to your `PATH` and run `agentcord` from a terminal.
+3. Double-click to run. It appears in the system tray (no window, no taskbar
+   entry); left-click the tray icon for the status popover.
 
-The default launch mode is the system-tray app (no console window). See
-[../README.md](../README.md) for Discord setup, headless modes, and build-from-source
-instructions.
+The release binary is a self-contained build, so it runs without installing the
+.NET runtime.
 
 ## SmartScreen / unsigned binary
 
@@ -28,7 +28,10 @@ To proceed: open the file properties and check **Unblock** if present, or choose
 
 ```sh
 cd windows
-cargo build --release
+dotnet publish -c Release -r win-x64 --self-contained true \
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 ```
 
-The binary lands in `target/release/agentcord.exe` (this directory is gitignored).
+The binary lands in `bin/Release/net8.0-windows/win-x64/publish/AgentCord.exe`
+(this directory is gitignored). See [../README.md](../README.md) for Discord
+setup, debug flags, and the full feature map.

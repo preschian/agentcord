@@ -125,3 +125,34 @@ struct UsageInfo: Equatable {
     /// the plan has none.
     var modelWeekly: [ModelWindow] = []
 }
+
+// MARK: - Cursor subscription usage
+
+/// The user's current Cursor subscription usage, as shown on the Cursor
+/// dashboard. Dollar-based plans (Pro/Team/Ultra) report included spend; legacy
+/// Enterprise plans may report request counts instead.
+struct CursorUsageInfo: Equatable {
+
+    /// One usage bucket: how much is used and when the billing cycle resets.
+    struct Window: Equatable {
+        var percent: Int
+        /// Raw severity ("normal", "warning", "critical"). Drives color.
+        var severity: String
+        var resetsAt: Date?
+        /// Optional detail line, e.g. "$17.98 / $20.00".
+        var detail: String?
+
+        var isElevated: Bool { severity.lowercased() != "normal" }
+    }
+
+    /// Included plan usage for the current billing period.
+    var included: Window
+    /// Auto/Composer usage when it differs from the total figure.
+    var auto: Window?
+    /// Named-model API usage when it differs from the total figure.
+    var api: Window?
+    /// On-demand spend when enabled on the account.
+    var onDemand: Window?
+    /// Human-readable plan name, e.g. "Pro".
+    var planName: String?
+}

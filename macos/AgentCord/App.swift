@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
+    let cursorUsage = CursorUsage()
     let anthropicStatus = AnthropicStatus()
     let sleepGuard = SleepGuard()
     lazy var controller = PresenceController(settings: settings)
@@ -48,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         controller.start()
         usage.start()
+        cursorUsage.start()
         anthropicStatus.start()
 
         // Keep the Mac awake whenever "Prevent sleep" is on, and follow the
@@ -104,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller)
             .environmentObject(loginItem)
             .environmentObject(usage)
+            .environmentObject(cursorUsage)
             .environmentObject(anthropicStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
@@ -137,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // Pull fresh usage numbers and Anthropic status as the popover
             // opens so they're current.
             usage.refresh()
+            cursorUsage.refresh()
             anthropicStatus.refresh()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -172,14 +176,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             ))
         }
 
-        if settings.showUsageInMenuBar, let snapshot = usage.current {
-            if title.length > 0 {
-                title.append(NSAttributedString(
-                    string: " · ",
-                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-                ))
+        if settings.showUsageInMenuBar {
+            if let snapshot = usage.current {
+                if title.length > 0 {
+                    title.append(NSAttributedString(
+                        string: " · ",
+                        attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+                    ))
+                }
+                Self.appendUsage(snapshot, to: title, font: font)
             }
-            Self.appendUsage(snapshot, to: title, font: font)
+            if let snapshot = cursorUsage.current {
+                if title.length > 0 {
+                    title.append(NSAttributedString(
+                        string: " · ",
+                        attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+                    ))
+                }
+                Self.appendCursorUsage(snapshot, to: title, font: font)
+            }
         }
 
         // Leading space keeps the text off the icon.
@@ -216,6 +231,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             parts.append("\(PresenceController.formatTokens(info.totalTokens)) tokens")
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// Appends a compact Cursor included-usage readout, e.g. "Cursor 9%".
+    static func appendCursorUsage(_ usage: CursorUsageInfo, to title: NSMutableAttributedString, font: NSFont) {
+        let window = usage.included
+        let color: NSColor
+        switch window.severity.lowercased() {
+        case "normal": color = .labelColor
+        case "warning", "warn", "low": color = .systemOrange
+        default: color = .systemRed
+        }
+        title.append(NSAttributedString(
+            string: "Cursor \(window.percent)%",
+            attributes: [.font: font, .foregroundColor: color]
+        ))
     }
 
     /// Appends a compact "5h NN% (1h 23m)" usage readout, tinting the figure by
@@ -303,6 +333,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var usage: ClaudeUsage
+    @EnvironmentObject private var cursorUsage: CursorUsage
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
 
     @State private var showSettings = false
@@ -567,16 +598,49 @@ struct MenuContentView: View {
     // MARK: Usage card
 
     private var usageCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let hasClaude = usage.current != nil
+        let hasCursor = cursorUsage.current != nil
+
+        return VStack(alignment: .leading, spacing: 10) {
             Text("USAGE")
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.5)
                 .foregroundStyle(Palette.secondary.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            usageRow("Current session", usage.current?.fiveHour, resetStyle: .time)
-            usageRow("All models", usage.current?.weekly, resetStyle: .date)
-            ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
-                usageRow(scoped.modelName, scoped.window, resetStyle: .date)
+
+            if hasClaude {
+                usageProviderHeader("Claude")
+                usageRow("Current session", usage.current?.fiveHour, resetStyle: .time)
+                usageRow("All models", usage.current?.weekly, resetStyle: .date)
+                ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
+                    usageRow(scoped.modelName, scoped.window, resetStyle: .date)
+                }
+            }
+
+            if hasCursor {
+                if hasClaude {
+                    Rectangle()
+                        .fill(Color.black.opacity(0.06))
+                        .frame(height: 0.5)
+                        .padding(.vertical, 2)
+                }
+                usageProviderHeader("Cursor")
+                cursorUsageRow("Included usage", cursorUsage.current?.included, resetStyle: .date)
+                if let auto = cursorUsage.current?.auto {
+                    cursorUsageRow("Auto + Composer", auto, resetStyle: .date)
+                }
+                if let api = cursorUsage.current?.api {
+                    cursorUsageRow("API models", api, resetStyle: .date)
+                }
+                if let onDemand = cursorUsage.current?.onDemand {
+                    cursorUsageRow("On-demand", onDemand, resetStyle: .date)
+                }
+            }
+
+            if !hasClaude && !hasCursor {
+                Text("Sign in to Claude Code or Cursor to see usage")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
             }
 
             if let error = controller.lastError {
@@ -591,6 +655,12 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
+    private func usageProviderHeader(_ name: String) -> some View {
+        Text(name)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Palette.secondary.opacity(0.7))
+    }
+
     private func usageRow(_ label: String, _ window: UsageInfo.Window?, resetStyle: ResetDisplayStyle) -> some View {
         VStack(spacing: 5) {
             HStack {
@@ -600,16 +670,34 @@ struct MenuContentView: View {
                     .font(.system(size: 12.5, weight: .semibold))
                     .monospacedDigit()
             }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Palette.track.opacity(0.16))
-                    Capsule()
-                        .fill(severityColor(window))
-                        .frame(width: geo.size.width * barFraction(window))
-                }
-            }
-            .frame(height: 6)
+            usageBar(window.map { ($0.percent, $0.severity) })
         }
+    }
+
+    private func cursorUsageRow(_ label: String, _ window: CursorUsageInfo.Window?, resetStyle: ResetDisplayStyle) -> some View {
+        VStack(spacing: 5) {
+            HStack {
+                Text(label).font(.system(size: 12.5))
+                Spacer()
+                Text(cursorUsageDetail(window, resetStyle: resetStyle))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+            }
+            usageBar(window.map { ($0.percent, $0.severity) })
+        }
+    }
+
+    @ViewBuilder
+    private func usageBar(_ values: (percent: Int, severity: String)?) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Palette.track.opacity(0.16))
+                Capsule()
+                    .fill(severityColor(values?.severity))
+                    .frame(width: geo.size.width * barFraction(values?.percent))
+            }
+        }
+        .frame(height: 6)
     }
 
     private func usageDetail(_ window: UsageInfo.Window?, resetStyle: ResetDisplayStyle) -> String {
@@ -620,30 +708,48 @@ struct MenuContentView: View {
         return "\(window.percent)%"
     }
 
+    private func cursorUsageDetail(_ window: CursorUsageInfo.Window?, resetStyle: ResetDisplayStyle) -> String {
+        guard let window else { return "—" }
+        if let reset = Self.formatCursorResetTime(window, style: resetStyle) {
+            return "\(window.percent)% · resets \(reset)"
+        }
+        return "\(window.percent)%"
+    }
+
     enum ResetDisplayStyle {
         case time   // e.g. "12.29 pm"
         case date   // e.g. "Jun 29"
     }
 
-    private func barFraction(_ window: UsageInfo.Window?) -> CGFloat {
-        guard let window else { return 0 }
-        // Keep a faint sliver visible even at 0% so the track reads as a bar.
-        return max(CGFloat(window.percent) / 100, 0.015)
+    private func barFraction(_ percent: Int?) -> CGFloat {
+        guard let percent else { return 0 }
+        return max(CGFloat(percent) / 100, 0.015)
     }
 
-    private func severityColor(_ window: UsageInfo.Window?) -> Color {
-        guard let window else { return Palette.blue }
-        switch window.severity.lowercased() {
+    private func severityColor(_ severity: String?) -> Color {
+        guard let severity else { return Palette.blue }
+        switch severity.lowercased() {
         case "normal": return Palette.blue
         case "warning", "warn", "low": return Palette.orange
         default: return Palette.red
         }
     }
 
+    private func severityColor(_ window: UsageInfo.Window?) -> Color {
+        severityColor(window?.severity)
+    }
+
     /// Formats when a window resets as a clock time or calendar date, e.g.
     /// "12.29 pm" or "Jun 29". Returns nil when there's no reset time, "now"
     /// once it's due.
     static func formatResetTime(_ window: UsageInfo.Window, style: ResetDisplayStyle) -> String? {
+        formatCursorResetTime(
+            CursorUsageInfo.Window(percent: window.percent, severity: window.severity, resetsAt: window.resetsAt),
+            style: style
+        )
+    }
+
+    static func formatCursorResetTime(_ window: CursorUsageInfo.Window, style: ResetDisplayStyle) -> String? {
         guard let reset = window.resetsAt else { return nil }
         guard reset.timeIntervalSinceNow > 0 else { return "now" }
         switch style {

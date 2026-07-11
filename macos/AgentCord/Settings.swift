@@ -83,7 +83,9 @@ final class SettingsStore: ObservableObject {
             Key.idleWindowSeconds: 300.0,
             Key.selectedAgent: AgentKind.claude.rawValue,
             Key.agentClaudeEnabled: true,
-            Key.agentCodexEnabled: false,
+            // Codex defaults on when the user already has ~/.codex/auth.json;
+            // otherwise the Connect card explains how to sign in.
+            Key.agentCodexEnabled: true,
             Key.agentGrokEnabled: true,
             Key.shareBusiestAgent: true
         ])

@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
+    let codexUsage = CodexUsage()
     let grokSession = GrokSession()
     let anthropicStatus = AnthropicStatus()
     let sleepGuard = SleepGuard()
@@ -49,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         controller.start()
         usage.start()
+        codexUsage.start()
         grokSession.activeWindowSeconds = settings.idleWindowSeconds
         grokSession.start()
         anthropicStatus.start()
@@ -113,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller)
             .environmentObject(loginItem)
             .environmentObject(usage)
+            .environmentObject(codexUsage)
             .environmentObject(grokSession)
             .environmentObject(anthropicStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
@@ -147,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // Pull fresh usage numbers and Anthropic status as the popover
             // opens so they're current.
             usage.refresh()
+            codexUsage.refresh()
             anthropicStatus.refresh()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -188,6 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 font: font,
                 settings: settings,
                 claudeUsage: usage.current,
+                codexUsage: codexUsage.current,
                 grokSession: grokSession.current
             )
         }
@@ -229,41 +234,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     /// Appends usage for every enabled agent that has data, when
-    /// "Show usage in menu bar" is on. Claude uses the 5-hour subscription
-    /// window; Grok uses live context-window fill from the open session.
+    /// "Show usage in menu bar" is on.
     static func appendMultiAgentUsage(
         to title: NSMutableAttributedString,
         font: NSFont,
         settings: SettingsStore,
         claudeUsage: UsageInfo?,
+        codexUsage: CodexUsageInfo?,
         grokSession: SessionInfo?
     ) {
         let claudeSnapshot = settings.isAgentEnabled(.claude) ? claudeUsage : nil
+        let codexSnapshot = settings.isAgentEnabled(.codex) ? codexUsage : nil
         let grokSnapshot = (settings.isAgentEnabled(.grok) && (grokSession?.totalTokens ?? 0) > 0)
             ? grokSession : nil
-        // Label Claude when another agent is also contributing, so the two
-        // percentages stay distinguishable.
-        let multi = claudeSnapshot != nil && grokSnapshot != nil
+
+        let contributing =
+            (claudeSnapshot != nil ? 1 : 0)
+            + (codexSnapshot != nil ? 1 : 0)
+            + (grokSnapshot != nil ? 1 : 0)
+        // When more than one agent contributes, drop the "5h" tag and label
+        // each percentage with the agent name so the title stays scannable.
+        let multi = contributing > 1
 
         if let snapshot = claudeSnapshot {
-            if title.length > 0 {
-                title.append(NSAttributedString(
-                    string: " · ",
-                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-                ))
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendClaudeUsage(snapshot, to: $0, font: font, labeled: multi)
             }
-            Self.appendClaudeUsage(snapshot, to: title, font: font, labeled: multi)
+        }
+        if let snapshot = codexSnapshot {
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendCodexUsage(snapshot, to: $0, font: font, labeled: multi)
+            }
         }
         if let session = grokSnapshot {
-            if title.length > 0 {
-                title.append(NSAttributedString(
-                    string: " · ",
-                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-                ))
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendGrokUsage(session, to: $0, font: font)
             }
-            Self.appendGrokUsage(session, to: title, font: font)
         }
-        // Codex has no usage source yet.
+    }
+
+    private static func appendMenuBarSegment(
+        to title: NSMutableAttributedString,
+        font: NSFont,
+        append: (NSMutableAttributedString) -> Void
+    ) {
+        if title.length > 0 {
+            title.append(NSAttributedString(
+                string: " · ",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+        append(title)
     }
 
     /// Appends a compact Claude readout. Alone: "5h NN% (12.29 pm)". Shared
@@ -272,12 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         _ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
     ) {
         let window = usage.fiveHour
-        let color: NSColor
-        switch window.severity.lowercased() {
-        case "normal": color = .labelColor
-        case "warning", "warn", "low": color = .systemOrange
-        default: color = .systemRed
-        }
+        let color = severityNSColor(window.severity)
         let text = labeled ? "Claude \(window.percent)%" : "5h \(window.percent)%"
         title.append(NSAttributedString(
             string: text,
@@ -285,6 +301,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ))
         // Only attach the reset clock when Claude is alone — with multi-agent
         // the title gets crowded quickly.
+        if !labeled, let reset = MenuContentView.formatResetTime(window, style: .time) {
+            title.append(NSAttributedString(
+                string: " (\(reset))",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+    }
+
+    /// Appends a compact Codex readout. Alone: "Codex 5h NN%" (or monthly).
+    /// Shared: "Codex NN%".
+    static func appendCodexUsage(
+        _ usage: CodexUsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
+    ) {
+        let window = usage.primary
+        let color = severityNSColor(window.severity)
+        let text: String
+        if labeled {
+            text = "Codex \(window.percent)%"
+        } else if usage.primaryLabel.lowercased().contains("5-hour") {
+            text = "Codex 5h \(window.percent)%"
+        } else {
+            text = "Codex \(window.percent)%"
+        }
+        title.append(NSAttributedString(
+            string: text,
+            attributes: [.font: font, .foregroundColor: color]
+        ))
         if !labeled, let reset = MenuContentView.formatResetTime(window, style: .time) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
@@ -309,6 +352,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             string: "Grok \(percent)%",
             attributes: [.font: font, .foregroundColor: color]
         ))
+    }
+
+    private static func severityNSColor(_ severity: String) -> NSColor {
+        switch severity.lowercased() {
+        case "normal": return .labelColor
+        case "warning", "warn", "low": return .systemOrange
+        default: return .systemRed
+        }
     }
 
     /// Formats a duration without seconds: "Hh Mm" once it reaches an hour,
@@ -372,6 +423,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var usage: ClaudeUsage
+    @EnvironmentObject private var codexUsage: CodexUsage
     @EnvironmentObject private var grokSession: GrokSession
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
 
@@ -401,7 +453,7 @@ struct MenuContentView: View {
     private func isAgentLinked(_ agent: AgentKind) -> Bool {
         switch agent {
         case .claude: return true
-        case .codex: return false
+        case .codex: return codexUsage.isAuthenticated
         case .grok: return grokSession.isAuthenticated
         }
     }
@@ -647,7 +699,7 @@ struct MenuContentView: View {
         let urlString: String
         switch agent {
         case .claude: urlString = "https://docs.anthropic.com/en/docs/claude-code"
-        case .codex: urlString = "https://openai.com/codex"
+        case .codex: urlString = "https://developers.openai.com/codex/auth"
         case .grok: urlString = "https://grok.x.ai"
         }
         if let url = URL(string: urlString) {
@@ -823,10 +875,10 @@ struct MenuContentView: View {
         switch selectedAgent {
         case .claude:
             claudeUsageCard
+        case .codex:
+            codexUsageCard
         case .grok:
             grokUsageCard
-        case .codex:
-            EmptyView()
         }
     }
 
@@ -857,6 +909,39 @@ struct MenuContentView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.red)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private var codexUsageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("USAGE")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Spacer()
+                if let plan = codexUsage.current?.planType, !plan.isEmpty {
+                    Text(plan.capitalized)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Palette.secondary.opacity(0.45))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let info = codexUsage.current {
+                usageRow(info.primaryLabel, info.primary, resetStyle: .time, accent: agentAccent(.codex))
+                if let secondary = info.secondary {
+                    usageRow(info.secondaryLabel ?? "Weekly limit", secondary, resetStyle: .date, accent: agentAccent(.codex))
+                }
+            } else {
+                Text("Waiting for Codex usage…")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
             }
         }
         .padding(.vertical, 11).padding(.horizontal, 12)

@@ -133,6 +133,22 @@ struct SessionInfo: Equatable {
     var contextWindowTokens: Int? = nil
 }
 
+// MARK: - Codex / ChatGPT subscription usage
+
+/// Codex rate limits from ChatGPT OAuth (`/backend-api/wham/usage`).
+struct CodexUsageInfo: Equatable, Codable {
+    /// Primary window (usually the rolling 5-hour limit; monthly on some free plans).
+    var primary: UsageInfo.Window
+    /// Human label for the primary row, e.g. "5-hour session" or "Monthly limit".
+    var primaryLabel: String
+    /// Secondary window when present (typically weekly).
+    var secondary: UsageInfo.Window?
+    /// Label for the secondary row, e.g. "Weekly limit".
+    var secondaryLabel: String?
+    /// Plan tier from the API when known ("plus", "pro", "free", …).
+    var planType: String?
+}
+
 // MARK: - Claude subscription usage
 
 /// The user's current subscription usage, as shown by Claude Code's `/usage`.

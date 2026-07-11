@@ -128,6 +128,9 @@ struct SessionInfo: Equatable {
     var startEpochMs: Int64
     var totalTokens: Int
     var lastModified: Date
+    /// Context window size when known (Grok `signals.json`); used for menu bar
+    /// / usage fill percent. Nil for Claude Code daily token totals.
+    var contextWindowTokens: Int? = nil
 }
 
 // MARK: - Claude subscription usage

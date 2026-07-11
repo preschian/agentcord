@@ -182,14 +182,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             ))
         }
 
-        if settings.showUsageInMenuBar, let snapshot = usage.current {
-            if title.length > 0 {
-                title.append(NSAttributedString(
-                    string: " · ",
-                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-                ))
-            }
-            Self.appendUsage(snapshot, to: title, font: font)
+        if settings.showUsageInMenuBar {
+            Self.appendMultiAgentUsage(
+                to: title,
+                font: font,
+                settings: settings,
+                claudeUsage: usage.current,
+                grokSession: grokSession.current
+            )
         }
 
         // Leading space keeps the text off the icon.
@@ -228,10 +228,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return parts.joined(separator: " · ")
     }
 
-    /// Appends a compact "5h NN% (1h 23m)" usage readout, tinting the figure by
-    /// its severity so an elevated limit stands out even in the menu bar. Only
-    /// the 5-hour window is shown here.
-    static func appendUsage(_ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont) {
+    /// Appends usage for every enabled agent that has data, when
+    /// "Show usage in menu bar" is on. Claude uses the 5-hour subscription
+    /// window; Grok uses live context-window fill from the open session.
+    static func appendMultiAgentUsage(
+        to title: NSMutableAttributedString,
+        font: NSFont,
+        settings: SettingsStore,
+        claudeUsage: UsageInfo?,
+        grokSession: SessionInfo?
+    ) {
+        let claudeSnapshot = settings.isAgentEnabled(.claude) ? claudeUsage : nil
+        let grokSnapshot = (settings.isAgentEnabled(.grok) && (grokSession?.totalTokens ?? 0) > 0)
+            ? grokSession : nil
+        // Label Claude when another agent is also contributing, so the two
+        // percentages stay distinguishable.
+        let multi = claudeSnapshot != nil && grokSnapshot != nil
+
+        if let snapshot = claudeSnapshot {
+            if title.length > 0 {
+                title.append(NSAttributedString(
+                    string: " · ",
+                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+                ))
+            }
+            Self.appendClaudeUsage(snapshot, to: title, font: font, labeled: multi)
+        }
+        if let session = grokSnapshot {
+            if title.length > 0 {
+                title.append(NSAttributedString(
+                    string: " · ",
+                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+                ))
+            }
+            Self.appendGrokUsage(session, to: title, font: font)
+        }
+        // Codex has no usage source yet.
+    }
+
+    /// Appends a compact "5h NN% (12.29 pm)" Claude readout, optionally
+    /// prefixed with "Claude" when other agents also appear in the menu bar.
+    static func appendClaudeUsage(
+        _ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
+    ) {
         let window = usage.fiveHour
         let color: NSColor
         switch window.severity.lowercased() {
@@ -239,17 +278,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         case "warning", "warn", "low": color = .systemOrange
         default: color = .systemRed
         }
+        let prefix = labeled ? "Claude " : ""
         title.append(NSAttributedString(
-            string: "5h \(window.percent)%",
+            string: "\(prefix)5h \(window.percent)%",
             attributes: [.font: font, .foregroundColor: color]
         ))
-        // Tie the 5-hour reset time to its figure, e.g. "5h 46% (12.29 pm)".
-        if let reset = MenuContentView.formatResetTime(window, style: .time) {
+        // Only attach the reset clock when Claude is alone — with multi-agent
+        // the title gets crowded quickly.
+        if !labeled, let reset = MenuContentView.formatResetTime(window, style: .time) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
             ))
         }
+    }
+
+    /// Appends a compact "Grok NN%" context-window fill for the active Grok session.
+    static func appendGrokUsage(
+        _ session: SessionInfo, to title: NSMutableAttributedString, font: NSFont
+    ) {
+        let window = max(session.contextWindowTokens ?? 500_000, 1)
+        let percent = min(100, max(0, Int((Double(session.totalTokens) / Double(window) * 100).rounded())))
+        let color: NSColor
+        switch percent {
+        case ..<70: color = .labelColor
+        case ..<90: color = .systemOrange
+        default: color = .systemRed
+        }
+        title.append(NSAttributedString(
+            string: "Grok \(percent)%",
+            attributes: [.font: font, .foregroundColor: color]
+        ))
     }
 
     /// Formats a duration without seconds: "Hh Mm" once it reaches an hour,
@@ -816,7 +875,8 @@ struct MenuContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if let session = grokSession.current, session.totalTokens > 0 {
-                let pct = min(100, max(1, Int((Double(session.totalTokens) / 500_000.0) * 100)))
+                let window = max(session.contextWindowTokens ?? 500_000, 1)
+                let pct = min(100, max(1, Int((Double(session.totalTokens) / Double(window) * 100).rounded())))
                 simpleUsageRow(
                     "Context window",
                     label: "\(PresenceController.formatTokens(session.totalTokens)) · ~\(pct)%",

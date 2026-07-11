@@ -127,7 +127,8 @@ final class GrokSession: ObservableObject {
                 model: modelRaw.map(Self.prettyModel),
                 startEpochMs: startMs,
                 totalTokens: tokens,
-                lastModified: activity
+                lastModified: activity,
+                contextWindowTokens: signals?.contextWindowTokens
             )
             if best == nil || activity > best!.activity {
                 best = (info, activity)
@@ -275,7 +276,8 @@ final class GrokSession: ObservableObject {
                 model: (summary?.modelID ?? signals?.primaryModelID).map(Self.prettyModel),
                 startEpochMs: Int64(activity.timeIntervalSince1970 * 1000),
                 totalTokens: signals?.contextTokensUsed ?? 0,
-                lastModified: activity
+                lastModified: activity,
+                contextWindowTokens: signals?.contextWindowTokens
             )
             if best == nil || activity > best!.1 {
                 best = (info, activity)

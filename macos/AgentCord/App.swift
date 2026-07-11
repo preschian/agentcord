@@ -266,8 +266,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Codex has no usage source yet.
     }
 
-    /// Appends a compact "5h NN% (12.29 pm)" Claude readout, optionally
-    /// prefixed with "Claude" when other agents also appear in the menu bar.
+    /// Appends a compact Claude readout. Alone: "5h NN% (12.29 pm)". Shared
+    /// with other agents: "Claude NN%" (no "5h" — the label already disambiguates).
     static func appendClaudeUsage(
         _ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
     ) {
@@ -278,9 +278,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         case "warning", "warn", "low": color = .systemOrange
         default: color = .systemRed
         }
-        let prefix = labeled ? "Claude " : ""
+        let text = labeled ? "Claude \(window.percent)%" : "5h \(window.percent)%"
         title.append(NSAttributedString(
-            string: "\(prefix)5h \(window.percent)%",
+            string: text,
             attributes: [.font: font, .foregroundColor: color]
         ))
         // Only attach the reset clock when Claude is alone — with multi-agent

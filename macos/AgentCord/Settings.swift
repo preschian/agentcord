@@ -9,6 +9,7 @@
 
 import Foundation
 import Combine
+import SwiftUI
 
 final class SettingsStore: ObservableObject {
 
@@ -26,6 +27,11 @@ final class SettingsStore: ObservableObject {
         static let smallImageKey = "smallImageKey"
         static let activityType = "activityType"
         static let idleWindowSeconds = "idleWindowSeconds"
+        static let selectedAgent = "selectedAgent"
+        static let agentClaudeEnabled = "agentClaudeEnabled"
+        static let agentCodexEnabled = "agentCodexEnabled"
+        static let agentGrokEnabled = "agentGrokEnabled"
+        static let shareBusiestAgent = "shareBusiestAgent"
     }
 
     /// The Discord Application ID this app reports as. Not a secret; safe to
@@ -48,6 +54,17 @@ final class SettingsStore: ObservableObject {
     @Published var activityType: Int { didSet { defaults.set(activityType, forKey: Key.activityType) } }
     @Published var idleWindowSeconds: Double { didSet { defaults.set(idleWindowSeconds, forKey: Key.idleWindowSeconds) } }
 
+    /// Which agent tab is selected in the popover.
+    @Published var selectedAgent: AgentKind {
+        didSet { defaults.set(selectedAgent.rawValue, forKey: Key.selectedAgent) }
+    }
+    /// Agents enabled in Settings (shown in the segmented switcher when on).
+    @Published var agentClaudeEnabled: Bool { didSet { defaults.set(agentClaudeEnabled, forKey: Key.agentClaudeEnabled) } }
+    @Published var agentCodexEnabled: Bool { didSet { defaults.set(agentCodexEnabled, forKey: Key.agentCodexEnabled) } }
+    @Published var agentGrokEnabled: Bool { didSet { defaults.set(agentGrokEnabled, forKey: Key.agentGrokEnabled) } }
+    /// Reserved for multi-agent Discord presence; popover-only for now.
+    @Published var shareBusiestAgent: Bool { didSet { defaults.set(shareBusiestAgent, forKey: Key.shareBusiestAgent) } }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
@@ -63,7 +80,12 @@ final class SettingsStore: ObservableObject {
             Key.largeImageKey: "claude-color",
             Key.smallImageKey: "discord-presence-icon",
             Key.activityType: 0,
-            Key.idleWindowSeconds: 300.0
+            Key.idleWindowSeconds: 300.0,
+            Key.selectedAgent: AgentKind.claude.rawValue,
+            Key.agentClaudeEnabled: true,
+            Key.agentCodexEnabled: false,
+            Key.agentGrokEnabled: true,
+            Key.shareBusiestAgent: true
         ])
 
         clientID = defaults.string(forKey: Key.clientID) ?? Self.defaultClientID
@@ -79,6 +101,43 @@ final class SettingsStore: ObservableObject {
         smallImageKey = defaults.string(forKey: Key.smallImageKey) ?? "discord-presence-icon"
         activityType = defaults.integer(forKey: Key.activityType)
         idleWindowSeconds = defaults.double(forKey: Key.idleWindowSeconds)
+        selectedAgent = AgentKind(rawValue: defaults.string(forKey: Key.selectedAgent) ?? "") ?? .claude
+        agentClaudeEnabled = defaults.bool(forKey: Key.agentClaudeEnabled)
+        agentCodexEnabled = defaults.bool(forKey: Key.agentCodexEnabled)
+        agentGrokEnabled = defaults.bool(forKey: Key.agentGrokEnabled)
+        shareBusiestAgent = defaults.bool(forKey: Key.shareBusiestAgent)
+    }
+
+    /// Agents the user has toggled on in Settings.
+    var enabledAgents: [AgentKind] {
+        AgentKind.allCases.filter { isAgentEnabled($0) }
+    }
+
+    func isAgentEnabled(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: return agentClaudeEnabled
+        case .codex: return agentCodexEnabled
+        case .grok: return agentGrokEnabled
+        }
+    }
+
+    func setAgentEnabled(_ agent: AgentKind, _ enabled: Bool) {
+        switch agent {
+        case .claude: agentClaudeEnabled = enabled
+        case .codex: agentCodexEnabled = enabled
+        case .grok: agentGrokEnabled = enabled
+        }
+        // Keep the selected tab pointing at an enabled agent.
+        if !isAgentEnabled(selectedAgent), let first = enabledAgents.first {
+            selectedAgent = first
+        }
+    }
+
+    func bindingForAgent(_ agent: AgentKind) -> Binding<Bool> {
+        Binding(
+            get: { self.isAgentEnabled(agent) },
+            set: { self.setAgentEnabled(agent, $0) }
+        )
     }
 
     /// Activity types Discord permits for RPC updates.

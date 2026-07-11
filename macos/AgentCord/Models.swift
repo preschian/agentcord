@@ -82,9 +82,46 @@ struct SetActivityArgs: Encodable {
     }
 }
 
-// MARK: - Claude Code session
+// MARK: - Coding agents
 
-/// A snapshot of the currently active Claude Code session.
+/// Agents the popover can switch between. Presence still only broadcasts Claude
+/// for now; multi-agent is a popover UI concern.
+enum AgentKind: String, CaseIterable, Identifiable, Codable {
+    case claude
+    case codex
+    case grok
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex: return "Codex"
+        case .grok: return "Grok"
+        }
+    }
+
+    var providerName: String {
+        switch self {
+        case .claude: return "Anthropic"
+        case .codex: return "OpenAI"
+        case .grok: return "xAI"
+        }
+    }
+
+    /// Brand accent used on usage bars and settings agent dots.
+    var accentHex: (r: Double, g: Double, b: Double) {
+        switch self {
+        case .claude: return (0.851, 0.467, 0.341) // #d97757
+        case .codex: return (0.063, 0.639, 0.498)  // #10a37f
+        case .grok: return (0.114, 0.114, 0.122)   // #1d1d1f
+        }
+    }
+}
+
+// MARK: - Coding agent session
+
+/// A snapshot of an active coding-agent session (Claude Code, Grok, …).
 struct SessionInfo: Equatable {
     var projectName: String
     var model: String?
@@ -96,10 +133,10 @@ struct SessionInfo: Equatable {
 // MARK: - Claude subscription usage
 
 /// The user's current subscription usage, as shown by Claude Code's `/usage`.
-struct UsageInfo: Equatable {
+struct UsageInfo: Equatable, Codable {
 
     /// One rate-limit window: how much of it is used and when it resets.
-    struct Window: Equatable {
+    struct Window: Equatable, Codable {
         var percent: Int
         /// Raw severity from the API ("normal", "warning", ...). Drives color.
         var severity: String
@@ -111,7 +148,7 @@ struct UsageInfo: Equatable {
 
     /// A weekly limit scoped to a single model (e.g. "Fable"). Some plans get
     /// these in addition to the all-models weekly limit.
-    struct ModelWindow: Equatable {
+    struct ModelWindow: Equatable, Codable {
         /// The model's display name as reported by the API, e.g. "Fable".
         var modelName: String
         var window: Window

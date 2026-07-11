@@ -18,6 +18,7 @@
 		BB0000000000000000000009 /* ClaudeUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* ClaudeUsage.swift */; };
 		BB000000000000000000000A /* AnthropicStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000C /* AnthropicStatus.swift */; };
 		BB000000000000000000000B /* SleepGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000D /* SleepGuard.swift */; };
+		BB000000000000000000000C /* GrokSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000E /* GrokSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +35,7 @@
 		AA000000000000000000000B /* ClaudeUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeUsage.swift; sourceTree = "<group>"; };
 		AA000000000000000000000C /* AnthropicStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnthropicStatus.swift; sourceTree = "<group>"; };
 		AA000000000000000000000D /* SleepGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepGuard.swift; sourceTree = "<group>"; };
+		AA000000000000000000000E /* GrokSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrokSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,6 +70,7 @@
 				AA000000000000000000000B /* ClaudeUsage.swift */,
 				AA000000000000000000000C /* AnthropicStatus.swift */,
 				AA000000000000000000000D /* SleepGuard.swift */,
+				AA000000000000000000000E /* GrokSession.swift */,
 				AA0000000000000000000009 /* Assets.xcassets */,
 				AA0000000000000000000007 /* AgentCord.entitlements */,
 			);
@@ -161,6 +164,7 @@
 				BB0000000000000000000009 /* ClaudeUsage.swift in Sources */,
 				BB000000000000000000000A /* AnthropicStatus.swift in Sources */,
 				BB000000000000000000000B /* SleepGuard.swift in Sources */,
+				BB000000000000000000000C /* GrokSession.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
+    let grokSession = GrokSession()
     let anthropicStatus = AnthropicStatus()
     let sleepGuard = SleepGuard()
     lazy var controller = PresenceController(settings: settings)
@@ -48,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         controller.start()
         usage.start()
+        grokSession.activeWindowSeconds = settings.idleWindowSeconds
+        grokSession.start()
         anthropicStatus.start()
 
         // Keep the Mac awake whenever "Prevent sleep" is on, and follow the
@@ -57,6 +60,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.$preventSleep
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in self?.sleepGuard.setEnabled(enabled) }
+            .store(in: &cancellables)
+
+        // Keep Grok's idle window in sync with the setting Claude already uses.
+        settings.$idleWindowSeconds
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] seconds in self?.grokSession.activeWindowSeconds = seconds }
             .store(in: &cancellables)
 
         setupStatusItem()
@@ -104,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller)
             .environmentObject(loginItem)
             .environmentObject(usage)
+            .environmentObject(grokSession)
             .environmentObject(anthropicStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
@@ -303,6 +313,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var usage: ClaudeUsage
+    @EnvironmentObject private var grokSession: GrokSession
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
 
     @State private var showSettings = false
@@ -311,6 +322,53 @@ struct MenuContentView: View {
     @State private var expandStatus = false
 
     private let idleSteps = [5, 10, 15, 20, 25, 30]
+
+    /// Agents currently shown in the segmented switcher.
+    private var visibleAgents: [AgentKind] {
+        let enabled = settings.enabledAgents
+        return enabled.isEmpty ? [.claude] : enabled
+    }
+
+    private var selectedAgent: AgentKind {
+        let visible = visibleAgents
+        return visible.contains(settings.selectedAgent) ? settings.selectedAgent : visible[0]
+    }
+
+    /// Whether the selected agent has a linked account / can be tracked.
+    private var selectedAgentLinked: Bool {
+        isAgentLinked(selectedAgent)
+    }
+
+    private func isAgentLinked(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: return true
+        case .codex: return false
+        case .grok: return grokSession.isAuthenticated
+        }
+    }
+
+    private var linkedAgentCount: Int {
+        visibleAgents.filter { isAgentLinked($0) }.count
+    }
+
+    /// Session for the currently selected agent tab.
+    private var selectedSession: SessionInfo? {
+        switch selectedAgent {
+        case .claude: return controller.session.current
+        case .codex: return nil
+        case .grok: return grokSession.current
+        }
+    }
+
+    /// Whether the selected agent currently has a live session (for the status
+    /// dots in the switcher and the active-session card).
+    private func isAgentActive(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: return controller.session.current != nil
+        case .codex: return false
+        case .grok: return grokSession.current != nil
+        }
+    }
 
     // Screens slide horizontally: going to Settings pushes left, going back
     // pushes right. Using `.transition(.move)` (rather than animating an explicit
@@ -338,9 +396,14 @@ struct MenuContentView: View {
     private var mainScreen: some View {
         VStack(alignment: .leading, spacing: 11) {
             header
-            activeSessionCard
-            usageCard
-            statusCard
+            agentSwitcher
+            if selectedAgentLinked {
+                activeSessionCard
+                usageCard
+                statusCard
+            } else {
+                connectAgentCard
+            }
             settingsNavRow
             Rectangle()
                 .fill(Color.black.opacity(0.08))
@@ -355,6 +418,7 @@ struct MenuContentView: View {
     private var settingsScreen: some View {
         VStack(alignment: .leading, spacing: 11) {
             settingsHeader
+            agentsSettingsSection
             primaryToggles
             advancedSections
         }
@@ -390,10 +454,18 @@ struct MenuContentView: View {
     }
 
     private var statusPill: some View {
+        // Multi-agent design: show how many enabled agents are linked.
+        // Fall back to Discord connection state when only one agent is on.
+        let total = max(visibleAgents.count, 1)
+        let linked = linkedAgentCount
         let accent: Color
         let textColor: Color
         let label: String
-        if !settings.presenceEnabled {
+        if total > 1 {
+            accent = linked > 0 ? Palette.green : Palette.track
+            textColor = linked > 0 ? Palette.greenText : Palette.secondary.opacity(0.7)
+            label = "\(linked) of \(total) connected"
+        } else if !settings.presenceEnabled {
             accent = Palette.track
             textColor = Palette.secondary.opacity(0.7)
             label = "Off"
@@ -413,6 +485,115 @@ struct MenuContentView: View {
         .padding(.leading, 6).padding(.trailing, 8).padding(.vertical, 2)
         .background(Capsule().fill(accent.opacity(0.12)))
         .overlay(Capsule().stroke(accent.opacity(0.28), lineWidth: 0.5))
+    }
+
+    // MARK: Agent switcher
+
+    /// macOS-style segmented control for switching between enabled agents.
+    private var agentSwitcher: some View {
+        let agents = visibleAgents
+        return Group {
+            if agents.count > 1 {
+                HStack(spacing: 2) {
+                    ForEach(agents) { agent in
+                        agentSegment(agent)
+                    }
+                }
+                .padding(2)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Palette.track.opacity(0.12))
+                )
+            }
+        }
+    }
+
+    private func agentSegment(_ agent: AgentKind) -> some View {
+        let isSelected = agent == selectedAgent
+        let linked = isAgentLinked(agent)
+        let live = linked && isAgentActive(agent)
+        return Button {
+            settings.selectedAgent = agent
+            expandStatus = false
+        } label: {
+            HStack(spacing: 5) {
+                if linked {
+                    Circle()
+                        .fill(live ? Palette.green : Palette.track.opacity(0.7))
+                        .frame(width: 6, height: 6)
+                } else {
+                    Circle()
+                        .stroke(Palette.track.opacity(0.45), lineWidth: 1)
+                        .frame(width: 6, height: 6)
+                }
+                Text(agent.displayName)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(linked ? Palette.text : Palette.secondary.opacity(0.4))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                    .fill(isSelected ? Color.white : Color.clear)
+                    .shadow(color: isSelected ? .black.opacity(0.14) : .clear, radius: 1.25, y: 0.5)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Empty state when the selected agent isn't linked yet (e.g. Grok signed out).
+    private var connectAgentCard: some View {
+        let agent = selectedAgent
+        return VStack(spacing: 10) {
+            Text(String(agent.displayName.prefix(1)))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .frame(width: 34, height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Palette.track.opacity(0.1))
+                )
+
+            VStack(spacing: 3) {
+                Text("Connect \(agent.displayName)")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(connectSubtitle(for: agent))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button(action: { openConnectHelp(for: agent) }) {
+                Text("Connect \(agent.displayName)")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Palette.blue))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 14).padding(.vertical, 16)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func connectSubtitle(for agent: AgentKind) -> String {
+        "Link your \(agent.providerName) account to track usage, sessions and status here."
+    }
+
+    private func openConnectHelp(for agent: AgentKind) {
+        let urlString: String
+        switch agent {
+        case .claude: urlString = "https://docs.anthropic.com/en/docs/claude-code"
+        case .codex: urlString = "https://openai.com/codex"
+        case .grok: urlString = "https://grok.x.ai"
+        }
+        if let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     /// Settings screen header: a back chevron that returns to the main screen,
@@ -451,7 +632,7 @@ struct MenuContentView: View {
                     .foregroundStyle(Palette.secondary.opacity(0.65))
                 Text("Settings").font(.system(size: 13))
                 Spacer()
-                Text(settings.presenceEnabled ? "Presence on" : "Presence off")
+                Text(settingsSummary)
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.secondary.opacity(0.4))
                 Image(systemName: "chevron.right")
@@ -466,17 +647,26 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
     }
 
+    private var settingsSummary: String {
+        let n = settings.enabledAgents.count
+        if n == 0 { return "No agents" }
+        return n == 1 ? "1 agent on" : "\(n) agents on"
+    }
+
     // MARK: Active session card
 
     private var activeSessionCard: some View {
-        let session = controller.session.current
+        let session = selectedSession
         let hasSession = session != nil
-        let presenceOn = settings.presenceEnabled
-        let active = hasSession && presenceOn
+        // Discord presence is still Claude-only; Grok sessions show as active
+        // in the popover without claiming they're on Discord unless Claude is
+        // the selected agent and presence is on.
+        let sharing = hasSession && settings.presenceEnabled && selectedAgent == .claude
+        let active = hasSession
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text("ACTIVE SESSION")
+                Text(active ? "ACTIVE SESSION" : "LAST SESSION")
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(0.5)
                     .foregroundStyle(Palette.secondary.opacity(0.55))
@@ -512,9 +702,9 @@ struct MenuContentView: View {
 
             HStack(spacing: 6) {
                 Circle()
-                    .fill(active ? Palette.discord : Palette.track.opacity(0.6))
+                    .fill(sharing ? Palette.discord : Palette.track.opacity(0.6))
                     .frame(width: 5, height: 5)
-                Text(broadcastText(hasSession: hasSession, presenceOn: presenceOn))
+                Text(broadcastText(hasSession: hasSession, presenceOn: settings.presenceEnabled, sharing: sharing))
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.secondary.opacity(0.5))
             }
@@ -559,24 +749,48 @@ struct MenuContentView: View {
         return bits.joined(separator: "  ·  ")
     }
 
-    private func broadcastText(hasSession: Bool, presenceOn: Bool) -> String {
+    private func broadcastText(hasSession: Bool, presenceOn: Bool, sharing: Bool) -> String {
         if !presenceOn { return "Presence is off" }
-        return hasSession ? "Sharing to Discord as your status" : "Waiting for a session"
+        if selectedAgent != .claude {
+            return hasSession ? "Active — Discord still uses Claude" : "Waiting for a session"
+        }
+        return sharing ? "Sharing to Discord as your status" : "Waiting for a session"
     }
 
     // MARK: Usage card
 
+    @ViewBuilder
     private var usageCard: some View {
+        switch selectedAgent {
+        case .claude:
+            claudeUsageCard
+        case .grok:
+            grokUsageCard
+        case .codex:
+            EmptyView()
+        }
+    }
+
+    private var claudeUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("USAGE")
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.5)
                 .foregroundStyle(Palette.secondary.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            usageRow("Current session", usage.current?.fiveHour, resetStyle: .time)
-            usageRow("All models", usage.current?.weekly, resetStyle: .date)
-            ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
-                usageRow(scoped.modelName, scoped.window, resetStyle: .date)
+            if usage.current == nil {
+                Text("Waiting for Claude usage…")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            } else {
+                // Keep severity colors (blue / orange / red) — same as before
+                // multi-agent. Brand accents are only for Grok's context bar.
+                usageRow("Current session", usage.current?.fiveHour, resetStyle: .time)
+                usageRow("All models", usage.current?.weekly, resetStyle: .date)
+                ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
+                    usageRow(scoped.modelName, scoped.window, resetStyle: .date)
+                }
             }
 
             if let error = controller.lastError {
@@ -591,7 +805,45 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
-    private func usageRow(_ label: String, _ window: UsageInfo.Window?, resetStyle: ResetDisplayStyle) -> some View {
+    /// Grok has no public rate-limit API yet; surface the live session's context
+    /// window fill when a session is active so the card isn't empty.
+    private var grokUsageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("USAGE")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let session = grokSession.current, session.totalTokens > 0 {
+                let pct = min(100, max(1, Int((Double(session.totalTokens) / 500_000.0) * 100)))
+                simpleUsageRow(
+                    "Context window",
+                    label: "\(PresenceController.formatTokens(session.totalTokens)) · ~\(pct)%",
+                    percent: pct,
+                    accent: agentAccent(.grok)
+                )
+            } else {
+                Text("No rate-limit data yet")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func agentAccent(_ agent: AgentKind) -> Color {
+        let c = agent.accentHex
+        return Color(.sRGB, red: c.r, green: c.g, blue: c.b)
+    }
+
+    private func usageRow(
+        _ label: String, _ window: UsageInfo.Window?,
+        resetStyle: ResetDisplayStyle, accent: Color? = nil
+    ) -> some View {
         VStack(spacing: 5) {
             HStack {
                 Text(label).font(.system(size: 12.5))
@@ -604,8 +856,29 @@ struct MenuContentView: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Palette.track.opacity(0.16))
                     Capsule()
-                        .fill(severityColor(window))
+                        .fill(accent ?? severityColor(window))
                         .frame(width: geo.size.width * barFraction(window))
+                }
+            }
+            .frame(height: 6)
+        }
+    }
+
+    private func simpleUsageRow(_ name: String, label: String, percent: Int, accent: Color) -> some View {
+        VStack(spacing: 5) {
+            HStack {
+                Text(name).font(.system(size: 12.5))
+                Spacer()
+                Text(label)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.track.opacity(0.16))
+                    Capsule()
+                        .fill(accent)
+                        .frame(width: geo.size.width * max(CGFloat(percent) / 100, 0.015))
                 }
             }
             .frame(height: 6)
@@ -668,53 +941,60 @@ struct MenuContentView: View {
         return f
     }()
 
-    // MARK: Claude status card
+    // MARK: Provider status card
 
-    /// Surfaces status.claude.com as a compact collapsible row: a severity pill
-    /// in the header that expands to any active incident plus a per-component
-    /// breakdown. Hidden entirely until the first successful fetch, so a brief
-    /// offline moment shows nothing rather than a broken card.
+    /// Surfaces status.claude.com for Claude; other agents hide the card until
+    /// we wire their status pages. Hidden entirely until the first successful
+    /// fetch so a brief offline moment shows nothing rather than a broken card.
     @ViewBuilder
     private var statusCard: some View {
-        if let status = anthropicStatus.current {
-            VStack(spacing: 0) {
-                statusHeader(status)
-
-                if expandStatus {
-                    VStack(alignment: .leading, spacing: 9) {
-                        ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
-                            incidentCallout(incident)
-                        }
-
-                        VStack(alignment: .leading, spacing: 7) {
-                            ForEach(Array(status.components.enumerated()), id: \.offset) { _, comp in
-                                componentRow(comp)
-                            }
-                        }
-
-                        statusFooter(status)
-                    }
-                    .padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 10)
-                    .overlay(alignment: .top) {
-                        Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
-                    }
-                }
+        switch selectedAgent {
+        case .claude:
+            if let status = anthropicStatus.current {
+                providerStatusCard(title: "Claude status", status: status)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
-            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
+        case .codex, .grok:
+            EmptyView()
         }
     }
 
-    /// Collapsed row: "Claude status" label, severity pill, and expand chevron.
-    /// The whole row toggles the per-component breakdown.
-    private func statusHeader(_ status: StatusInfo) -> some View {
+    private func providerStatusCard(title: String, status: StatusInfo) -> some View {
+        VStack(spacing: 0) {
+            statusHeader(title: title, status: status)
+
+            if expandStatus {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
+                        incidentCallout(incident)
+                    }
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(Array(status.components.enumerated()), id: \.offset) { _, comp in
+                            componentRow(comp)
+                        }
+                    }
+
+                    statusFooter(status)
+                }
+                .padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 10)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
+    }
+
+    /// Collapsed row: provider status label, severity pill, and expand chevron.
+    private func statusHeader(title: String, status: StatusInfo) -> some View {
         let pill = statusPillStyle(status.level)
         return Button {
             expandStatus.toggle()
         } label: {
             HStack(spacing: 6) {
-                Text("Claude status").font(.system(size: 13))
+                Text(title).font(.system(size: 13))
                 Spacer()
                 HStack(spacing: 5) {
                     Circle().fill(pill.dot).frame(width: 6, height: 6)
@@ -871,13 +1151,108 @@ struct MenuContentView: View {
         return "\(secs / 86400)d ago"
     }
 
+    // MARK: Agents settings
+
+    private var agentsSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("AGENTS")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .padding(.horizontal, 2)
+
+            VStack(spacing: 0) {
+                ForEach(Array(AgentKind.allCases.enumerated()), id: \.element.id) { index, agent in
+                    agentToggleRow(agent, divider: index > 0)
+                }
+            }
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        }
+    }
+
+    private func agentToggleRow(_ agent: AgentKind, divider: Bool) -> some View {
+        let linked = isAgentLinked(agent)
+        let sub = agent.providerName + (linked ? " · connected" : " · not connected")
+        return HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(agentAccent(agent))
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(agent.displayName).font(.system(size: 13))
+                    Text(sub)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.secondary.opacity(0.45))
+                }
+            }
+            Spacer()
+            ToggleSwitch(isOn: settings.bindingForAgent(agent))
+        }
+        .padding(.vertical, 8)
+        .overlay(alignment: .top) {
+            if divider { Rectangle().fill(.black.opacity(0.05)).frame(height: 0.5) }
+        }
+    }
+
     // MARK: Primary toggles
 
     private var primaryToggles: some View {
-        VStack(spacing: 0) {
-            toggleRow("Enable presence", presenceBinding, divider: false)
-            toggleRow("Launch at login", launchBinding, divider: true)
-            toggleRow("Prevent sleep", $settings.preventSleep, divider: true)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("PRESENCE")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .padding(.horizontal, 2)
+
+            VStack(spacing: 0) {
+                toggleRow("Enable presence", presenceBinding, divider: false)
+                toggleRowWithSubtitle(
+                    "Share busiest agent",
+                    subtitle: "Discord shows the agent with an active session",
+                    isOn: $settings.shareBusiestAgent,
+                    divider: true
+                )
+            }
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+
+            Text("GENERAL")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .padding(.horizontal, 2)
+                .padding(.top, 5)
+
+            VStack(spacing: 0) {
+                toggleRow("Launch at login", launchBinding, divider: false)
+                toggleRow("Prevent sleep", $settings.preventSleep, divider: true)
+            }
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        }
+    }
+
+    private func toggleRowWithSubtitle(
+        _ title: String, subtitle: String, isOn: Binding<Bool>, divider: Bool
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13))
+                Text(subtitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            ToggleSwitch(isOn: isOn)
+        }
+        .padding(.vertical, 8)
+        .overlay(alignment: .top) {
+            if divider { Rectangle().fill(.black.opacity(0.05)).frame(height: 0.5) }
         }
     }
 

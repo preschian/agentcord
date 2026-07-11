@@ -50,6 +50,16 @@ final class ClaudeUsage: ObservableObject {
 
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
+    /// Disk cache so a relaunch right after a 429 (or any transient failure)
+    /// still shows the last good numbers instead of blank "—" rows.
+    private static let cacheURL: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = base.appendingPathComponent("AgentCord", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("claude-usage-cache.json")
+    }()
+
     /// The service name Claude Code stores its credentials under. Older versions
     /// use exactly this; newer ones (v2.1.52+) append a per-install suffix, e.g.
     /// "Claude Code-credentials-<hash>", so we match by prefix.
@@ -60,11 +70,21 @@ final class ClaudeUsage: ObservableObject {
         config.timeoutIntervalForRequest = 15
         config.waitsForConnectivity = false
         urlSession = URLSession(configuration: config)
+
+        // Restore a still-fresh snapshot before the first network round-trip so
+        // the popover isn't empty while we wait (or while the API rate-limits).
+        if let cached = Self.loadCache(), Date().timeIntervalSince(cached.fetchedAt) <= maxStaleness {
+            current = cached.info
+            lastSuccess = cached.fetchedAt
+        }
     }
 
     func start() {
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 1, repeating: pollInterval)
+        // Prefer a slightly longer first delay when we already have a cache hit,
+        // so we don't immediately burn a rate-limit slot on every relaunch.
+        let firstDelay: TimeInterval = (current != nil) ? 5 : 1
+        t.schedule(deadline: .now() + firstDelay, repeating: pollInterval)
         t.setEventHandler { [weak self] in self?.fetch() }
         t.resume()
         timer = t
@@ -111,8 +131,10 @@ final class ClaudeUsage: ObservableObject {
                     self.handleFailure()
                     return
                 }
+                let info = decoded.toUsageInfo()
                 self.lastSuccess = Date()
-                self.publish(decoded.toUsageInfo())
+                Self.saveCache(info, fetchedAt: self.lastSuccess)
+                self.publish(info)
             }
         }.resume()
     }
@@ -122,8 +144,10 @@ final class ClaudeUsage: ObservableObject {
     /// away. Runs on `queue`.
     private func handleFailure() {
         if Date().timeIntervalSince(lastSuccess) > maxStaleness {
+            Self.clearCache()
             publish(nil)
         }
+        // else: keep showing `current` (in-memory and/or restored from disk)
     }
 
     private func publish(_ info: UsageInfo?) {
@@ -131,6 +155,28 @@ final class ClaudeUsage: ObservableObject {
             guard let self else { return }
             if self.current != info { self.current = info }
         }
+    }
+
+    // MARK: Disk cache
+
+    private struct CachePayload: Codable {
+        var fetchedAt: Date
+        var info: UsageInfo
+    }
+
+    private static func loadCache() -> CachePayload? {
+        guard let data = try? Data(contentsOf: cacheURL) else { return nil }
+        return try? JSONDecoder().decode(CachePayload.self, from: data)
+    }
+
+    private static func saveCache(_ info: UsageInfo, fetchedAt: Date) {
+        let payload = CachePayload(fetchedAt: fetchedAt, info: info)
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        try? data.write(to: cacheURL, options: .atomic)
+    }
+
+    private static func clearCache() {
+        try? FileManager.default.removeItem(at: cacheURL)
     }
 
     // MARK: Keychain

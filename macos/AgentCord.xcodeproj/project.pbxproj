@@ -20,6 +20,7 @@
 		BB000000000000000000000B /* SleepGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000D /* SleepGuard.swift */; };
 		BB000000000000000000000C /* GrokSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000E /* GrokSession.swift */; };
 		BB000000000000000000000D /* CodexUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000F /* CodexUsage.swift */; };
+		BB000000000000000000000E /* CursorUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* CursorUsage.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +39,7 @@
 		AA000000000000000000000D /* SleepGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepGuard.swift; sourceTree = "<group>"; };
 		AA000000000000000000000E /* GrokSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrokSession.swift; sourceTree = "<group>"; };
 		AA000000000000000000000F /* CodexUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsage.swift; sourceTree = "<group>"; };
+		AA0000000000000000000010 /* CursorUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorUsage.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -74,6 +76,7 @@
 				AA000000000000000000000D /* SleepGuard.swift */,
 				AA000000000000000000000E /* GrokSession.swift */,
 				AA000000000000000000000F /* CodexUsage.swift */,
+				AA0000000000000000000010 /* CursorUsage.swift */,
 				AA0000000000000000000009 /* Assets.xcassets */,
 				AA0000000000000000000007 /* AgentCord.entitlements */,
 			);
@@ -169,6 +172,7 @@
 				BB000000000000000000000B /* SleepGuard.swift in Sources */,
 				BB000000000000000000000C /* GrokSession.swift in Sources */,
 				BB000000000000000000000D /* CodexUsage.swift in Sources */,
+				BB000000000000000000000E /* CursorUsage.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

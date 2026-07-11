@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
+    let cursorUsage = CursorUsage()
     let codexUsage = CodexUsage()
     let grokSession = GrokSession()
     let anthropicStatus = AnthropicStatus()
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         controller.start()
         usage.start()
+        cursorUsage.start()
         codexUsage.start()
         grokSession.activeWindowSeconds = settings.idleWindowSeconds
         grokSession.start()
@@ -115,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller)
             .environmentObject(loginItem)
             .environmentObject(usage)
+            .environmentObject(cursorUsage)
             .environmentObject(codexUsage)
             .environmentObject(grokSession)
             .environmentObject(anthropicStatus)
@@ -150,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // Pull fresh usage numbers and Anthropic status as the popover
             // opens so they're current.
             usage.refresh()
+            cursorUsage.refresh()
             codexUsage.refresh()
             anthropicStatus.refresh()
             NSApp.activate(ignoringOtherApps: true)
@@ -192,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 font: font,
                 settings: settings,
                 claudeUsage: usage.current,
+                cursorUsage: cursorUsage.current,
                 codexUsage: codexUsage.current,
                 grokSession: grokSession.current
             )
@@ -240,16 +245,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         font: NSFont,
         settings: SettingsStore,
         claudeUsage: UsageInfo?,
+        cursorUsage: CursorUsageInfo?,
         codexUsage: CodexUsageInfo?,
         grokSession: SessionInfo?
     ) {
         let claudeSnapshot = settings.isAgentEnabled(.claude) ? claudeUsage : nil
+        let cursorSnapshot = settings.isAgentEnabled(.cursor) ? cursorUsage : nil
         let codexSnapshot = settings.isAgentEnabled(.codex) ? codexUsage : nil
         let grokSnapshot = (settings.isAgentEnabled(.grok) && (grokSession?.totalTokens ?? 0) > 0)
             ? grokSession : nil
 
         let contributing =
             (claudeSnapshot != nil ? 1 : 0)
+            + (cursorSnapshot != nil ? 1 : 0)
             + (codexSnapshot != nil ? 1 : 0)
             + (grokSnapshot != nil ? 1 : 0)
         // When more than one agent contributes, drop the "5h" tag and label
@@ -259,6 +267,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let snapshot = claudeSnapshot {
             Self.appendMenuBarSegment(to: title, font: font) {
                 Self.appendClaudeUsage(snapshot, to: $0, font: font, labeled: multi)
+            }
+        }
+        if let snapshot = cursorSnapshot {
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendCursorUsage(snapshot, to: $0, font: font, labeled: multi)
             }
         }
         if let snapshot = codexSnapshot {
@@ -302,6 +315,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Only attach the reset clock when Claude is alone — with multi-agent
         // the title gets crowded quickly.
         if !labeled, let reset = MenuContentView.formatResetTime(window, style: .time) {
+            title.append(NSAttributedString(
+                string: " (\(reset))",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+    }
+
+    /// Appends a compact Cursor readout: always "Cursor NN%" (no 5h tag).
+    /// Reset date only when Cursor is the sole usage segment.
+    static func appendCursorUsage(
+        _ usage: CursorUsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
+    ) {
+        let window = usage.included
+        let color = severityNSColor(window.severity)
+        title.append(NSAttributedString(
+            string: "Cursor \(window.percent)%",
+            attributes: [.font: font, .foregroundColor: color]
+        ))
+        // Alone in the menu bar: attach billing-cycle reset. Multi-agent: skip.
+        if !labeled, let reset = MenuContentView.formatCursorResetTime(window, style: .date) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
@@ -423,6 +456,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var usage: ClaudeUsage
+    @EnvironmentObject private var cursorUsage: CursorUsage
     @EnvironmentObject private var codexUsage: CodexUsage
     @EnvironmentObject private var grokSession: GrokSession
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
@@ -453,6 +487,7 @@ struct MenuContentView: View {
     private func isAgentLinked(_ agent: AgentKind) -> Bool {
         switch agent {
         case .claude: return true
+        case .cursor: return cursorUsage.isAuthenticated
         case .codex: return codexUsage.isAuthenticated
         case .grok: return grokSession.isAuthenticated
         }
@@ -466,7 +501,7 @@ struct MenuContentView: View {
     private var selectedSession: SessionInfo? {
         switch selectedAgent {
         case .claude: return controller.session.current
-        case .codex: return nil
+        case .cursor, .codex: return nil
         case .grok: return grokSession.current
         }
     }
@@ -476,7 +511,7 @@ struct MenuContentView: View {
     private func isAgentActive(_ agent: AgentKind) -> Bool {
         switch agent {
         case .claude: return controller.session.current != nil
-        case .codex: return false
+        case .cursor, .codex: return false
         case .grok: return grokSession.current != nil
         }
     }
@@ -623,11 +658,13 @@ struct MenuContentView: View {
         let isSelected = agent == selectedAgent
         let linked = isAgentLinked(agent)
         let live = linked && isAgentActive(agent)
+        // Four tabs need a slightly smaller label so names still fit at 300pt.
+        let nameSize: CGFloat = visibleAgents.count >= 4 ? 11 : 12
         return Button {
             settings.selectedAgent = agent
             expandStatus = false
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 if linked {
                     Circle()
                         .fill(live ? Palette.green : Palette.track.opacity(0.7))
@@ -638,8 +675,10 @@ struct MenuContentView: View {
                         .frame(width: 6, height: 6)
                 }
                 Text(agent.displayName)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .font(.system(size: nameSize, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(linked ? Palette.text : Palette.secondary.opacity(0.4))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 5)
@@ -699,6 +738,7 @@ struct MenuContentView: View {
         let urlString: String
         switch agent {
         case .claude: urlString = "https://docs.anthropic.com/en/docs/claude-code"
+        case .cursor: urlString = "https://cursor.com"
         case .codex: urlString = "https://developers.openai.com/codex/auth"
         case .grok: urlString = "https://grok.x.ai"
         }
@@ -875,6 +915,8 @@ struct MenuContentView: View {
         switch selectedAgent {
         case .claude:
             claudeUsageCard
+        case .cursor:
+            cursorUsageCard
         case .codex:
             codexUsageCard
         case .grok:
@@ -914,6 +956,85 @@ struct MenuContentView: View {
         .padding(.vertical, 11).padding(.horizontal, 12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private var cursorUsageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("USAGE")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Spacer()
+                if let plan = cursorUsage.current?.planName, !plan.isEmpty {
+                    Text(plan.capitalized)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Palette.secondary.opacity(0.45))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let info = cursorUsage.current {
+                cursorUsageRow("Included usage", info.included, resetStyle: .date)
+                if let auto = info.auto {
+                    cursorUsageRow("Auto + Composer", auto, resetStyle: .date)
+                }
+                if let api = info.api {
+                    cursorUsageRow("API models", api, resetStyle: .date)
+                }
+                if let onDemand = info.onDemand {
+                    cursorUsageRow("On-demand", onDemand, resetStyle: .date)
+                }
+            } else {
+                Text("Waiting for Cursor usage…")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func cursorUsageRow(
+        _ label: String, _ window: CursorUsageInfo.Window, resetStyle: ResetDisplayStyle
+    ) -> some View {
+        // Map onto the shared bar row, with optional $ detail in the value.
+        let mapped = UsageInfo.Window(
+            percent: window.percent,
+            severity: window.severity,
+            resetsAt: window.resetsAt
+        )
+        return VStack(spacing: 5) {
+            HStack {
+                Text(label).font(.system(size: 12.5))
+                Spacer()
+                Text(cursorUsageDetail(window, resetStyle: resetStyle))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .monospacedDigit()
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.track.opacity(0.16))
+                    Capsule()
+                        .fill(agentAccent(.cursor).opacity(0.85))
+                        .frame(width: geo.size.width * barFraction(mapped))
+                }
+            }
+            .frame(height: 6)
+        }
+    }
+
+    private func cursorUsageDetail(
+        _ window: CursorUsageInfo.Window, resetStyle: ResetDisplayStyle
+    ) -> String {
+        var parts: [String] = ["\(window.percent)%"]
+        if let detail = window.detail, !detail.isEmpty { parts.append(detail) }
+        if let reset = Self.formatCursorResetTime(window, style: resetStyle) {
+            parts.append("resets \(reset)")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var codexUsageCard: some View {
@@ -1062,6 +1183,19 @@ struct MenuContentView: View {
     /// "12.29 pm" or "Jun 29". Returns nil when there's no reset time, "now"
     /// once it's due.
     static func formatResetTime(_ window: UsageInfo.Window, style: ResetDisplayStyle) -> String? {
+        formatCursorResetTime(
+            CursorUsageInfo.Window(
+                percent: window.percent,
+                severity: window.severity,
+                resetsAt: window.resetsAt
+            ),
+            style: style
+        )
+    }
+
+    static func formatCursorResetTime(
+        _ window: CursorUsageInfo.Window, style: ResetDisplayStyle
+    ) -> String? {
         guard let reset = window.resetsAt else { return nil }
         guard reset.timeIntervalSinceNow > 0 else { return "now" }
         switch style {
@@ -1098,7 +1232,7 @@ struct MenuContentView: View {
             if let status = anthropicStatus.current {
                 providerStatusCard(title: "Claude status", status: status)
             }
-        case .codex, .grok:
+        case .cursor, .codex, .grok:
             EmptyView()
         }
     }

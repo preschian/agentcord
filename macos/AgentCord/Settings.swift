@@ -29,6 +29,7 @@ final class SettingsStore: ObservableObject {
         static let idleWindowSeconds = "idleWindowSeconds"
         static let selectedAgent = "selectedAgent"
         static let agentClaudeEnabled = "agentClaudeEnabled"
+        static let agentCursorEnabled = "agentCursorEnabled"
         static let agentCodexEnabled = "agentCodexEnabled"
         static let agentGrokEnabled = "agentGrokEnabled"
         static let shareBusiestAgent = "shareBusiestAgent"
@@ -60,6 +61,7 @@ final class SettingsStore: ObservableObject {
     }
     /// Agents enabled in Settings (shown in the segmented switcher when on).
     @Published var agentClaudeEnabled: Bool { didSet { defaults.set(agentClaudeEnabled, forKey: Key.agentClaudeEnabled) } }
+    @Published var agentCursorEnabled: Bool { didSet { defaults.set(agentCursorEnabled, forKey: Key.agentCursorEnabled) } }
     @Published var agentCodexEnabled: Bool { didSet { defaults.set(agentCodexEnabled, forKey: Key.agentCodexEnabled) } }
     @Published var agentGrokEnabled: Bool { didSet { defaults.set(agentGrokEnabled, forKey: Key.agentGrokEnabled) } }
     /// Reserved for multi-agent Discord presence; popover-only for now.
@@ -83,8 +85,8 @@ final class SettingsStore: ObservableObject {
             Key.idleWindowSeconds: 300.0,
             Key.selectedAgent: AgentKind.claude.rawValue,
             Key.agentClaudeEnabled: true,
-            // Codex defaults on when the user already has ~/.codex/auth.json;
-            // otherwise the Connect card explains how to sign in.
+            Key.agentCursorEnabled: true,
+            // Codex defaults on; Connect card shows if not signed in.
             Key.agentCodexEnabled: true,
             Key.agentGrokEnabled: true,
             Key.shareBusiestAgent: true
@@ -105,6 +107,7 @@ final class SettingsStore: ObservableObject {
         idleWindowSeconds = defaults.double(forKey: Key.idleWindowSeconds)
         selectedAgent = AgentKind(rawValue: defaults.string(forKey: Key.selectedAgent) ?? "") ?? .claude
         agentClaudeEnabled = defaults.bool(forKey: Key.agentClaudeEnabled)
+        agentCursorEnabled = defaults.bool(forKey: Key.agentCursorEnabled)
         agentCodexEnabled = defaults.bool(forKey: Key.agentCodexEnabled)
         agentGrokEnabled = defaults.bool(forKey: Key.agentGrokEnabled)
         shareBusiestAgent = defaults.bool(forKey: Key.shareBusiestAgent)
@@ -118,6 +121,7 @@ final class SettingsStore: ObservableObject {
     func isAgentEnabled(_ agent: AgentKind) -> Bool {
         switch agent {
         case .claude: return agentClaudeEnabled
+        case .cursor: return agentCursorEnabled
         case .codex: return agentCodexEnabled
         case .grok: return agentGrokEnabled
         }
@@ -126,6 +130,7 @@ final class SettingsStore: ObservableObject {
     func setAgentEnabled(_ agent: AgentKind, _ enabled: Bool) {
         switch agent {
         case .claude: agentClaudeEnabled = enabled
+        case .cursor: agentCursorEnabled = enabled
         case .codex: agentCodexEnabled = enabled
         case .grok: agentGrokEnabled = enabled
         }

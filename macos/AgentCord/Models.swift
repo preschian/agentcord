@@ -88,6 +88,7 @@ struct SetActivityArgs: Encodable {
 /// for now; multi-agent is a popover UI concern.
 enum AgentKind: String, CaseIterable, Identifiable, Codable {
     case claude
+    case cursor
     case codex
     case grok
 
@@ -96,6 +97,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     var displayName: String {
         switch self {
         case .claude: return "Claude"
+        case .cursor: return "Cursor"
         case .codex: return "Codex"
         case .grok: return "Grok"
         }
@@ -104,6 +106,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     var providerName: String {
         switch self {
         case .claude: return "Anthropic"
+        case .cursor: return "Cursor"
         case .codex: return "OpenAI"
         case .grok: return "xAI"
         }
@@ -113,6 +116,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     var accentHex: (r: Double, g: Double, b: Double) {
         switch self {
         case .claude: return (0.851, 0.467, 0.341) // #d97757
+        case .cursor: return (0.0, 0.0, 0.0)        // #000000
         case .codex: return (0.063, 0.639, 0.498)  // #10a37f
         case .grok: return (0.114, 0.114, 0.122)   // #1d1d1f
         }
@@ -131,6 +135,33 @@ struct SessionInfo: Equatable {
     /// Context window size when known (Grok `signals.json`); used for menu bar
     /// / usage fill percent. Nil for Claude Code daily token totals.
     var contextWindowTokens: Int? = nil
+}
+
+// MARK: - Cursor subscription usage
+
+/// Cursor billing-period usage from the undocumented dashboard API.
+struct CursorUsageInfo: Equatable, Codable {
+
+    struct Window: Equatable, Codable {
+        var percent: Int
+        var severity: String
+        var resetsAt: Date?
+        /// Optional detail, e.g. "$17.98 / $20.00" or "12/500 requests".
+        var detail: String?
+
+        var isElevated: Bool { severity.lowercased() != "normal" }
+    }
+
+    /// Included plan usage for the current billing period.
+    var included: Window
+    /// Auto / Composer usage when it differs from the total figure.
+    var auto: Window?
+    /// Named-model API usage when it differs from the total figure.
+    var api: Window?
+    /// On-demand spend when enabled on the account.
+    var onDemand: Window?
+    /// Human-readable plan name, e.g. "pro".
+    var planName: String?
 }
 
 // MARK: - Codex / ChatGPT subscription usage

@@ -1000,41 +1000,13 @@ struct MenuContentView: View {
     private func cursorUsageRow(
         _ label: String, _ window: CursorUsageInfo.Window, resetStyle: ResetDisplayStyle
     ) -> some View {
-        // Map onto the shared bar row, with optional $ detail in the value.
+        // Percent + reset only — no dollar amounts.
         let mapped = UsageInfo.Window(
             percent: window.percent,
             severity: window.severity,
             resetsAt: window.resetsAt
         )
-        return VStack(spacing: 5) {
-            HStack {
-                Text(label).font(.system(size: 12.5))
-                Spacer()
-                Text(cursorUsageDetail(window, resetStyle: resetStyle))
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .monospacedDigit()
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Palette.track.opacity(0.16))
-                    Capsule()
-                        .fill(agentAccent(.cursor).opacity(0.85))
-                        .frame(width: geo.size.width * barFraction(mapped))
-                }
-            }
-            .frame(height: 6)
-        }
-    }
-
-    private func cursorUsageDetail(
-        _ window: CursorUsageInfo.Window, resetStyle: ResetDisplayStyle
-    ) -> String {
-        var parts: [String] = ["\(window.percent)%"]
-        if let detail = window.detail, !detail.isEmpty { parts.append(detail) }
-        if let reset = Self.formatCursorResetTime(window, style: resetStyle) {
-            parts.append("resets \(reset)")
-        }
-        return parts.joined(separator: " · ")
+        return usageRow(label, mapped, resetStyle: resetStyle, accent: agentAccent(.cursor).opacity(0.85))
     }
 
     private var codexUsageCard: some View {

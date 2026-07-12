@@ -295,7 +295,6 @@ private struct PeriodUsageResponse: Decodable {
         }
 
         let resetsAt = Self.parseEpochMillis(billingCycleEnd?.value)
-        let detail = Self.dollarDetail(usedCents: plan.totalSpend, limitCents: plan.limit)
 
         var auto: CursorUsageInfo.Window?
         if let autoPercent = plan.autoPercentUsed {
@@ -318,15 +317,12 @@ private struct PeriodUsageResponse: Decodable {
             let remaining = spendLimitUsage?.individualRemaining ?? limit
             let used = max(0, limit - remaining)
             let percent = min(100, max(0, Int((Double(used) / Double(limit) * 100).rounded())))
-            onDemand = Self.makeWindow(
-                percent: percent,
-                resetsAt: resetsAt,
-                detail: String(format: "$%.2f / $%.2f", Double(used) / 100, Double(limit) / 100)
-            )
+            // Percent only — no dollar amounts in the UI.
+            onDemand = Self.makeWindow(percent: percent, resetsAt: resetsAt)
         }
 
         return CursorUsageInfo(
-            included: Self.makeWindow(percent: totalPercent, resetsAt: resetsAt, detail: detail),
+            included: Self.makeWindow(percent: totalPercent, resetsAt: resetsAt),
             auto: auto,
             api: api,
             onDemand: onDemand,
@@ -345,11 +341,6 @@ private struct PeriodUsageResponse: Decodable {
             resetsAt: resetsAt,
             detail: detail
         )
-    }
-
-    private static func dollarDetail(usedCents: Int?, limitCents: Int?) -> String? {
-        guard let used = usedCents, let limit = limitCents, limit > 0 else { return nil }
-        return String(format: "$%.2f / $%.2f", Double(used) / 100, Double(limit) / 100)
     }
 
     private static func severity(for percent: Int) -> String {

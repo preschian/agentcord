@@ -88,8 +88,8 @@ struct SetActivityArgs: Encodable {
 /// for now; multi-agent is a popover UI concern.
 enum AgentKind: String, CaseIterable, Identifiable, Codable {
     case claude
-    case cursor
     case codex
+    case cursor
     case grok
 
     var id: String { rawValue }
@@ -97,8 +97,8 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     var displayName: String {
         switch self {
         case .claude: return "Claude"
-        case .cursor: return "Cursor"
         case .codex: return "Codex"
+        case .cursor: return "Cursor"
         case .grok: return "Grok"
         }
     }
@@ -106,8 +106,8 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     var providerName: String {
         switch self {
         case .claude: return "Anthropic"
-        case .cursor: return "Cursor"
         case .codex: return "OpenAI"
+        case .cursor: return "Cursor"
         case .grok: return "xAI"
         }
     }
@@ -116,8 +116,8 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     var accentHex: (r: Double, g: Double, b: Double) {
         switch self {
         case .claude: return (0.851, 0.467, 0.341) // #d97757
-        case .cursor: return (0.0, 0.0, 0.0)        // #000000
         case .codex: return (0.063, 0.639, 0.498)  // #10a37f
+        case .cursor: return (0.0, 0.0, 0.0)        // #000000
         case .grok: return (0.114, 0.114, 0.122)   // #1d1d1f
         }
     }

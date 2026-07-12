@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let usage = ClaudeUsage()
     let cursorUsage = CursorUsage()
     let codexUsage = CodexUsage()
+    let grokUsage = GrokUsage()
     let grokSession = GrokSession()
     let anthropicStatus = AnthropicStatus()
     let sleepGuard = SleepGuard()
@@ -53,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         usage.start()
         cursorUsage.start()
         codexUsage.start()
+        grokUsage.start()
         grokSession.activeWindowSeconds = settings.idleWindowSeconds
         grokSession.start()
         anthropicStatus.start()
@@ -119,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(usage)
             .environmentObject(cursorUsage)
             .environmentObject(codexUsage)
+            .environmentObject(grokUsage)
             .environmentObject(grokSession)
             .environmentObject(anthropicStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
@@ -155,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             usage.refresh()
             cursorUsage.refresh()
             codexUsage.refresh()
+            grokUsage.refresh()
             anthropicStatus.refresh()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -198,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 claudeUsage: usage.current,
                 cursorUsage: cursorUsage.current,
                 codexUsage: codexUsage.current,
-                grokSession: grokSession.current
+                grokUsage: grokUsage.current
             )
         }
 
@@ -247,13 +251,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         claudeUsage: UsageInfo?,
         cursorUsage: CursorUsageInfo?,
         codexUsage: CodexUsageInfo?,
-        grokSession: SessionInfo?
+        grokUsage: GrokUsageInfo?
     ) {
         let claudeSnapshot = settings.isAgentEnabled(.claude) ? claudeUsage : nil
         let cursorSnapshot = settings.isAgentEnabled(.cursor) ? cursorUsage : nil
         let codexSnapshot = settings.isAgentEnabled(.codex) ? codexUsage : nil
-        let grokSnapshot = (settings.isAgentEnabled(.grok) && (grokSession?.totalTokens ?? 0) > 0)
-            ? grokSession : nil
+        let grokSnapshot = settings.isAgentEnabled(.grok) ? grokUsage : nil
 
         let contributing =
             (claudeSnapshot != nil ? 1 : 0)
@@ -269,19 +272,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 Self.appendClaudeUsage(snapshot, to: $0, font: font, labeled: multi)
             }
         }
-        if let snapshot = cursorSnapshot {
-            Self.appendMenuBarSegment(to: title, font: font) {
-                Self.appendCursorUsage(snapshot, to: $0, font: font, labeled: multi)
-            }
-        }
         if let snapshot = codexSnapshot {
             Self.appendMenuBarSegment(to: title, font: font) {
                 Self.appendCodexUsage(snapshot, to: $0, font: font, labeled: multi)
             }
         }
-        if let session = grokSnapshot {
+        if let snapshot = cursorSnapshot {
             Self.appendMenuBarSegment(to: title, font: font) {
-                Self.appendGrokUsage(session, to: $0, font: font)
+                Self.appendCursorUsage(snapshot, to: $0, font: font, labeled: multi)
+            }
+        }
+        if let snapshot = grokSnapshot {
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendGrokUsage(snapshot, to: $0, font: font, labeled: multi)
             }
         }
     }
@@ -369,22 +372,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    /// Appends a compact "Grok NN%" context-window fill for the active Grok session.
+    /// Appends a compact Grok weekly-credits readout. Alone: "Grok NN% (reset)".
+    /// Shared: "Grok NN%".
     static func appendGrokUsage(
-        _ session: SessionInfo, to title: NSMutableAttributedString, font: NSFont
+        _ usage: GrokUsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
     ) {
-        let window = max(session.contextWindowTokens ?? 500_000, 1)
-        let percent = min(100, max(0, Int((Double(session.totalTokens) / Double(window) * 100).rounded())))
-        let color: NSColor
-        switch percent {
-        case ..<70: color = .labelColor
-        case ..<90: color = .systemOrange
-        default: color = .systemRed
-        }
+        let window = usage.weekly
+        let color = severityNSColor(window.severity)
         title.append(NSAttributedString(
-            string: "Grok \(percent)%",
+            string: "Grok \(window.percent)%",
             attributes: [.font: font, .foregroundColor: color]
         ))
+        if !labeled, let reset = MenuContentView.formatResetTime(window, style: .date) {
+            title.append(NSAttributedString(
+                string: " (\(reset))",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
     }
 
     private static func severityNSColor(_ severity: String) -> NSColor {
@@ -458,6 +462,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var usage: ClaudeUsage
     @EnvironmentObject private var cursorUsage: CursorUsage
     @EnvironmentObject private var codexUsage: CodexUsage
+    @EnvironmentObject private var grokUsage: GrokUsage
     @EnvironmentObject private var grokSession: GrokSession
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
 
@@ -489,7 +494,7 @@ struct MenuContentView: View {
         case .claude: return true
         case .cursor: return cursorUsage.isAuthenticated
         case .codex: return codexUsage.isAuthenticated
-        case .grok: return grokSession.isAuthenticated
+        case .grok: return grokUsage.isAuthenticated || grokSession.isAuthenticated
         }
     }
 
@@ -1042,8 +1047,7 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
-    /// Grok has no public rate-limit API yet; surface the live session's context
-    /// window fill when a session is active so the card isn't empty.
+    /// Weekly SuperGrok / CLI credits from `/v1/billing?format=credits`.
     private var grokUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("USAGE")
@@ -1052,17 +1056,18 @@ struct MenuContentView: View {
                 .foregroundStyle(Palette.secondary.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if let session = grokSession.current, session.totalTokens > 0 {
-                let window = max(session.contextWindowTokens ?? 500_000, 1)
-                let pct = min(100, max(1, Int((Double(session.totalTokens) / Double(window) * 100).rounded())))
-                simpleUsageRow(
-                    "Context window",
-                    label: "\(PresenceController.formatTokens(session.totalTokens)) · ~\(pct)%",
-                    percent: pct,
-                    accent: agentAccent(.grok)
-                )
+            if let info = grokUsage.current {
+                usageRow("Weekly credits", info.weekly, resetStyle: .date, accent: agentAccent(.grok))
+                if let onDemand = info.onDemand {
+                    usageRow("On-demand", onDemand, resetStyle: .date, accent: agentAccent(.grok))
+                }
+            } else if grokUsage.isAuthenticated {
+                Text("Waiting for Grok usage…")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
             } else {
-                Text("No rate-limit data yet")
+                Text("Not signed in — run grok login")
                     .font(.system(size: 12.5))
                     .foregroundStyle(Palette.secondary.opacity(0.45))
                     .italic()
@@ -1096,27 +1101,6 @@ struct MenuContentView: View {
                     Capsule()
                         .fill(accent ?? severityColor(window))
                         .frame(width: geo.size.width * barFraction(window))
-                }
-            }
-            .frame(height: 6)
-        }
-    }
-
-    private func simpleUsageRow(_ name: String, label: String, percent: Int, accent: Color) -> some View {
-        VStack(spacing: 5) {
-            HStack {
-                Text(name).font(.system(size: 12.5))
-                Spacer()
-                Text(label)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .monospacedDigit()
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Palette.track.opacity(0.16))
-                    Capsule()
-                        .fill(accent)
-                        .frame(width: geo.size.width * max(CGFloat(percent) / 100, 0.015))
                 }
             }
             .frame(height: 6)

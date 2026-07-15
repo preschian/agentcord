@@ -30,6 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let settings = SettingsStore()
     let loginItem = LoginItem()
     let usage = ClaudeUsage()
+    let cursorUsage = CursorUsage()
+    let codexUsage = CodexUsage()
+    let grokUsage = GrokUsage()
+    let grokSession = GrokSession()
     let anthropicStatus = AnthropicStatus()
     let sleepGuard = SleepGuard()
     lazy var controller = PresenceController(settings: settings)
@@ -48,6 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         controller.start()
         usage.start()
+        cursorUsage.start()
+        codexUsage.start()
+        grokUsage.start()
+        grokSession.activeWindowSeconds = settings.idleWindowSeconds
+        grokSession.start()
         anthropicStatus.start()
 
         // Keep the Mac awake whenever "Prevent sleep" is on, and follow the
@@ -57,6 +66,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.$preventSleep
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in self?.sleepGuard.setEnabled(enabled) }
+            .store(in: &cancellables)
+
+        // Keep Grok's idle window in sync with the setting Claude already uses.
+        settings.$idleWindowSeconds
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] seconds in self?.grokSession.activeWindowSeconds = seconds }
             .store(in: &cancellables)
 
         setupStatusItem()
@@ -104,6 +119,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller)
             .environmentObject(loginItem)
             .environmentObject(usage)
+            .environmentObject(cursorUsage)
+            .environmentObject(codexUsage)
+            .environmentObject(grokUsage)
+            .environmentObject(grokSession)
             .environmentObject(anthropicStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
@@ -137,6 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // Pull fresh usage numbers and Anthropic status as the popover
             // opens so they're current.
             usage.refresh()
+            cursorUsage.refresh()
+            codexUsage.refresh()
+            grokUsage.refresh()
             anthropicStatus.refresh()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -172,14 +194,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             ))
         }
 
-        if settings.showUsageInMenuBar, let snapshot = usage.current {
-            if title.length > 0 {
-                title.append(NSAttributedString(
-                    string: " · ",
-                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-                ))
-            }
-            Self.appendUsage(snapshot, to: title, font: font)
+        if settings.showUsageInMenuBar {
+            Self.appendMultiAgentUsage(
+                to: title,
+                font: font,
+                settings: settings,
+                claudeUsage: usage.current,
+                cursorUsage: cursorUsage.current,
+                codexUsage: codexUsage.current,
+                grokUsage: grokUsage.current
+            )
         }
 
         // Leading space keeps the text off the icon.
@@ -218,27 +242,167 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return parts.joined(separator: " · ")
     }
 
-    /// Appends a compact "5h NN% (1h 23m)" usage readout, tinting the figure by
-    /// its severity so an elevated limit stands out even in the menu bar. Only
-    /// the 5-hour window is shown here.
-    static func appendUsage(_ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont) {
-        let window = usage.fiveHour
-        let color: NSColor
-        switch window.severity.lowercased() {
-        case "normal": color = .labelColor
-        case "warning", "warn", "low": color = .systemOrange
-        default: color = .systemRed
+    /// Appends usage for every enabled agent that has data, when
+    /// "Show usage in menu bar" is on.
+    static func appendMultiAgentUsage(
+        to title: NSMutableAttributedString,
+        font: NSFont,
+        settings: SettingsStore,
+        claudeUsage: UsageInfo?,
+        cursorUsage: CursorUsageInfo?,
+        codexUsage: CodexUsageInfo?,
+        grokUsage: GrokUsageInfo?
+    ) {
+        let claudeSnapshot = settings.isAgentEnabled(.claude) ? claudeUsage : nil
+        let cursorSnapshot = settings.isAgentEnabled(.cursor) ? cursorUsage : nil
+        let codexSnapshot = settings.isAgentEnabled(.codex) ? codexUsage : nil
+        let grokSnapshot = settings.isAgentEnabled(.grok) ? grokUsage : nil
+
+        let contributing =
+            (claudeSnapshot != nil ? 1 : 0)
+            + (cursorSnapshot != nil ? 1 : 0)
+            + (codexSnapshot != nil ? 1 : 0)
+            + (grokSnapshot != nil ? 1 : 0)
+        // When more than one agent contributes, drop the "5h" tag and label
+        // each percentage with the agent name so the title stays scannable.
+        let multi = contributing > 1
+
+        if let snapshot = claudeSnapshot {
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendClaudeUsage(snapshot, to: $0, font: font, labeled: multi)
+            }
         }
+        if let snapshot = codexSnapshot {
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendCodexUsage(snapshot, to: $0, font: font, labeled: multi)
+            }
+        }
+        if let snapshot = cursorSnapshot {
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendCursorUsage(snapshot, to: $0, font: font, labeled: multi)
+            }
+        }
+        if let snapshot = grokSnapshot {
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendGrokUsage(snapshot, to: $0, font: font, labeled: multi)
+            }
+        }
+    }
+
+    private static func appendMenuBarSegment(
+        to title: NSMutableAttributedString,
+        font: NSFont,
+        append: (NSMutableAttributedString) -> Void
+    ) {
+        if title.length > 0 {
+            title.append(NSAttributedString(
+                string: " · ",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+        append(title)
+    }
+
+    /// Appends a compact Claude readout. Alone: "5h NN% (12.29 pm)". Shared
+    /// with other agents: "Claude NN%" (no "5h" — the label already disambiguates).
+    static func appendClaudeUsage(
+        _ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
+    ) {
+        let window = usage.fiveHour
+        let color = severityNSColor(window.severity)
+        let text = labeled ? "Claude \(window.percent)%" : "5h \(window.percent)%"
         title.append(NSAttributedString(
-            string: "5h \(window.percent)%",
+            string: text,
             attributes: [.font: font, .foregroundColor: color]
         ))
-        // Tie the 5-hour reset time to its figure, e.g. "5h 46% (12.29 pm)".
-        if let reset = MenuContentView.formatResetTime(window, style: .time) {
+        // Only attach the reset clock when Claude is alone — with multi-agent
+        // the title gets crowded quickly.
+        if !labeled, let reset = MenuContentView.formatResetTime(window, style: .time) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
             ))
+        }
+    }
+
+    /// Appends a compact Cursor readout: always "Cursor NN%" (no 5h tag).
+    /// Reset date only when Cursor is the sole usage segment.
+    static func appendCursorUsage(
+        _ usage: CursorUsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
+    ) {
+        let window = usage.included
+        let color = severityNSColor(window.severity)
+        title.append(NSAttributedString(
+            string: "Cursor \(window.percent)%",
+            attributes: [.font: font, .foregroundColor: color]
+        ))
+        // Alone in the menu bar: attach billing-cycle reset. Multi-agent: skip.
+        if !labeled, let reset = MenuContentView.formatCursorResetTime(window, style: .date) {
+            title.append(NSAttributedString(
+                string: " (\(reset))",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+    }
+
+    /// Appends a compact Codex readout. Alone: "Codex 5h NN%" (or monthly).
+    /// Shared: "Codex NN%".
+    static func appendCodexUsage(
+        _ usage: CodexUsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
+    ) {
+        let window = usage.primary
+        let color = severityNSColor(window.severity)
+        let text: String
+        if labeled {
+            text = "Codex \(window.percent)%"
+        } else if usage.primaryLabel.lowercased().contains("5-hour") {
+            text = "Codex 5h \(window.percent)%"
+        } else {
+            text = "Codex \(window.percent)%"
+        }
+        title.append(NSAttributedString(
+            string: text,
+            attributes: [.font: font, .foregroundColor: color]
+        ))
+        let resetStyle: MenuContentView.ResetDisplayStyle =
+            Self.codexUsesDateReset(usage.primaryLabel) ? .date : .time
+        if !labeled, let reset = MenuContentView.formatResetTime(window, style: resetStyle) {
+            title.append(NSAttributedString(
+                string: " (\(reset))",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+    }
+
+    private static func codexUsesDateReset(_ label: String) -> Bool {
+        let normalized = label.lowercased()
+        return normalized.contains("weekly") || normalized.contains("monthly")
+    }
+
+    /// Appends a compact Grok weekly-credits readout. Alone: "Grok NN% (reset)".
+    /// Shared: "Grok NN%".
+    static func appendGrokUsage(
+        _ usage: GrokUsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
+    ) {
+        let window = usage.weekly
+        let color = severityNSColor(window.severity)
+        title.append(NSAttributedString(
+            string: "Grok \(window.percent)%",
+            attributes: [.font: font, .foregroundColor: color]
+        ))
+        if !labeled, let reset = MenuContentView.formatResetTime(window, style: .date) {
+            title.append(NSAttributedString(
+                string: " (\(reset))",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+    }
+
+    private static func severityNSColor(_ severity: String) -> NSColor {
+        switch severity.lowercased() {
+        case "normal": return .labelColor
+        case "warning", "warn", "low": return .systemOrange
+        default: return .systemRed
         }
     }
 
@@ -303,6 +467,10 @@ struct MenuContentView: View {
     @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var usage: ClaudeUsage
+    @EnvironmentObject private var cursorUsage: CursorUsage
+    @EnvironmentObject private var codexUsage: CodexUsage
+    @EnvironmentObject private var grokUsage: GrokUsage
+    @EnvironmentObject private var grokSession: GrokSession
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
 
     @State private var showSettings = false
@@ -311,6 +479,57 @@ struct MenuContentView: View {
     @State private var expandStatus = false
 
     private let idleSteps = [5, 10, 15, 20, 25, 30]
+
+    /// Agents currently shown in the segmented switcher.
+    private var visibleAgents: [AgentKind] {
+        let enabled = settings.enabledAgents
+        return enabled.isEmpty ? [.claude] : enabled
+    }
+
+    private var selectedAgent: AgentKind {
+        let visible = visibleAgents
+        return visible.contains(settings.selectedAgent) ? settings.selectedAgent : visible[0]
+    }
+
+    /// Whether the selected agent has a linked account / can be tracked.
+    private var selectedAgentLinked: Bool {
+        isAgentLinked(selectedAgent)
+    }
+
+    private func isAgentLinked(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: return true
+        case .cursor: return cursorUsage.isAuthenticated
+        // A fresh cache is still useful while the short-lived app-server probe
+        // starts (or if Codex is temporarily unavailable), so do not hide it
+        // behind the authentication flag.
+        case .codex: return codexUsage.isAuthenticated || codexUsage.current != nil
+        case .grok: return grokUsage.isAuthenticated || grokSession.isAuthenticated
+        }
+    }
+
+    private var linkedAgentCount: Int {
+        visibleAgents.filter { isAgentLinked($0) }.count
+    }
+
+    /// Session for the currently selected agent tab.
+    private var selectedSession: SessionInfo? {
+        switch selectedAgent {
+        case .claude: return controller.session.current
+        case .cursor, .codex: return nil
+        case .grok: return grokSession.current
+        }
+    }
+
+    /// Whether the selected agent currently has a live session (for the status
+    /// dots in the switcher and the active-session card).
+    private func isAgentActive(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: return controller.session.current != nil
+        case .cursor, .codex: return false
+        case .grok: return grokSession.current != nil
+        }
+    }
 
     // Screens slide horizontally: going to Settings pushes left, going back
     // pushes right. Using `.transition(.move)` (rather than animating an explicit
@@ -338,9 +557,14 @@ struct MenuContentView: View {
     private var mainScreen: some View {
         VStack(alignment: .leading, spacing: 11) {
             header
-            activeSessionCard
-            usageCard
-            statusCard
+            agentSwitcher
+            if selectedAgentLinked {
+                activeSessionCard
+                usageCard
+                statusCard
+            } else {
+                connectAgentCard
+            }
             settingsNavRow
             Rectangle()
                 .fill(Color.black.opacity(0.08))
@@ -355,6 +579,7 @@ struct MenuContentView: View {
     private var settingsScreen: some View {
         VStack(alignment: .leading, spacing: 11) {
             settingsHeader
+            agentsSettingsSection
             primaryToggles
             advancedSections
         }
@@ -390,10 +615,18 @@ struct MenuContentView: View {
     }
 
     private var statusPill: some View {
+        // Multi-agent design: show how many enabled agents are linked.
+        // Fall back to Discord connection state when only one agent is on.
+        let total = max(visibleAgents.count, 1)
+        let linked = linkedAgentCount
         let accent: Color
         let textColor: Color
         let label: String
-        if !settings.presenceEnabled {
+        if total > 1 {
+            accent = linked > 0 ? Palette.green : Palette.track
+            textColor = linked > 0 ? Palette.greenText : Palette.secondary.opacity(0.7)
+            label = "\(linked) of \(total) connected"
+        } else if !settings.presenceEnabled {
             accent = Palette.track
             textColor = Palette.secondary.opacity(0.7)
             label = "Off"
@@ -413,6 +646,120 @@ struct MenuContentView: View {
         .padding(.leading, 6).padding(.trailing, 8).padding(.vertical, 2)
         .background(Capsule().fill(accent.opacity(0.12)))
         .overlay(Capsule().stroke(accent.opacity(0.28), lineWidth: 0.5))
+    }
+
+    // MARK: Agent switcher
+
+    /// macOS-style segmented control for switching between enabled agents.
+    private var agentSwitcher: some View {
+        let agents = visibleAgents
+        return Group {
+            if agents.count > 1 {
+                HStack(spacing: 2) {
+                    ForEach(agents) { agent in
+                        agentSegment(agent)
+                    }
+                }
+                .padding(2)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Palette.track.opacity(0.12))
+                )
+            }
+        }
+    }
+
+    private func agentSegment(_ agent: AgentKind) -> some View {
+        let isSelected = agent == selectedAgent
+        let linked = isAgentLinked(agent)
+        let live = linked && isAgentActive(agent)
+        // Four tabs need a slightly smaller label so names still fit at 300pt.
+        let nameSize: CGFloat = visibleAgents.count >= 4 ? 11 : 12
+        return Button {
+            settings.selectedAgent = agent
+            expandStatus = false
+        } label: {
+            HStack(spacing: 4) {
+                if linked {
+                    Circle()
+                        .fill(live ? Palette.green : Palette.track.opacity(0.7))
+                        .frame(width: 6, height: 6)
+                } else {
+                    Circle()
+                        .stroke(Palette.track.opacity(0.45), lineWidth: 1)
+                        .frame(width: 6, height: 6)
+                }
+                Text(agent.displayName)
+                    .font(.system(size: nameSize, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(linked ? Palette.text : Palette.secondary.opacity(0.4))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                    .fill(isSelected ? Color.white : Color.clear)
+                    .shadow(color: isSelected ? .black.opacity(0.14) : .clear, radius: 1.25, y: 0.5)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Empty state when the selected agent isn't linked yet (e.g. Grok signed out).
+    private var connectAgentCard: some View {
+        let agent = selectedAgent
+        return VStack(spacing: 10) {
+            Text(String(agent.displayName.prefix(1)))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .frame(width: 34, height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Palette.track.opacity(0.1))
+                )
+
+            VStack(spacing: 3) {
+                Text("Connect \(agent.displayName)")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(connectSubtitle(for: agent))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button(action: { openConnectHelp(for: agent) }) {
+                Text("Connect \(agent.displayName)")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Palette.blue))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 14).padding(.vertical, 16)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func connectSubtitle(for agent: AgentKind) -> String {
+        "Link your \(agent.providerName) account to track usage, sessions and status here."
+    }
+
+    private func openConnectHelp(for agent: AgentKind) {
+        let urlString: String
+        switch agent {
+        case .claude: urlString = "https://docs.anthropic.com/en/docs/claude-code"
+        case .cursor: urlString = "https://cursor.com"
+        case .codex: urlString = "https://developers.openai.com/codex/auth"
+        case .grok: urlString = "https://grok.x.ai"
+        }
+        if let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     /// Settings screen header: a back chevron that returns to the main screen,
@@ -451,7 +798,7 @@ struct MenuContentView: View {
                     .foregroundStyle(Palette.secondary.opacity(0.65))
                 Text("Settings").font(.system(size: 13))
                 Spacer()
-                Text(settings.presenceEnabled ? "Presence on" : "Presence off")
+                Text(settingsSummary)
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.secondary.opacity(0.4))
                 Image(systemName: "chevron.right")
@@ -466,17 +813,26 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
     }
 
+    private var settingsSummary: String {
+        let n = settings.enabledAgents.count
+        if n == 0 { return "No agents" }
+        return n == 1 ? "1 agent on" : "\(n) agents on"
+    }
+
     // MARK: Active session card
 
     private var activeSessionCard: some View {
-        let session = controller.session.current
+        let session = selectedSession
         let hasSession = session != nil
-        let presenceOn = settings.presenceEnabled
-        let active = hasSession && presenceOn
+        // Discord presence is still Claude-only; Grok sessions show as active
+        // in the popover without claiming they're on Discord unless Claude is
+        // the selected agent and presence is on.
+        let sharing = hasSession && settings.presenceEnabled && selectedAgent == .claude
+        let active = hasSession
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text("ACTIVE SESSION")
+                Text(active ? "ACTIVE SESSION" : "LAST SESSION")
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(0.5)
                     .foregroundStyle(Palette.secondary.opacity(0.55))
@@ -512,9 +868,9 @@ struct MenuContentView: View {
 
             HStack(spacing: 6) {
                 Circle()
-                    .fill(active ? Palette.discord : Palette.track.opacity(0.6))
+                    .fill(sharing ? Palette.discord : Palette.track.opacity(0.6))
                     .frame(width: 5, height: 5)
-                Text(broadcastText(hasSession: hasSession, presenceOn: presenceOn))
+                Text(broadcastText(hasSession: hasSession, presenceOn: settings.presenceEnabled, sharing: sharing))
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.secondary.opacity(0.5))
             }
@@ -559,24 +915,50 @@ struct MenuContentView: View {
         return bits.joined(separator: "  ·  ")
     }
 
-    private func broadcastText(hasSession: Bool, presenceOn: Bool) -> String {
+    private func broadcastText(hasSession: Bool, presenceOn: Bool, sharing: Bool) -> String {
         if !presenceOn { return "Presence is off" }
-        return hasSession ? "Sharing to Discord as your status" : "Waiting for a session"
+        if selectedAgent != .claude {
+            return hasSession ? "Active — Discord still uses Claude" : "Waiting for a session"
+        }
+        return sharing ? "Sharing to Discord as your status" : "Waiting for a session"
     }
 
     // MARK: Usage card
 
+    @ViewBuilder
     private var usageCard: some View {
+        switch selectedAgent {
+        case .claude:
+            claudeUsageCard
+        case .cursor:
+            cursorUsageCard
+        case .codex:
+            codexUsageCard
+        case .grok:
+            grokUsageCard
+        }
+    }
+
+    private var claudeUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("USAGE")
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.5)
                 .foregroundStyle(Palette.secondary.opacity(0.55))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            usageRow("Current session", usage.current?.fiveHour, resetStyle: .time)
-            usageRow("All models", usage.current?.weekly, resetStyle: .date)
-            ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
-                usageRow(scoped.modelName, scoped.window, resetStyle: .date)
+            if usage.current == nil {
+                Text("Waiting for Claude usage…")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            } else {
+                // Keep severity colors (blue / orange / red) — same as before
+                // multi-agent. Brand accents are only for Grok's context bar.
+                usageRow("Current session", usage.current?.fiveHour, resetStyle: .time)
+                usageRow("All models", usage.current?.weekly, resetStyle: .date)
+                ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
+                    usageRow(scoped.modelName, scoped.window, resetStyle: .date)
+                }
             }
 
             if let error = controller.lastError {
@@ -591,7 +973,154 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
-    private func usageRow(_ label: String, _ window: UsageInfo.Window?, resetStyle: ResetDisplayStyle) -> some View {
+    private var cursorUsageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("USAGE")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Spacer()
+                if let plan = cursorUsage.current?.planName, !plan.isEmpty {
+                    Text(plan.capitalized)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Palette.secondary.opacity(0.45))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let info = cursorUsage.current {
+                cursorUsageRow("Included usage", info.included, resetStyle: .date)
+                if let auto = info.auto {
+                    cursorUsageRow("Auto + Composer", auto, resetStyle: .date)
+                }
+                if let api = info.api {
+                    cursorUsageRow("API models", api, resetStyle: .date)
+                }
+                if let onDemand = info.onDemand {
+                    cursorUsageRow("On-demand", onDemand, resetStyle: .date)
+                }
+            } else {
+                Text("Waiting for Cursor usage…")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func cursorUsageRow(
+        _ label: String, _ window: CursorUsageInfo.Window, resetStyle: ResetDisplayStyle
+    ) -> some View {
+        // Percent + reset only — no dollar amounts.
+        let mapped = UsageInfo.Window(
+            percent: window.percent,
+            severity: window.severity,
+            resetsAt: window.resetsAt
+        )
+        return usageRow(label, mapped, resetStyle: resetStyle, accent: agentAccent(.cursor).opacity(0.85))
+    }
+
+    private var codexUsageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("USAGE")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Spacer()
+                if let plan = codexUsage.current?.planType, !plan.isEmpty {
+                    Text(plan.capitalized)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Palette.secondary.opacity(0.45))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let info = codexUsage.current {
+                usageRow(
+                    info.primaryLabel,
+                    info.primary,
+                    resetStyle: codexResetStyle(for: info.primaryLabel),
+                    accent: agentAccent(.codex)
+                )
+                if let secondary = info.secondary {
+                    let label = info.secondaryLabel ?? "Secondary limit"
+                    usageRow(
+                        label,
+                        secondary,
+                        resetStyle: codexResetStyle(for: label),
+                        accent: agentAccent(.codex)
+                    )
+                }
+                ForEach(info.additionalWindows) { scoped in
+                    usageRow(
+                        scoped.label,
+                        scoped.window,
+                        resetStyle: scoped.usesDateReset ? .date : .time,
+                        accent: agentAccent(.codex)
+                    )
+                }
+            } else {
+                Text("Waiting for Codex usage…")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func codexResetStyle(for label: String) -> ResetDisplayStyle {
+        let normalized = label.lowercased()
+        return normalized.contains("weekly") || normalized.contains("monthly") ? .date : .time
+    }
+
+    /// Weekly SuperGrok / CLI credits from `/v1/billing?format=credits`.
+    private var grokUsageCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("USAGE")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let info = grokUsage.current {
+                usageRow("Weekly credits", info.weekly, resetStyle: .date, accent: agentAccent(.grok))
+                if let onDemand = info.onDemand {
+                    usageRow("On-demand", onDemand, resetStyle: .date, accent: agentAccent(.grok))
+                }
+            } else if grokUsage.isAuthenticated {
+                Text("Waiting for Grok usage…")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            } else {
+                Text("Not signed in — run grok login")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func agentAccent(_ agent: AgentKind) -> Color {
+        let c = agent.accentHex
+        return Color(.sRGB, red: c.r, green: c.g, blue: c.b)
+    }
+
+    private func usageRow(
+        _ label: String, _ window: UsageInfo.Window?,
+        resetStyle: ResetDisplayStyle, accent: Color? = nil
+    ) -> some View {
         VStack(spacing: 5) {
             HStack {
                 Text(label).font(.system(size: 12.5))
@@ -604,7 +1133,7 @@ struct MenuContentView: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Palette.track.opacity(0.16))
                     Capsule()
-                        .fill(severityColor(window))
+                        .fill(accent ?? severityColor(window))
                         .frame(width: geo.size.width * barFraction(window))
                 }
             }
@@ -644,6 +1173,19 @@ struct MenuContentView: View {
     /// "12.29 pm" or "Jun 29". Returns nil when there's no reset time, "now"
     /// once it's due.
     static func formatResetTime(_ window: UsageInfo.Window, style: ResetDisplayStyle) -> String? {
+        formatCursorResetTime(
+            CursorUsageInfo.Window(
+                percent: window.percent,
+                severity: window.severity,
+                resetsAt: window.resetsAt
+            ),
+            style: style
+        )
+    }
+
+    static func formatCursorResetTime(
+        _ window: CursorUsageInfo.Window, style: ResetDisplayStyle
+    ) -> String? {
         guard let reset = window.resetsAt else { return nil }
         guard reset.timeIntervalSinceNow > 0 else { return "now" }
         switch style {
@@ -668,53 +1210,60 @@ struct MenuContentView: View {
         return f
     }()
 
-    // MARK: Claude status card
+    // MARK: Provider status card
 
-    /// Surfaces status.claude.com as a compact collapsible row: a severity pill
-    /// in the header that expands to any active incident plus a per-component
-    /// breakdown. Hidden entirely until the first successful fetch, so a brief
-    /// offline moment shows nothing rather than a broken card.
+    /// Surfaces status.claude.com for Claude; other agents hide the card until
+    /// we wire their status pages. Hidden entirely until the first successful
+    /// fetch so a brief offline moment shows nothing rather than a broken card.
     @ViewBuilder
     private var statusCard: some View {
-        if let status = anthropicStatus.current {
-            VStack(spacing: 0) {
-                statusHeader(status)
-
-                if expandStatus {
-                    VStack(alignment: .leading, spacing: 9) {
-                        ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
-                            incidentCallout(incident)
-                        }
-
-                        VStack(alignment: .leading, spacing: 7) {
-                            ForEach(Array(status.components.enumerated()), id: \.offset) { _, comp in
-                                componentRow(comp)
-                            }
-                        }
-
-                        statusFooter(status)
-                    }
-                    .padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 10)
-                    .overlay(alignment: .top) {
-                        Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
-                    }
-                }
+        switch selectedAgent {
+        case .claude:
+            if let status = anthropicStatus.current {
+                providerStatusCard(title: "Claude status", status: status)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
-            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
+        case .cursor, .codex, .grok:
+            EmptyView()
         }
     }
 
-    /// Collapsed row: "Claude status" label, severity pill, and expand chevron.
-    /// The whole row toggles the per-component breakdown.
-    private func statusHeader(_ status: StatusInfo) -> some View {
+    private func providerStatusCard(title: String, status: StatusInfo) -> some View {
+        VStack(spacing: 0) {
+            statusHeader(title: title, status: status)
+
+            if expandStatus {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
+                        incidentCallout(incident)
+                    }
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(Array(status.components.enumerated()), id: \.offset) { _, comp in
+                            componentRow(comp)
+                        }
+                    }
+
+                    statusFooter(status)
+                }
+                .padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 10)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
+    }
+
+    /// Collapsed row: provider status label, severity pill, and expand chevron.
+    private func statusHeader(title: String, status: StatusInfo) -> some View {
         let pill = statusPillStyle(status.level)
         return Button {
             expandStatus.toggle()
         } label: {
             HStack(spacing: 6) {
-                Text("Claude status").font(.system(size: 13))
+                Text(title).font(.system(size: 13))
                 Spacer()
                 HStack(spacing: 5) {
                     Circle().fill(pill.dot).frame(width: 6, height: 6)
@@ -871,13 +1420,82 @@ struct MenuContentView: View {
         return "\(secs / 86400)d ago"
     }
 
+    // MARK: Agents settings
+
+    private var agentsSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("AGENTS")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .padding(.horizontal, 2)
+
+            VStack(spacing: 0) {
+                ForEach(Array(AgentKind.allCases.enumerated()), id: \.element.id) { index, agent in
+                    agentToggleRow(agent, divider: index > 0)
+                }
+            }
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        }
+    }
+
+    private func agentToggleRow(_ agent: AgentKind, divider: Bool) -> some View {
+        let linked = isAgentLinked(agent)
+        let sub = agent.providerName + (linked ? " · connected" : " · not connected")
+        return HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(agentAccent(agent))
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(agent.displayName).font(.system(size: 13))
+                    Text(sub)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.secondary.opacity(0.45))
+                }
+            }
+            Spacer()
+            ToggleSwitch(isOn: settings.bindingForAgent(agent))
+        }
+        .padding(.vertical, 8)
+        .overlay(alignment: .top) {
+            if divider { Rectangle().fill(.black.opacity(0.05)).frame(height: 0.5) }
+        }
+    }
+
     // MARK: Primary toggles
 
     private var primaryToggles: some View {
-        VStack(spacing: 0) {
-            toggleRow("Enable presence", presenceBinding, divider: false)
-            toggleRow("Launch at login", launchBinding, divider: true)
-            toggleRow("Prevent sleep", $settings.preventSleep, divider: true)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("PRESENCE")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .padding(.horizontal, 2)
+
+            VStack(spacing: 0) {
+                toggleRow("Enable presence", presenceBinding, divider: false)
+            }
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+
+            Text("GENERAL")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+                .padding(.horizontal, 2)
+                .padding(.top, 5)
+
+            VStack(spacing: 0) {
+                toggleRow("Launch at login", launchBinding, divider: false)
+                toggleRow("Prevent sleep", $settings.preventSleep, divider: true)
+            }
+            .padding(.horizontal, 12)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
         }
     }
 

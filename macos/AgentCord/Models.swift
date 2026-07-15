@@ -172,7 +172,6 @@ struct CodexUsageInfo: Equatable, Codable {
         var id: String
         var label: String
         var window: UsageInfo.Window
-        var usesDateReset: Bool
     }
 
     /// Primary window (usually the rolling 5-hour limit; monthly on some free plans).

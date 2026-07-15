@@ -1108,9 +1108,13 @@ struct MenuContentView: View {
             HStack {
                 Text(label).font(.system(size: 12.5))
                 Spacer()
-                Text(usageDetail(window))
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .monospacedDigit()
+                // Countdown ticks while the popover stays open; without the
+                // TimelineView it would only update when the usage data polls.
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    Text(usageDetail(window, now: context.date))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .monospacedDigit()
+                }
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -1124,9 +1128,9 @@ struct MenuContentView: View {
         }
     }
 
-    private func usageDetail(_ window: UsageInfo.Window?) -> String {
+    private func usageDetail(_ window: UsageInfo.Window?, now: Date) -> String {
         guard let window else { return "—" }
-        if let reset = Self.formatResetDuration(window) {
+        if let reset = Self.formatResetDuration(window, now: now) {
             return reset == "now"
                 ? "\(window.percent)% · resets now"
                 : "\(window.percent)% · resets in \(reset)"
@@ -1151,19 +1155,20 @@ struct MenuContentView: View {
 
     /// Formats the time remaining until a window resets, e.g. "6d 22h" or
     /// "2h 17m". Returns nil when there's no reset time and "now" once due.
-    static func formatResetDuration(_ window: UsageInfo.Window) -> String? {
-        formatResetDuration(until: window.resetsAt)
+    static func formatResetDuration(_ window: UsageInfo.Window, now: Date = Date()) -> String? {
+        formatResetDuration(until: window.resetsAt, now: now)
     }
 
     static func formatCursorResetDuration(_ window: CursorUsageInfo.Window) -> String? {
-        formatResetDuration(until: window.resetsAt)
+        formatResetDuration(until: window.resetsAt, now: Date())
     }
 
-    private static func formatResetDuration(until reset: Date?) -> String? {
+    private static func formatResetDuration(until reset: Date?, now: Date) -> String? {
         guard let reset else { return nil }
-        let totalMinutes = Int(reset.timeIntervalSinceNow / 60)
+        let remaining = reset.timeIntervalSince(now)
+        let totalMinutes = Int(remaining / 60)
         guard totalMinutes > 0 else {
-            return reset.timeIntervalSinceNow > 0 ? "<1m" : "now"
+            return remaining > 0 ? "<1m" : "now"
         }
         let days = totalMinutes / (24 * 60)
         let hours = totalMinutes / 60 % 24

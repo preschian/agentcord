@@ -370,16 +370,14 @@ private struct RateLimitsEnvelope: Decodable {
                     additionalWindows.append(.init(
                         id: "\(id)-primary",
                         label: baseLabel,
-                        window: Self.makeWindow(window, limitReached: snapshot.rateLimitReachedType != nil),
-                        usesDateReset: Self.usesDateReset(window.windowDurationMins)
+                        window: Self.makeWindow(window, limitReached: snapshot.rateLimitReachedType != nil)
                     ))
                 }
                 if let window = snapshot.secondary {
                     additionalWindows.append(.init(
                         id: "\(id)-secondary",
                         label: "\(baseLabel) · \(Self.label(forMinutes: window.windowDurationMins, fallback: "Secondary"))",
-                        window: Self.makeWindow(window, limitReached: false),
-                        usesDateReset: Self.usesDateReset(window.windowDurationMins)
+                        window: Self.makeWindow(window, limitReached: false)
                     ))
                 }
             }
@@ -410,11 +408,6 @@ private struct RateLimitsEnvelope: Decodable {
             if minutes <= 8 * 24 * 60 { return "Weekly limit" }
             if minutes <= 40 * 24 * 60 { return "Monthly limit" }
             return fallback
-        }
-
-        private static func usesDateReset(_ minutes: Int?) -> Bool {
-            guard let minutes else { return false }
-            return minutes > 24 * 60
         }
 
         private static func displayName(_ raw: String) -> String {

@@ -303,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         append(title)
     }
 
-    /// Appends a compact Claude readout. Alone: "5h NN% (12.29 pm)". Shared
+    /// Appends a compact Claude readout. Alone: "5h NN% (2h 17m)". Shared
     /// with other agents: "Claude NN%" (no "5h" — the label already disambiguates).
     static func appendClaudeUsage(
         _ usage: UsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
@@ -315,9 +315,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             string: text,
             attributes: [.font: font, .foregroundColor: color]
         ))
-        // Only attach the reset clock when Claude is alone — with multi-agent
+        // Only attach the reset countdown when Claude is alone — with multi-agent
         // the title gets crowded quickly.
-        if !labeled, let reset = MenuContentView.formatResetTime(window, style: .time) {
+        if !labeled, let reset = MenuContentView.formatResetDuration(window) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
@@ -337,7 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             attributes: [.font: font, .foregroundColor: color]
         ))
         // Alone in the menu bar: attach billing-cycle reset. Multi-agent: skip.
-        if !labeled, let reset = MenuContentView.formatCursorResetTime(window, style: .date) {
+        if !labeled, let reset = MenuContentView.formatCursorResetDuration(window) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
@@ -364,19 +364,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             string: text,
             attributes: [.font: font, .foregroundColor: color]
         ))
-        let resetStyle: MenuContentView.ResetDisplayStyle =
-            Self.codexUsesDateReset(usage.primaryLabel) ? .date : .time
-        if !labeled, let reset = MenuContentView.formatResetTime(window, style: resetStyle) {
+        if !labeled, let reset = MenuContentView.formatResetDuration(window) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
             ))
         }
-    }
-
-    private static func codexUsesDateReset(_ label: String) -> Bool {
-        let normalized = label.lowercased()
-        return normalized.contains("weekly") || normalized.contains("monthly")
     }
 
     /// Appends a compact Grok weekly-credits readout. Alone: "Grok NN% (reset)".
@@ -390,7 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             string: "Grok \(window.percent)%",
             attributes: [.font: font, .foregroundColor: color]
         ))
-        if !labeled, let reset = MenuContentView.formatResetTime(window, style: .date) {
+        if !labeled, let reset = MenuContentView.formatResetDuration(window) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
@@ -954,10 +947,10 @@ struct MenuContentView: View {
             } else {
                 // Keep severity colors (blue / orange / red) — same as before
                 // multi-agent. Brand accents are only for Grok's context bar.
-                usageRow("Current session", usage.current?.fiveHour, resetStyle: .time)
-                usageRow("All models", usage.current?.weekly, resetStyle: .date)
+                usageRow("Current session", usage.current?.fiveHour)
+                usageRow("All models", usage.current?.weekly)
                 ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
-                    usageRow(scoped.modelName, scoped.window, resetStyle: .date)
+                    usageRow(scoped.modelName, scoped.window)
                 }
             }
 
@@ -990,15 +983,15 @@ struct MenuContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let info = cursorUsage.current {
-                cursorUsageRow("Included usage", info.included, resetStyle: .date)
+                cursorUsageRow("Included usage", info.included)
                 if let auto = info.auto {
-                    cursorUsageRow("Auto + Composer", auto, resetStyle: .date)
+                    cursorUsageRow("Auto + Composer", auto)
                 }
                 if let api = info.api {
-                    cursorUsageRow("API models", api, resetStyle: .date)
+                    cursorUsageRow("API models", api)
                 }
                 if let onDemand = info.onDemand {
-                    cursorUsageRow("On-demand", onDemand, resetStyle: .date)
+                    cursorUsageRow("On-demand", onDemand)
                 }
             } else {
                 Text("Waiting for Cursor usage…")
@@ -1012,16 +1005,14 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
-    private func cursorUsageRow(
-        _ label: String, _ window: CursorUsageInfo.Window, resetStyle: ResetDisplayStyle
-    ) -> some View {
+    private func cursorUsageRow(_ label: String, _ window: CursorUsageInfo.Window) -> some View {
         // Percent + reset only — no dollar amounts.
         let mapped = UsageInfo.Window(
             percent: window.percent,
             severity: window.severity,
             resetsAt: window.resetsAt
         )
-        return usageRow(label, mapped, resetStyle: resetStyle, accent: agentAccent(.cursor).opacity(0.85))
+        return usageRow(label, mapped, accent: agentAccent(.cursor).opacity(0.85))
     }
 
     private var codexUsageCard: some View {
@@ -1044,7 +1035,6 @@ struct MenuContentView: View {
                 usageRow(
                     info.primaryLabel,
                     info.primary,
-                    resetStyle: codexResetStyle(for: info.primaryLabel),
                     accent: agentAccent(.codex)
                 )
                 if let secondary = info.secondary {
@@ -1052,7 +1042,6 @@ struct MenuContentView: View {
                     usageRow(
                         label,
                         secondary,
-                        resetStyle: codexResetStyle(for: label),
                         accent: agentAccent(.codex)
                     )
                 }
@@ -1060,7 +1049,6 @@ struct MenuContentView: View {
                     usageRow(
                         scoped.label,
                         scoped.window,
-                        resetStyle: scoped.usesDateReset ? .date : .time,
                         accent: agentAccent(.codex)
                     )
                 }
@@ -1076,11 +1064,6 @@ struct MenuContentView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
-    private func codexResetStyle(for label: String) -> ResetDisplayStyle {
-        let normalized = label.lowercased()
-        return normalized.contains("weekly") || normalized.contains("monthly") ? .date : .time
-    }
-
     /// Weekly SuperGrok / CLI credits from `/v1/billing?format=credits`.
     private var grokUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1091,9 +1074,9 @@ struct MenuContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if let info = grokUsage.current {
-                usageRow("Weekly credits", info.weekly, resetStyle: .date, accent: agentAccent(.grok))
+                usageRow("Weekly credits", info.weekly, accent: agentAccent(.grok))
                 if let onDemand = info.onDemand {
-                    usageRow("On-demand", onDemand, resetStyle: .date, accent: agentAccent(.grok))
+                    usageRow("On-demand", onDemand, accent: agentAccent(.grok))
                 }
             } else if grokUsage.isAuthenticated {
                 Text("Waiting for Grok usage…")
@@ -1119,15 +1102,19 @@ struct MenuContentView: View {
 
     private func usageRow(
         _ label: String, _ window: UsageInfo.Window?,
-        resetStyle: ResetDisplayStyle, accent: Color? = nil
+        accent: Color? = nil
     ) -> some View {
         VStack(spacing: 5) {
             HStack {
                 Text(label).font(.system(size: 12.5))
                 Spacer()
-                Text(usageDetail(window, resetStyle: resetStyle))
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .monospacedDigit()
+                // Countdown ticks while the popover stays open; without the
+                // TimelineView it would only update when the usage data polls.
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    Text(usageDetail(window, now: context.date))
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .monospacedDigit()
+                }
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -1141,17 +1128,14 @@ struct MenuContentView: View {
         }
     }
 
-    private func usageDetail(_ window: UsageInfo.Window?, resetStyle: ResetDisplayStyle) -> String {
+    private func usageDetail(_ window: UsageInfo.Window?, now: Date) -> String {
         guard let window else { return "—" }
-        if let reset = Self.formatResetTime(window, style: resetStyle) {
-            return "\(window.percent)% · resets \(reset)"
+        if let reset = Self.formatResetDuration(window, now: now) {
+            return reset == "now"
+                ? "\(window.percent)% · resets now"
+                : "\(window.percent)% · resets in \(reset)"
         }
         return "\(window.percent)%"
-    }
-
-    enum ResetDisplayStyle {
-        case time   // e.g. "12.29 pm"
-        case date   // e.g. "Jun 29"
     }
 
     private func barFraction(_ window: UsageInfo.Window?) -> CGFloat {
@@ -1169,46 +1153,30 @@ struct MenuContentView: View {
         }
     }
 
-    /// Formats when a window resets as a clock time or calendar date, e.g.
-    /// "12.29 pm" or "Jun 29". Returns nil when there's no reset time, "now"
-    /// once it's due.
-    static func formatResetTime(_ window: UsageInfo.Window, style: ResetDisplayStyle) -> String? {
-        formatCursorResetTime(
-            CursorUsageInfo.Window(
-                percent: window.percent,
-                severity: window.severity,
-                resetsAt: window.resetsAt
-            ),
-            style: style
-        )
+    /// Formats the time remaining until a window resets, e.g. "6d 22h" or
+    /// "2h 17m". Returns nil when there's no reset time and "now" once due.
+    static func formatResetDuration(_ window: UsageInfo.Window, now: Date = Date()) -> String? {
+        formatResetDuration(until: window.resetsAt, now: now)
     }
 
-    static func formatCursorResetTime(
-        _ window: CursorUsageInfo.Window, style: ResetDisplayStyle
-    ) -> String? {
-        guard let reset = window.resetsAt else { return nil }
-        guard reset.timeIntervalSinceNow > 0 else { return "now" }
-        switch style {
-        case .time: return formatResetClock(reset)
-        case .date: return resetDateFormatter.string(from: reset)
+    static func formatCursorResetDuration(_ window: CursorUsageInfo.Window) -> String? {
+        formatResetDuration(until: window.resetsAt, now: Date())
+    }
+
+    private static func formatResetDuration(until reset: Date?, now: Date) -> String? {
+        guard let reset else { return nil }
+        let remaining = reset.timeIntervalSince(now)
+        let totalMinutes = Int(remaining / 60)
+        guard totalMinutes > 0 else {
+            return remaining > 0 ? "<1m" : "now"
         }
+        let days = totalMinutes / (24 * 60)
+        let hours = totalMinutes / 60 % 24
+        let minutes = totalMinutes % 60
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
     }
-
-    private static func formatResetClock(_ date: Date) -> String {
-        resetClockFormatter.string(from: date).lowercased()
-    }
-
-    private static let resetClockFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "h.mm a"
-        return f
-    }()
-
-    private static let resetDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.setLocalizedDateFormatFromTemplate("MMMd")
-        return f
-    }()
 
     // MARK: Provider status card
 

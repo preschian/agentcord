@@ -931,25 +931,112 @@ struct MenuContentView: View {
 
     @ViewBuilder
     private var usageCard: some View {
-        switch selectedAgent {
+        if settings.unifiedUsage && visibleAgents.count > 1 {
+            unifiedUsageCard
+        } else {
+            switch selectedAgent {
+            case .claude:
+                claudeUsageCard
+            case .cursor:
+                cursorUsageCard
+            case .codex:
+                codexUsageCard
+            case .grok:
+                grokUsageCard
+            }
+        }
+    }
+
+    /// Shared "USAGE" card header: optional plan tag on the right plus the
+    /// unified-view toggle (hidden when only one agent is enabled).
+    private func usageCardHeader(plan: String? = nil) -> some View {
+        HStack(spacing: 6) {
+            Text("USAGE")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(Palette.secondary.opacity(0.55))
+            Spacer()
+            if let plan, !plan.isEmpty {
+                Text(plan.capitalized)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+            }
+            if visibleAgents.count > 1 {
+                unifiedUsageToggle
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Chip that switches the usage card between the selected agent and a
+    /// unified view of every connected agent.
+    private var unifiedUsageToggle: some View {
+        let active = settings.unifiedUsage
+        return Button {
+            settings.unifiedUsage.toggle()
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 8, weight: .semibold))
+                Text("All")
+                    .font(.system(size: 10.5, weight: .medium))
+            }
+            .foregroundStyle(active ? Palette.blue : Palette.secondary.opacity(0.55))
+            .padding(.horizontal, 7).padding(.vertical, 2.5)
+            .background(Capsule().fill(active ? Palette.blue.opacity(0.12) : Palette.track.opacity(0.12)))
+            .overlay(Capsule().stroke(active ? Palette.blue.opacity(0.3) : Color.clear, lineWidth: 0.5))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// One card summarising the primary usage window of every connected agent.
+    private var unifiedUsageCard: some View {
+        let agents = visibleAgents.filter { isAgentLinked($0) }
+        return VStack(alignment: .leading, spacing: 10) {
+            usageCardHeader()
+            if agents.isEmpty {
+                Text("No connected agents")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+            } else {
+                ForEach(agents) { agent in
+                    let entry = unifiedUsageEntry(for: agent)
+                    usageRow(entry.label, entry.window, accent: agentAccent(agent))
+                }
+            }
+        }
+        .padding(.vertical, 11).padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    /// Each agent's primary window, so the unified card stays one row per agent.
+    private func unifiedUsageEntry(for agent: AgentKind) -> (label: String, window: UsageInfo.Window?) {
+        switch agent {
         case .claude:
-            claudeUsageCard
+            return (agent.displayName, usage.current?.fiveHour)
         case .cursor:
-            cursorUsageCard
+            let mapped = cursorUsage.current.map {
+                UsageInfo.Window(
+                    percent: $0.included.percent,
+                    severity: $0.included.severity,
+                    resetsAt: $0.included.resetsAt
+                )
+            }
+            return (agent.displayName, mapped)
         case .codex:
-            codexUsageCard
+            return (agent.displayName, codexUsage.current?.primary)
         case .grok:
-            grokUsageCard
+            return (agent.displayName, grokUsage.current?.weekly)
         }
     }
 
     private var claudeUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("USAGE")
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(0.5)
-                .foregroundStyle(Palette.secondary.opacity(0.55))
-                .frame(maxWidth: .infinity, alignment: .leading)
+            usageCardHeader()
             if usage.current == nil {
                 Text("Waiting for Claude usage…")
                     .font(.system(size: 12.5))
@@ -980,19 +1067,7 @@ struct MenuContentView: View {
 
     private var cursorUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("USAGE")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Palette.secondary.opacity(0.55))
-                Spacer()
-                if let plan = cursorUsage.current?.planName, !plan.isEmpty {
-                    Text(plan.capitalized)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Palette.secondary.opacity(0.45))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            usageCardHeader(plan: cursorUsage.current?.planName)
 
             if let info = cursorUsage.current {
                 cursorUsageRow("Included usage", info.included)
@@ -1030,19 +1105,7 @@ struct MenuContentView: View {
 
     private var codexUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("USAGE")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Palette.secondary.opacity(0.55))
-                Spacer()
-                if let plan = codexUsage.current?.planType, !plan.isEmpty {
-                    Text(plan.capitalized)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Palette.secondary.opacity(0.45))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            usageCardHeader(plan: codexUsage.current?.planType)
 
             if let info = codexUsage.current {
                 usageRow(
@@ -1081,11 +1144,7 @@ struct MenuContentView: View {
     /// Weekly SuperGrok / CLI credits from `/v1/billing?format=credits`.
     private var grokUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("USAGE")
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(0.5)
-                .foregroundStyle(Palette.secondary.opacity(0.55))
-                .frame(maxWidth: .infinity, alignment: .leading)
+            usageCardHeader()
 
             if let info = grokUsage.current {
                 usageRow("Weekly credits", info.weekly, accent: agentAccent(.grok))

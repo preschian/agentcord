@@ -21,6 +21,7 @@ final class SettingsStore: ObservableObject {
         static let showProject = "showProject"
         static let showMenuBarStatus = "showMenuBarStatus"
         static let showUsageInMenuBar = "showUsageInMenuBar"
+        static let unifiedUsage = "unifiedUsage"
         static let doNotDisturb = "doNotDisturb"
         static let preventSleep = "preventSleep"
         static let largeImageKey = "largeImageKey"
@@ -47,6 +48,9 @@ final class SettingsStore: ObservableObject {
     @Published var showProject: Bool { didSet { defaults.set(showProject, forKey: Key.showProject) } }
     @Published var showMenuBarStatus: Bool { didSet { defaults.set(showMenuBarStatus, forKey: Key.showMenuBarStatus) } }
     @Published var showUsageInMenuBar: Bool { didSet { defaults.set(showUsageInMenuBar, forKey: Key.showUsageInMenuBar) } }
+    /// Show one usage card covering every connected agent instead of the
+    /// selected agent's card.
+    @Published var unifiedUsage: Bool { didSet { defaults.set(unifiedUsage, forKey: Key.unifiedUsage) } }
     @Published var doNotDisturb: Bool { didSet { defaults.set(doNotDisturb, forKey: Key.doNotDisturb) } }
     @Published var preventSleep: Bool { didSet { defaults.set(preventSleep, forKey: Key.preventSleep) } }
     @Published var largeImageKey: String { didSet { defaults.set(largeImageKey, forKey: Key.largeImageKey) } }
@@ -73,6 +77,7 @@ final class SettingsStore: ObservableObject {
             Key.showProject: true,
             Key.showMenuBarStatus: true,
             Key.showUsageInMenuBar: false,
+            Key.unifiedUsage: false,
             Key.doNotDisturb: false,
             Key.preventSleep: false,
             Key.largeImageKey: "claude-color",
@@ -94,6 +99,7 @@ final class SettingsStore: ObservableObject {
         showProject = defaults.bool(forKey: Key.showProject)
         showMenuBarStatus = defaults.bool(forKey: Key.showMenuBarStatus)
         showUsageInMenuBar = defaults.bool(forKey: Key.showUsageInMenuBar)
+        unifiedUsage = defaults.bool(forKey: Key.unifiedUsage)
         doNotDisturb = defaults.bool(forKey: Key.doNotDisturb)
         preventSleep = defaults.bool(forKey: Key.preventSleep)
         largeImageKey = defaults.string(forKey: Key.largeImageKey) ?? "claude-color"

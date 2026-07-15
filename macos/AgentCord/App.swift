@@ -1121,14 +1121,19 @@ struct MenuContentView: View {
     ) -> some View {
         VStack(spacing: 5) {
             HStack {
-                Text(label).font(.system(size: 12.5))
-                Spacer()
+                Text(label)
+                    .font(.system(size: 12.5))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 8)
                 // Countdown ticks while the popover stays open; without the
                 // TimelineView it would only update when the usage data polls.
                 TimelineView(.periodic(from: .now, by: 60)) { context in
                     Text(usageDetail(window, now: context.date))
                         .font(.system(size: 12.5, weight: .semibold))
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
             GeometryReader { geo in

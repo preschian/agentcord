@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let cursorUsage = CursorUsage()
     let codexUsage = CodexUsage()
     let grokUsage = GrokUsage()
-    let anthropicStatus = AnthropicStatus()
+    let providerStatus = ProviderStatusHub()
     let sleepGuard = SleepGuard()
     lazy var controller = PresenceController(settings: settings)
 
@@ -54,7 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         cursorUsage.start()
         codexUsage.start()
         grokUsage.start()
-        anthropicStatus.start()
+        // Provider status has no background poller — it's popover-only UI, so
+        // it fetches on popover open (see togglePopover) with a cached snapshot.
 
         // Keep the Mac awake whenever "Prevent sleep" is on, and follow the
         // toggle thereafter. `setEnabled` is idempotent, so the initial apply
@@ -116,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller.cursorSession)
             .environmentObject(grokUsage)
             .environmentObject(controller.grokSession)
-            .environmentObject(anthropicStatus)
+            .environmentObject(providerStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
         // Settings section made the popover wobble. Pushing the size through a
@@ -147,13 +148,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            // Pull fresh usage numbers and Anthropic status as the popover
+            // Pull fresh usage numbers and provider status as the popover
             // opens so they're current.
             usage.refresh()
             cursorUsage.refresh()
             codexUsage.refresh()
             grokUsage.refresh()
-            anthropicStatus.refresh()
+            providerStatus.refresh()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
@@ -470,7 +471,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var cursorSession: CursorSession
     @EnvironmentObject private var grokUsage: GrokUsage
     @EnvironmentObject private var grokSession: GrokSession
-    @EnvironmentObject private var anthropicStatus: AnthropicStatus
+    @EnvironmentObject private var providerStatus: ProviderStatusHub
 
     @State private var showSettings = false
     @State private var expandDisplay = false
@@ -1194,38 +1195,46 @@ struct MenuContentView: View {
 
     // MARK: Provider status card
 
-    /// Surfaces status.claude.com for Claude; other agents hide the card until
-    /// we wire their status pages. Hidden entirely until the first successful
-    /// fetch so a brief offline moment shows nothing rather than a broken card.
+    /// Surfaces the selected agent's provider status page (status.claude.com,
+    /// status.openai.com, status.cursor.com, status.x.ai). Hidden entirely
+    /// until the first successful fetch so a brief offline moment shows
+    /// nothing rather than a broken card.
     @ViewBuilder
     private var statusCard: some View {
-        switch selectedAgent {
-        case .claude:
-            if let status = anthropicStatus.current {
-                providerStatusCard(title: "Claude status", status: status)
-            }
-        case .cursor, .codex, .grok:
-            EmptyView()
+        if let status = providerStatus.info(for: selectedAgent) {
+            providerStatusCard(
+                title: "\(selectedAgent.statusProviderLabel) status",
+                status: status,
+                pageURL: selectedAgent.statusPageURL
+            )
         }
     }
 
-    private func providerStatusCard(title: String, status: StatusInfo) -> some View {
+    private func providerStatusCard(title: String, status: StatusInfo, pageURL: URL) -> some View {
         VStack(spacing: 0) {
             statusHeader(title: title, status: status)
 
             if expandStatus {
+                let shown = displayComponents(status)
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
                         incidentCallout(incident)
                     }
 
-                    VStack(alignment: .leading, spacing: 7) {
-                        ForEach(Array(status.components.enumerated()), id: \.offset) { _, comp in
-                            componentRow(comp)
+                    if !shown.isEmpty {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(Array(shown.enumerated()), id: \.offset) { _, comp in
+                                componentRow(comp)
+                            }
+                            if status.components.count > shown.count {
+                                Text("+ \(status.components.count - shown.count) more operational")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Palette.secondary.opacity(0.4))
+                            }
                         }
                     }
 
-                    statusFooter(status)
+                    statusFooter(status, pageURL: pageURL)
                 }
                 .padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 10)
                 .overlay(alignment: .top) {
@@ -1312,13 +1321,32 @@ struct MenuContentView: View {
         }
     }
 
+    /// Long component lists (OpenAI's page has ~25) would stretch the popover,
+    /// so cap the breakdown, keeping every non-operational component visible.
+    private func displayComponents(_ status: StatusInfo) -> [StatusInfo.Component] {
+        let cap = 10
+        let components = status.components
+        guard components.count > cap else { return components }
+        let degraded = components.filter { !$0.status.isOperational }
+        let operational = components.filter { $0.status.isOperational }
+        return Array((degraded + operational).prefix(max(cap, degraded.count)))
+    }
+
     /// Footer summary line plus a link out to the full status page.
-    private func statusFooter(_ status: StatusInfo) -> some View {
-        let count = status.degradedCount
-        let summary = count > 0
-            ? "\(count) of \(status.components.count) degraded · updated \(relativeUpdated(status.fetchedAt))"
-            : "All systems operational · updated \(relativeUpdated(status.fetchedAt))"
-        return Link(destination: URL(string: "https://status.claude.com")!) {
+    private func statusFooter(_ status: StatusInfo, pageURL: URL) -> some View {
+        let updated = "updated \(relativeUpdated(status.fetchedAt))"
+        let summary: String
+        if status.degradedCount > 0 {
+            summary = "\(status.degradedCount) of \(status.components.count) degraded · \(updated)"
+        } else if status.components.isEmpty {
+            // xAI's feed has no component breakdown, only incidents.
+            summary = status.incidents.isEmpty
+                ? "No active incidents · \(updated)"
+                : "\(status.incidents.count) active \(status.incidents.count == 1 ? "incident" : "incidents") · \(updated)"
+        } else {
+            summary = "All systems operational · \(updated)"
+        }
+        return Link(destination: pageURL) {
             HStack {
                 Text(summary)
                     .font(.system(size: 11))

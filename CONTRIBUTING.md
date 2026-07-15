@@ -70,7 +70,8 @@ Five small components plus the SwiftUI app shell:
 
 - `DiscordIPC.swift` - the raw IPC client: socket discovery (`discord-ipc-0` through `discord-ipc-9` under `XDG_RUNTIME_DIR` / `TMPDIR` / `TMP` / `TEMP` / `/tmp`), the 8-byte little-endian frame header, the handshake, `SET_ACTIVITY`, ping/pong, reconnect with exponential backoff, and clearing. All socket I/O runs off the main thread.
 - `ClaudeSession.swift` - watches `~/.claude/projects/` with `FSEvents` plus a periodic re-scan. The most recently modified `.jsonl` transcript defines the active session (project + model), while tokens and the elapsed timer are aggregated across every transcript touched on the current local calendar day: tokens are summed, and the timer reflects the combined working time of all of today's sessions (idle gaps between sessions excluded). Per-file parse results are memoized (keyed by modification time and the day boundary) so each scan only re-reads files that actually changed. Parsing is defensive: malformed or unexpected lines are skipped, never fatal.
-- `PresenceController.swift` - observes the session, builds the activity from your settings, debounces updates (at most roughly once every few seconds, and only when the content actually changes), and clears on idle or quit.
+- `CodexSession.swift` - first connects to an existing Codex App Server daemon and reads official runtime thread status. Standalone CLI processes do not share that runtime, so it falls back to watching `~/.codex/sessions/` transcripts. Transcript data enriches both paths with cwd, model, timestamps, and token totals.
+- `PresenceController.swift` - observes Claude and Codex sessions, selects the most recently active enabled agent, builds the activity from your settings, debounces updates (at most roughly once every few seconds, and only when the content actually changes), and clears on idle or quit.
 - `Settings.swift` - persisted settings (`UserDefaults`).
 - `Models.swift` - the Codable IPC payload structs.
 - `App.swift` - the `MenuBarExtra` UI and app lifecycle.
@@ -78,6 +79,8 @@ Five small components plus the SwiftUI app shell:
 ## Notes and limitations
 
 - The Claude Code transcript schema is undocumented and may change. The parser tolerates missing keys and unknown event types.
+- Codex App Server runtime status is authoritative when AgentCord can connect to the managed daemon. A separately launched Codex CLI is detected through its local transcript because independent CLI processes are not visible as loaded threads in another App Server instance.
+- The Codex transcript fallback uses an internal on-disk format that may change. Its parser is defensive and only reads session metadata, turn context, timestamps, and token usage.
 - A session is considered active if its transcript was modified within the idle window (default 5 min, configurable 5-30 min in 5-minute steps).
 - Token and elapsed-time totals cover the current local calendar day and reset at midnight. Only the portion of a session that falls on the current day is counted, so a session spanning midnight contributes only its post-midnight time and tokens.
 - Discord throttles rapid activity updates, so updates are debounced.

@@ -84,8 +84,7 @@ struct SetActivityArgs: Encodable {
 
 // MARK: - Coding agents
 
-/// Agents the popover can switch between. Presence still only broadcasts Claude
-/// for now; multi-agent is a popover UI concern.
+/// Agents the popover can switch between.
 enum AgentKind: String, CaseIterable, Identifiable, Codable {
     case claude
     case codex
@@ -135,6 +134,8 @@ struct SessionInfo: Equatable {
     /// Context window size when known (Grok `signals.json`); used for menu bar
     /// / usage fill percent. Nil for Claude Code daily token totals.
     var contextWindowTokens: Int? = nil
+    /// Provider that owns this session, used to label Discord presence.
+    var agent: AgentKind = .claude
 }
 
 // MARK: - Cursor subscription usage

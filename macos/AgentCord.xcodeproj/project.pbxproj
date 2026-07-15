@@ -23,6 +23,7 @@
 		BB000000000000000000000E /* CursorUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* CursorUsage.swift */; };
 		BB000000000000000000000F /* GrokUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* GrokUsage.swift */; };
 		BB0000000000000000000010 /* CodexSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* CodexSession.swift */; };
+		BB0000000000000000000011 /* CursorSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000013 /* CursorSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +45,7 @@
 		AA0000000000000000000010 /* CursorUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorUsage.swift; sourceTree = "<group>"; };
 		AA0000000000000000000011 /* GrokUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrokUsage.swift; sourceTree = "<group>"; };
 		AA0000000000000000000012 /* CodexSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSession.swift; sourceTree = "<group>"; };
+		AA0000000000000000000013 /* CursorSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -82,6 +84,7 @@
 				AA0000000000000000000011 /* GrokUsage.swift */,
 				AA000000000000000000000F /* CodexUsage.swift */,
 				AA0000000000000000000012 /* CodexSession.swift */,
+				AA0000000000000000000013 /* CursorSession.swift */,
 				AA0000000000000000000010 /* CursorUsage.swift */,
 				AA0000000000000000000009 /* Assets.xcassets */,
 				AA0000000000000000000007 /* AgentCord.entitlements */,
@@ -180,6 +183,7 @@
 				BB000000000000000000000F /* GrokUsage.swift in Sources */,
 				BB000000000000000000000D /* CodexUsage.swift in Sources */,
 				BB0000000000000000000010 /* CodexSession.swift in Sources */,
+				BB0000000000000000000011 /* CursorSession.swift in Sources */,
 				BB000000000000000000000E /* CursorUsage.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

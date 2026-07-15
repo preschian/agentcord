@@ -33,7 +33,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let cursorUsage = CursorUsage()
     let codexUsage = CodexUsage()
     let grokUsage = GrokUsage()
-    let grokSession = GrokSession()
     let anthropicStatus = AnthropicStatus()
     let sleepGuard = SleepGuard()
     lazy var controller = PresenceController(settings: settings)
@@ -55,8 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         cursorUsage.start()
         codexUsage.start()
         grokUsage.start()
-        grokSession.activeWindowSeconds = settings.idleWindowSeconds
-        grokSession.start()
         anthropicStatus.start()
 
         // Keep the Mac awake whenever "Prevent sleep" is on, and follow the
@@ -66,12 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         settings.$preventSleep
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in self?.sleepGuard.setEnabled(enabled) }
-            .store(in: &cancellables)
-
-        // Keep Grok's idle window in sync with the setting Claude already uses.
-        settings.$idleWindowSeconds
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] seconds in self?.grokSession.activeWindowSeconds = seconds }
             .store(in: &cancellables)
 
         setupStatusItem()
@@ -123,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(codexUsage)
             .environmentObject(controller.codexSession)
             .environmentObject(grokUsage)
-            .environmentObject(grokSession)
+            .environmentObject(controller.grokSession)
             .environmentObject(anthropicStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the

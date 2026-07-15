@@ -364,12 +364,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             string: text,
             attributes: [.font: font, .foregroundColor: color]
         ))
-        if !labeled, let reset = MenuContentView.formatResetTime(window, style: .time) {
+        let resetStyle: MenuContentView.ResetDisplayStyle =
+            Self.codexUsesDateReset(usage.primaryLabel) ? .date : .time
+        if !labeled, let reset = MenuContentView.formatResetTime(window, style: resetStyle) {
             title.append(NSAttributedString(
                 string: " (\(reset))",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
             ))
         }
+    }
+
+    private static func codexUsesDateReset(_ label: String) -> Bool {
+        let normalized = label.lowercased()
+        return normalized.contains("weekly") || normalized.contains("monthly")
     }
 
     /// Appends a compact Grok weekly-credits readout. Alone: "Grok NN% (reset)".
@@ -1031,9 +1038,28 @@ struct MenuContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let info = codexUsage.current {
-                usageRow(info.primaryLabel, info.primary, resetStyle: .time, accent: agentAccent(.codex))
+                usageRow(
+                    info.primaryLabel,
+                    info.primary,
+                    resetStyle: codexResetStyle(for: info.primaryLabel),
+                    accent: agentAccent(.codex)
+                )
                 if let secondary = info.secondary {
-                    usageRow(info.secondaryLabel ?? "Weekly limit", secondary, resetStyle: .date, accent: agentAccent(.codex))
+                    let label = info.secondaryLabel ?? "Secondary limit"
+                    usageRow(
+                        label,
+                        secondary,
+                        resetStyle: codexResetStyle(for: label),
+                        accent: agentAccent(.codex)
+                    )
+                }
+                ForEach(info.additionalWindows) { scoped in
+                    usageRow(
+                        scoped.label,
+                        scoped.window,
+                        resetStyle: scoped.usesDateReset ? .date : .time,
+                        accent: agentAccent(.codex)
+                    )
                 }
             } else {
                 Text("Waiting for Codex usage…")
@@ -1045,6 +1071,11 @@ struct MenuContentView: View {
         .padding(.vertical, 11).padding(.horizontal, 12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func codexResetStyle(for label: String) -> ResetDisplayStyle {
+        let normalized = label.lowercased()
+        return normalized.contains("weekly") || normalized.contains("monthly") ? .date : .time
     }
 
     /// Weekly SuperGrok / CLI credits from `/v1/billing?format=credits`.

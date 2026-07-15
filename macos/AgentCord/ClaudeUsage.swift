@@ -7,12 +7,10 @@
 //
 //  Unlike token counts, these numbers are NOT in the local transcripts. They
 //  come from an undocumented OAuth endpoint that Claude Code itself calls. We
-//  reuse Claude Code's own access token (read from the login keychain) and hit
-//  the same endpoint. Everything here is best-effort: any failure (no token,
-//  expired token, keychain access denied, endpoint changed) just leaves
-//  `current` nil, so the popover hides the row rather than showing something
-//  wrong. The token is read fresh on every poll, so while Claude Code keeps it
-//  refreshed we stay current without implementing the OAuth refresh flow.
+//  reuse Claude Code's own access token (from ~/.claude/.credentials.json or
+//  the login keychain) and hit the same endpoint. Everything here is
+//  best-effort: any failure (no token, expired token, rate limit, endpoint
+//  changed) keeps the last disk-cached snapshot so the popover stays filled.
 //
 
 import Foundation
@@ -32,11 +30,15 @@ final class ClaudeUsage: ObservableObject {
     /// opens) so repeatedly opening the popover can't hammer the endpoint.
     var minFetchInterval: TimeInterval = 60
 
-    /// How long to keep showing the last good snapshot after fetches start
-    /// failing. A failed poll (a 429, network blip, token refresh in flight,
-    /// keychain hiccup) shouldn't make the readout vanish; only give up once the
-    /// data is clearly stale.
-    var maxStaleness: TimeInterval = 1800
+    /// Extra cooldown after HTTP 429 before the next attempt. The usage API
+    /// rate-limits hard; retrying every minute just prolongs the lockout.
+    var rateLimitCooldown: TimeInterval = 900
+
+    /// How long a disk-cached snapshot may still be shown after the last
+    /// successful fetch. Claude's usage endpoint 429s often, so this is much
+    /// longer than the other providers — better a slightly stale bar than
+    /// "Waiting for Claude usage…".
+    var maxStaleness: TimeInterval = 86_400 // 24h
 
     /// When the last successful fetch landed. Only touched on `queue`.
     private var lastSuccess: Date = .distantPast
@@ -44,14 +46,17 @@ final class ClaudeUsage: ObservableObject {
     /// When the last fetch was *attempted*. Only touched on `queue`.
     private var lastAttempt: Date = .distantPast
 
+    /// Earliest time a new network fetch is allowed (extended on 429).
+    private var earliestNextFetch: Date = .distantPast
+
     private let urlSession: URLSession
     private let queue = DispatchQueue(label: "com.agentcord.usage", qos: .utility)
     private var timer: DispatchSourceTimer?
 
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
-    /// Disk cache so a relaunch right after a 429 (or any transient failure)
-    /// still shows the last good numbers instead of blank "—" rows.
+    /// Disk cache so a relaunch (or a stretch of 429s) still shows the last
+    /// good numbers instead of blank "Waiting…" rows.
     private static let cacheURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -71,7 +76,7 @@ final class ClaudeUsage: ObservableObject {
         config.waitsForConnectivity = false
         urlSession = URLSession(configuration: config)
 
-        // Restore a still-fresh snapshot before the first network round-trip so
+        // Restore a still-usable snapshot before the first network round-trip so
         // the popover isn't empty while we wait (or while the API rate-limits).
         if let cached = Self.loadCache(), Date().timeIntervalSince(cached.fetchedAt) <= maxStaleness {
             current = cached.info
@@ -96,10 +101,11 @@ final class ClaudeUsage: ObservableObject {
     }
 
     /// Request a refresh (e.g. when the popover opens). Throttled by
-    /// `minFetchInterval` so it can't be used to hammer the endpoint.
+    /// `minFetchInterval` / rate-limit cooldown so it can't hammer the endpoint.
     func refresh() {
         queue.async { [weak self] in
             guard let self else { return }
+            guard Date() >= self.earliestNextFetch else { return }
             guard Date().timeIntervalSince(self.lastAttempt) >= self.minFetchInterval else { return }
             self.fetch()
         }
@@ -108,7 +114,9 @@ final class ClaudeUsage: ObservableObject {
     // MARK: Fetch
 
     private func fetch() {
-        lastAttempt = Date()
+        let now = Date()
+        guard now >= earliestNextFetch else { return }
+        lastAttempt = now
         guard let token = Self.readAccessToken() else {
             handleFailure()
             return
@@ -125,14 +133,21 @@ final class ClaudeUsage: ObservableObject {
             guard let self else { return }
             // Hop back onto `queue` so all `lastSuccess` access is serialized.
             self.queue.async {
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                      let data,
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                if status == 429 {
+                    // Keep showing the cache; back off so we don't deepen the lockout.
+                    self.earliestNextFetch = Date().addingTimeInterval(self.rateLimitCooldown)
+                    self.handleFailure()
+                    return
+                }
+                guard status == 200, let data,
                       let decoded = try? JSONDecoder().decode(UsageResponse.self, from: data) else {
                     self.handleFailure()
                     return
                 }
                 let info = decoded.toUsageInfo()
                 self.lastSuccess = Date()
+                self.earliestNextFetch = .distantPast
                 Self.saveCache(info, fetchedAt: self.lastSuccess)
                 self.publish(info)
             }
@@ -140,8 +155,8 @@ final class ClaudeUsage: ObservableObject {
     }
 
     /// A failed fetch keeps the last good snapshot until it ages past
-    /// `maxStaleness`, so a transient hiccup doesn't make the readout flicker
-    /// away. Runs on `queue`.
+    /// `maxStaleness`, so a transient hiccup / 429 doesn't blank the readout.
+    /// Runs on `queue`.
     private func handleFailure() {
         if Date().timeIntervalSince(lastSuccess) > maxStaleness {
             Self.clearCache()
@@ -179,7 +194,29 @@ final class ClaudeUsage: ObservableObject {
         try? FileManager.default.removeItem(at: cacheURL)
     }
 
-    // MARK: Keychain
+    // MARK: Credentials
+
+    /// Prefer the on-disk Claude Code credentials file (no keychain prompt),
+    /// then fall back to the login-keychain item Claude Code also maintains.
+    private static func readAccessToken() -> String? {
+        if let token = readAccessTokenFromCredentialsFile() {
+            return token
+        }
+        return readAccessTokenFromKeychain()
+    }
+
+    /// `~/.claude/.credentials.json` — same source Claude Code itself writes.
+    private static func readAccessTokenFromCredentialsFile() -> String? {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/.credentials.json")
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = root["claudeAiOauth"] as? [String: Any],
+              let token = oauth["accessToken"] as? String, !token.isEmpty else {
+            return nil
+        }
+        return token
+    }
 
     /// Reads Claude Code's OAuth access token from the login keychain without
     /// spamming the keychain access dialog.
@@ -198,7 +235,7 @@ final class ClaudeUsage: ObservableObject {
     /// Newer Claude Code versions store the item under a suffixed service name
     /// and may keep several entries, so we scan every `Claude Code-credentials*`
     /// service and return the token that expires latest. Any failure yields nil.
-    private static func readAccessToken() -> String? {
+    private static func readAccessTokenFromKeychain() -> String? {
         var best: (token: String, expiresAt: Double)?
         for (service, account) in discoverCredentialServices() {
             guard let oauth = readOAuthViaSecurityCLI(service: service, account: account),

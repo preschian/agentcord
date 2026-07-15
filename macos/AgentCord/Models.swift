@@ -168,6 +168,13 @@ struct CursorUsageInfo: Equatable, Codable {
 
 /// Codex rate limits from ChatGPT OAuth (`/backend-api/wham/usage`).
 struct CodexUsageInfo: Equatable, Codable {
+    struct NamedWindow: Identifiable, Equatable, Codable {
+        var id: String
+        var label: String
+        var window: UsageInfo.Window
+        var usesDateReset: Bool
+    }
+
     /// Primary window (usually the rolling 5-hour limit; monthly on some free plans).
     var primary: UsageInfo.Window
     /// Human label for the primary row, e.g. "5-hour session" or "Monthly limit".
@@ -178,6 +185,38 @@ struct CodexUsageInfo: Equatable, Codable {
     var secondaryLabel: String?
     /// Plan tier from the API when known ("plus", "pro", "free", …).
     var planType: String?
+    /// Model- or feature-specific limits reported by `rateLimitsByLimitId`.
+    var additionalWindows: [NamedWindow] = []
+
+    enum CodingKeys: String, CodingKey {
+        case primary, primaryLabel, secondary, secondaryLabel, planType, additionalWindows
+    }
+
+    init(
+        primary: UsageInfo.Window,
+        primaryLabel: String,
+        secondary: UsageInfo.Window?,
+        secondaryLabel: String?,
+        planType: String?,
+        additionalWindows: [NamedWindow] = []
+    ) {
+        self.primary = primary
+        self.primaryLabel = primaryLabel
+        self.secondary = secondary
+        self.secondaryLabel = secondaryLabel
+        self.planType = planType
+        self.additionalWindows = additionalWindows
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        primary = try c.decode(UsageInfo.Window.self, forKey: .primary)
+        primaryLabel = try c.decode(String.self, forKey: .primaryLabel)
+        secondary = try c.decodeIfPresent(UsageInfo.Window.self, forKey: .secondary)
+        secondaryLabel = try c.decodeIfPresent(String.self, forKey: .secondaryLabel)
+        planType = try c.decodeIfPresent(String.self, forKey: .planType)
+        additionalWindows = try c.decodeIfPresent([NamedWindow].self, forKey: .additionalWindows) ?? []
+    }
 }
 
 // MARK: - Claude subscription usage
@@ -211,4 +250,22 @@ struct UsageInfo: Equatable, Codable {
     /// Per-model weekly limits, in the order the API returned them. Empty when
     /// the plan has none.
     var modelWeekly: [ModelWindow] = []
+
+    enum CodingKeys: String, CodingKey {
+        case fiveHour, weekly, modelWeekly
+    }
+
+    init(fiveHour: Window, weekly: Window, modelWeekly: [ModelWindow] = []) {
+        self.fiveHour = fiveHour
+        self.weekly = weekly
+        self.modelWeekly = modelWeekly
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fiveHour = try c.decode(Window.self, forKey: .fiveHour)
+        weekly = try c.decode(Window.self, forKey: .weekly)
+        // Older caches omit this key; default rather than failing the whole restore.
+        modelWeekly = try c.decodeIfPresent([ModelWindow].self, forKey: .modelWeekly) ?? []
+    }
 }

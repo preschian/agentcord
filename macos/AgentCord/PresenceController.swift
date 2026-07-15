@@ -2,7 +2,7 @@
 //  PresenceController.swift
 //  AgentCord
 //
-//  Observes active Claude Code, Codex, and Grok sessions, builds the Rich
+//  Observes active Claude Code, Codex, Cursor, and Grok sessions, builds the Rich
 //  Presence payload from the user's settings, debounces updates, and drives
 //  DiscordIPC. Clears the presence when the session goes idle or the app quits.
 //
@@ -20,6 +20,7 @@ final class PresenceController: ObservableObject {
 
     let session = ClaudeSession()
     let codexSession = CodexSession()
+    let cursorSession = CursorSession()
     let grokSession = GrokSession()
     let settings: SettingsStore
 
@@ -46,6 +47,11 @@ final class PresenceController: ObservableObject {
             .store(in: &cancellables)
 
         codexSession.$current
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.selectActiveSession() }
+            .store(in: &cancellables)
+
+        cursorSession.$current
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.selectActiveSession() }
             .store(in: &cancellables)
@@ -79,9 +85,11 @@ final class PresenceController: ObservableObject {
         started = true
         session.activeWindowSeconds = settings.idleWindowSeconds
         codexSession.activeWindowSeconds = settings.idleWindowSeconds
+        cursorSession.activeWindowSeconds = settings.idleWindowSeconds
         grokSession.activeWindowSeconds = settings.idleWindowSeconds
         session.start()
         codexSession.start()
+        cursorSession.start()
         grokSession.start()
         selectActiveSession()
         connectIfPossible()
@@ -91,6 +99,7 @@ final class PresenceController: ObservableObject {
         ipc.clearActivitySync()
         session.stop()
         codexSession.stop()
+        cursorSession.stop()
         grokSession.stop()
         ipc.disconnect()
     }
@@ -125,6 +134,7 @@ final class PresenceController: ObservableObject {
     private func handleSettingsChange() {
         session.activeWindowSeconds = settings.idleWindowSeconds
         codexSession.activeWindowSeconds = settings.idleWindowSeconds
+        cursorSession.activeWindowSeconds = settings.idleWindowSeconds
         grokSession.activeWindowSeconds = settings.idleWindowSeconds
         selectActiveSession()
         rebuild()
@@ -134,6 +144,7 @@ final class PresenceController: ObservableObject {
         var candidates: [SessionInfo] = []
         if settings.agentClaudeEnabled, let claude = session.current { candidates.append(claude) }
         if settings.agentCodexEnabled, let codex = codexSession.current { candidates.append(codex) }
+        if settings.agentCursorEnabled, let cursor = cursorSession.current { candidates.append(cursor) }
         if settings.agentGrokEnabled, let grok = grokSession.current { candidates.append(grok) }
         let selected = candidates.max { $0.lastModified < $1.lastModified }
         if currentSession != selected { currentSession = selected }

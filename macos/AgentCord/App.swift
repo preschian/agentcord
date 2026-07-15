@@ -113,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(cursorUsage)
             .environmentObject(codexUsage)
             .environmentObject(controller.codexSession)
+            .environmentObject(controller.cursorSession)
             .environmentObject(grokUsage)
             .environmentObject(controller.grokSession)
             .environmentObject(anthropicStatus)
@@ -121,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Settings section made the popover wobble. Pushing the size through a
         // zero-duration animation context makes it snap instantly instead.
         let host = SizingHostingController(rootView: content)
+        host.fixedWidth = PopoverLayout.width
         host.onContentSizeChange = { [weak self] size in
             guard let self else { return }
             NSAnimationContext.runAnimationGroup { context in
@@ -420,6 +422,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 }
 
+// MARK: - Popover layout
+
+private enum PopoverLayout {
+    static let width: CGFloat = 300
+    static let padding: CGFloat = 13
+}
+
 // MARK: - Popover sizing
 
 /// Hosting controller that reports its content's fitting size whenever it lays
@@ -427,6 +436,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 /// animated resize that `NSHostingController.sizingOptions = .preferredContentSize`
 /// triggers, which made the popover wobble when the Settings section toggled.
 final class SizingHostingController<Content: View>: NSHostingController<Content> {
+    /// When set, popover width stays fixed while height follows content.
+    var fixedWidth: CGFloat?
     var onContentSizeChange: ((NSSize) -> Void)?
     private var lastReportedSize: NSSize = .zero
 
@@ -438,7 +449,8 @@ final class SizingHostingController<Content: View>: NSHostingController<Content>
         // forever and make the contents jitter. Rounding collapses that to a
         // stable integer size.
         let raw = view.fittingSize
-        let size = NSSize(width: raw.width.rounded(.up), height: raw.height.rounded(.up))
+        let width = (fixedWidth ?? raw.width).rounded(.up)
+        let size = NSSize(width: width, height: raw.height.rounded(.up))
         guard size.width > 0, size.height > 0, size != lastReportedSize else { return }
         lastReportedSize = size
         onContentSizeChange?(size)
@@ -455,6 +467,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var cursorUsage: CursorUsage
     @EnvironmentObject private var codexUsage: CodexUsage
     @EnvironmentObject private var codexSession: CodexSession
+    @EnvironmentObject private var cursorSession: CursorSession
     @EnvironmentObject private var grokUsage: GrokUsage
     @EnvironmentObject private var grokSession: GrokSession
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
@@ -485,7 +498,7 @@ struct MenuContentView: View {
     private func isAgentLinked(_ agent: AgentKind) -> Bool {
         switch agent {
         case .claude: return true
-        case .cursor: return cursorUsage.isAuthenticated
+        case .cursor: return cursorUsage.isAuthenticated || cursorSession.isInstalled
         // A fresh cache is still useful while the short-lived app-server probe
         // starts (or if Codex is temporarily unavailable), so do not hide it
         // behind the authentication flag.
@@ -503,7 +516,7 @@ struct MenuContentView: View {
     private var selectedSession: SessionInfo? {
         switch selectedAgent {
         case .claude: return controller.session.current
-        case .cursor: return nil
+        case .cursor: return cursorSession.current
         case .codex: return codexSession.current
         case .grok: return grokSession.current
         }
@@ -514,7 +527,7 @@ struct MenuContentView: View {
     private func isAgentActive(_ agent: AgentKind) -> Bool {
         switch agent {
         case .claude: return controller.session.current != nil
-        case .cursor: return false
+        case .cursor: return cursorSession.current != nil
         case .codex: return codexSession.current != nil
         case .grok: return grokSession.current != nil
         }
@@ -535,7 +548,8 @@ struct MenuContentView: View {
                     .transition(.move(edge: .leading))
             }
         }
-        .frame(width: 300, alignment: .top)
+        .padding(PopoverLayout.padding)
+        .frame(width: PopoverLayout.width, alignment: .top)
         .clipped()
         .foregroundStyle(Palette.text)
         .animation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32), value: showSettings)
@@ -558,11 +572,10 @@ struct MenuContentView: View {
             Rectangle()
                 .fill(Color.black.opacity(0.08))
                 .frame(height: 0.5)
-                .padding(.horizontal, -13)
+                .padding(.horizontal, -PopoverLayout.padding)
             quitButton
         }
-        .padding(13)
-        .frame(width: 300, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var settingsScreen: some View {
@@ -572,8 +585,7 @@ struct MenuContentView: View {
             primaryToggles
             advancedSections
         }
-        .padding(13)
-        .frame(width: 300, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: Header
@@ -601,6 +613,7 @@ struct MenuContentView: View {
             Spacer()
             statusPill
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var statusPill: some View {
@@ -654,6 +667,7 @@ struct MenuContentView: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(Palette.track.opacity(0.12))
                 )
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -662,7 +676,7 @@ struct MenuContentView: View {
         let isSelected = agent == selectedAgent
         let linked = isAgentLinked(agent)
         let live = linked && isAgentActive(agent)
-        // Four tabs need a slightly smaller label so names still fit at 300pt.
+        // Four tabs need a slightly smaller label so names still fit.
         let nameSize: CGFloat = visibleAgents.count >= 4 ? 11 : 12
         return Button {
             settings.selectedAgent = agent
@@ -800,6 +814,7 @@ struct MenuContentView: View {
         .buttonStyle(.plain)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var settingsSummary: String {
@@ -866,6 +881,7 @@ struct MenuContentView: View {
             }
         }
         .padding(.vertical, 11).padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
@@ -956,6 +972,7 @@ struct MenuContentView: View {
             }
         }
         .padding(.vertical, 11).padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
@@ -995,6 +1012,7 @@ struct MenuContentView: View {
             }
         }
         .padding(.vertical, 11).padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
@@ -1054,6 +1072,7 @@ struct MenuContentView: View {
             }
         }
         .padding(.vertical, 11).padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
@@ -1085,6 +1104,7 @@ struct MenuContentView: View {
             }
         }
         .padding(.vertical, 11).padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
@@ -1401,6 +1421,7 @@ struct MenuContentView: View {
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func agentToggleRow(_ agent: AgentKind, divider: Bool) -> some View {
@@ -1459,6 +1480,7 @@ struct MenuContentView: View {
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var presenceBinding: Binding<Bool> {
@@ -1522,6 +1544,7 @@ struct MenuContentView: View {
                 .padding(.horizontal, 11).padding(.top, 8).padding(.bottom, 10)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -1555,6 +1578,7 @@ struct MenuContentView: View {
         }
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var displaySummary: String {
@@ -1645,10 +1669,12 @@ struct MenuContentView: View {
                 Text("⌘Q").font(.system(size: 12)).foregroundStyle(Palette.secondary.opacity(0.4))
             }
             .padding(.horizontal, 11).padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
             .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(.white.opacity(0.65)))
             .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(.black.opacity(0.1), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .keyboardShortcut("q")
     }
 }

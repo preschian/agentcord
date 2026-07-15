@@ -27,6 +27,14 @@ final class GrokSession: ObservableObject {
     private let queue = DispatchQueue(label: "com.agentcord.grok.scan", qos: .utility)
     private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
+    /// Session summaries are stored at sessions/<encoded-cwd>/<session-id>.
+    /// Build this fixed-depth index on demand instead of recursively walking an
+    /// ever-growing history on every five-second poll.
+    private var summaryURLsBySessionID: [String: URL] = [:]
+    private var hasBuiltSummaryIndex = false
+    /// Preserves the just-closed session during the configured idle grace
+    /// period without rescanning every historical summary.
+    private var lastKnownSession: (info: SessionInfo, activity: Date)?
 
     init(grokHome: URL? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -135,13 +143,21 @@ final class GrokSession: ObservableObject {
             }
         }
 
-        // Fall back to the most recently updated session that is still within
-        // the idle window, even if active_sessions.json was cleared mid-quit.
+        // Fall back to the session we just observed when active_sessions.json
+        // is cleared mid-quit. On first launch, discover the newest recent
+        // summary once; subsequent timer ticks reuse the in-memory snapshot.
         if best == nil {
-            if let fallback = newestRecentSession(within: activeWindowSeconds) {
+            let now = Date()
+            if let known = lastKnownSession,
+               now.timeIntervalSince(known.activity) <= activeWindowSeconds {
+                best = known
+            } else if !hasBuiltSummaryIndex,
+                      let fallback = newestRecentSession(within: activeWindowSeconds) {
                 best = fallback
             }
         }
+
+        if let best { lastKnownSession = best }
 
         publish(authenticated: auth, session: best?.info)
     }
@@ -204,20 +220,39 @@ final class GrokSession: ObservableObject {
     }
 
     private func findSummary(sessionID: String) -> URL? {
-        let sessions = grokHome.appendingPathComponent("sessions", isDirectory: true)
-        guard let enumerator = FileManager.default.enumerator(
-            at: sessions,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
+        if let cached = summaryURLsBySessionID[sessionID],
+           FileManager.default.fileExists(atPath: cached.path) {
+            return cached
+        }
+        rebuildSummaryIndex()
+        return summaryURLsBySessionID[sessionID]
+    }
 
-        for case let url as URL in enumerator {
-            if url.lastPathComponent == "summary.json",
-               url.deletingLastPathComponent().lastPathComponent == sessionID {
-                return url
+    private func rebuildSummaryIndex() {
+        let fm = FileManager.default
+        let sessions = grokHome.appendingPathComponent("sessions", isDirectory: true)
+        let groupDirectories = (try? fm.contentsOfDirectory(
+            at: sessions,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        var index: [String: URL] = [:]
+        for group in groupDirectories where group.isDirectory {
+            let sessionDirectories = (try? fm.contentsOfDirectory(
+                at: group,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for session in sessionDirectories where session.isDirectory {
+                let summary = session.appendingPathComponent("summary.json")
+                if fm.fileExists(atPath: summary.path) {
+                    index[session.lastPathComponent] = summary
+                }
             }
         }
-        return nil
+        summaryURLsBySessionID = index
+        hasBuiltSummaryIndex = true
     }
 
     private func readSummary(_ url: URL) -> SummaryMeta? {
@@ -251,16 +286,11 @@ final class GrokSession: ObservableObject {
     }
 
     private func newestRecentSession(within window: TimeInterval) -> (SessionInfo, Date)? {
-        let sessions = grokHome.appendingPathComponent("sessions", isDirectory: true)
-        guard let enumerator = FileManager.default.enumerator(
-            at: sessions,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
+        if !hasBuiltSummaryIndex { rebuildSummaryIndex() }
 
         var best: (SessionInfo, Date)?
         let now = Date()
-        for case let url as URL in enumerator where url.lastPathComponent == "summary.json" {
+        for url in summaryURLsBySessionID.values {
             let summary = readSummary(url)
             let activity = summary?.lastActive
                 ?? url.resourceModificationDate
@@ -359,6 +389,10 @@ final class GrokSession: ObservableObject {
 }
 
 private extension URL {
+    var isDirectory: Bool {
+        (try? resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+    }
+
     var resourceModificationDate: Date? {
         (try? resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }

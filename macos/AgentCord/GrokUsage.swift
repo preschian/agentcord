@@ -89,7 +89,9 @@ final class GrokUsage: ObservableObject {
     // MARK: Fetch
 
     private func fetch() {
-        lastAttempt = Date()
+        let now = Date()
+        guard now.timeIntervalSince(lastAttempt) >= minFetchInterval else { return }
+        lastAttempt = now
         loadCredentialsFromDiskIfNeeded()
 
         guard cachedAccessToken != nil || cachedRefreshToken != nil else {

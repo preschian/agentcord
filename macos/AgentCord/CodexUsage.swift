@@ -80,7 +80,9 @@ final class CodexUsage: ObservableObject {
 
     private func fetch() {
         guard activeProcess == nil else { return }
-        lastAttempt = Date()
+        let now = Date()
+        guard now.timeIntervalSince(lastAttempt) >= minFetchInterval else { return }
+        lastAttempt = now
 
         guard let executable = Self.codexExecutableURL() else {
             publishAuth(false)

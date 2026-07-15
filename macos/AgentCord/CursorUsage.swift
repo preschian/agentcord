@@ -92,7 +92,9 @@ final class CursorUsage: ObservableObject {
     // MARK: Fetch
 
     private func fetch() {
-        lastAttempt = Date()
+        let now = Date()
+        guard now.timeIntervalSince(lastAttempt) >= minFetchInterval else { return }
+        lastAttempt = now
         guard let token = Self.readAccessToken() else {
             publishAuth(false)
             handleFailure()
@@ -439,6 +441,11 @@ private struct LegacyUsageResponse: Decodable {
 
     private static func parseMonthStart(_ string: String?) -> Date? {
         guard let string, !string.isEmpty else { return nil }
-        return ISO8601DateFormatter().date(from: string)
+        guard let start = ISO8601DateFormatter().date(from: string) else { return nil }
+        // The legacy payload names this field startOfMonth; the quota resets at
+        // the beginning of the following month, not at this already-past date.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+        return calendar.date(byAdding: .month, value: 1, to: start)
     }
 }

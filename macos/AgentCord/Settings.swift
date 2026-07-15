@@ -32,7 +32,6 @@ final class SettingsStore: ObservableObject {
         static let agentCursorEnabled = "agentCursorEnabled"
         static let agentCodexEnabled = "agentCodexEnabled"
         static let agentGrokEnabled = "agentGrokEnabled"
-        static let shareBusiestAgent = "shareBusiestAgent"
     }
 
     /// The Discord Application ID this app reports as. Not a secret; safe to
@@ -64,9 +63,6 @@ final class SettingsStore: ObservableObject {
     @Published var agentCursorEnabled: Bool { didSet { defaults.set(agentCursorEnabled, forKey: Key.agentCursorEnabled) } }
     @Published var agentCodexEnabled: Bool { didSet { defaults.set(agentCodexEnabled, forKey: Key.agentCodexEnabled) } }
     @Published var agentGrokEnabled: Bool { didSet { defaults.set(agentGrokEnabled, forKey: Key.agentGrokEnabled) } }
-    /// Reserved for multi-agent Discord presence; popover-only for now.
-    @Published var shareBusiestAgent: Bool { didSet { defaults.set(shareBusiestAgent, forKey: Key.shareBusiestAgent) } }
-
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
@@ -88,8 +84,7 @@ final class SettingsStore: ObservableObject {
             Key.agentCursorEnabled: true,
             // Codex defaults on; Connect card shows if not signed in.
             Key.agentCodexEnabled: true,
-            Key.agentGrokEnabled: true,
-            Key.shareBusiestAgent: true
+            Key.agentGrokEnabled: true
         ])
 
         clientID = defaults.string(forKey: Key.clientID) ?? Self.defaultClientID
@@ -110,7 +105,6 @@ final class SettingsStore: ObservableObject {
         agentCursorEnabled = defaults.bool(forKey: Key.agentCursorEnabled)
         agentCodexEnabled = defaults.bool(forKey: Key.agentCodexEnabled)
         agentGrokEnabled = defaults.bool(forKey: Key.agentGrokEnabled)
-        shareBusiestAgent = defaults.bool(forKey: Key.shareBusiestAgent)
     }
 
     /// Agents the user has toggled on in Settings.

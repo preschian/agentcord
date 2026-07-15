@@ -500,7 +500,10 @@ struct MenuContentView: View {
         switch agent {
         case .claude: return true
         case .cursor: return cursorUsage.isAuthenticated
-        case .codex: return codexUsage.isAuthenticated
+        // A fresh cache is still useful while the short-lived app-server probe
+        // starts (or if Codex is temporarily unavailable), so do not hide it
+        // behind the authentication flag.
+        case .codex: return codexUsage.isAuthenticated || codexUsage.current != nil
         case .grok: return grokUsage.isAuthenticated || grokSession.isAuthenticated
         }
     }
@@ -1474,12 +1477,6 @@ struct MenuContentView: View {
 
             VStack(spacing: 0) {
                 toggleRow("Enable presence", presenceBinding, divider: false)
-                toggleRowWithSubtitle(
-                    "Share busiest agent",
-                    subtitle: "Discord shows the agent with an active session",
-                    isOn: $settings.shareBusiestAgent,
-                    divider: true
-                )
             }
             .padding(.horizontal, 12)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
@@ -1499,26 +1496,6 @@ struct MenuContentView: View {
             .padding(.horizontal, 12)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
-        }
-    }
-
-    private func toggleRowWithSubtitle(
-        _ title: String, subtitle: String, isOn: Binding<Bool>, divider: Bool
-    ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 13))
-                Text(subtitle)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            ToggleSwitch(isOn: isOn)
-        }
-        .padding(.vertical, 8)
-        .overlay(alignment: .top) {
-            if divider { Rectangle().fill(.black.opacity(0.05)).frame(height: 0.5) }
         }
     }
 

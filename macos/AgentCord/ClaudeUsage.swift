@@ -116,6 +116,10 @@ final class ClaudeUsage: ObservableObject {
     private func fetch() {
         let now = Date()
         guard now >= earliestNextFetch else { return }
+        // Apply the same throttle to scheduled polls and popover refreshes.
+        // Otherwise a timer tick immediately after opening the popover can
+        // start a second request and aggravate this endpoint's strict 429s.
+        guard now.timeIntervalSince(lastAttempt) >= minFetchInterval else { return }
         lastAttempt = now
         guard let token = Self.readAccessToken() else {
             handleFailure()

@@ -136,7 +136,8 @@ final class GrokSession: ObservableObject {
                 startEpochMs: startMs,
                 totalTokens: tokens,
                 lastModified: activity,
-                contextWindowTokens: signals?.contextWindowTokens
+                contextWindowTokens: signals?.contextWindowTokens,
+                agent: .grok
             )
             if best == nil || activity > best!.activity {
                 best = (info, activity)
@@ -307,7 +308,8 @@ final class GrokSession: ObservableObject {
                 startEpochMs: Int64(activity.timeIntervalSince1970 * 1000),
                 totalTokens: signals?.contextTokensUsed ?? 0,
                 lastModified: activity,
-                contextWindowTokens: signals?.contextWindowTokens
+                contextWindowTokens: signals?.contextWindowTokens,
+                agent: .grok
             )
             if best == nil || activity > best!.1 {
                 best = (info, activity)

@@ -1,6 +1,6 @@
 # agentcord
 
-AgentCord is a macOS menu bar app that puts your coding-agent activity on your Discord profile. On macOS it tracks active Claude Code and Codex sessions, choosing the most recently active one when both are running. Your Discord status shows what you're working on: the current project, model, elapsed time, and token count. When the session goes quiet or you quit the app, the status clears itself.
+AgentCord is a macOS menu bar app that puts your coding-agent activity on your Discord profile. On macOS it tracks active Claude Code, Codex, and Grok sessions, choosing the most recently active one when several are running. Your Discord status shows what you're working on: the current project, model, elapsed time, and token count. When the session goes quiet or you quit the app, the status clears itself.
 
 The app lives in the menu bar with no Dock icon and no window in the way. The daily totals reset at midnight, so every day starts fresh.
 

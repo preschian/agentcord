@@ -2,7 +2,7 @@
 //  PresenceController.swift
 //  AgentCord
 //
-//  Observes the active Claude Code session, builds the Rich Presence payload
+//  Observes active Claude Code and Codex sessions, builds the Rich Presence payload
 //  from the user's settings, debounces updates, and drives DiscordIPC. Clears
 //  the presence when the session goes idle or the app quits.
 //
@@ -15,8 +15,11 @@ final class PresenceController: ObservableObject {
 
     @Published private(set) var discordState: DiscordIPC.State = .disconnected
     @Published private(set) var lastError: String?
+    @Published private(set) var currentSession: SessionInfo?
+    @Published private(set) var activeAgent: AgentKind?
 
     let session = ClaudeSession()
+    let codexSession = CodexSession()
     let settings: SettingsStore
 
     private let ipc = DiscordIPC()
@@ -38,7 +41,12 @@ final class PresenceController: ObservableObject {
 
         session.$current
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuild() }
+            .sink { [weak self] _ in self?.selectActiveSession() }
+            .store(in: &cancellables)
+
+        codexSession.$current
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.selectActiveSession() }
             .store(in: &cancellables)
 
         // Display-affecting settings (toggles, DND, image keys) only need a
@@ -64,13 +72,17 @@ final class PresenceController: ObservableObject {
         guard !started else { return }
         started = true
         session.activeWindowSeconds = settings.idleWindowSeconds
+        codexSession.activeWindowSeconds = settings.idleWindowSeconds
         session.start()
+        codexSession.start()
+        selectActiveSession()
         connectIfPossible()
     }
 
     func shutdown() {
         ipc.clearActivitySync()
         session.stop()
+        codexSession.stop()
         ipc.disconnect()
     }
 
@@ -103,6 +115,19 @@ final class PresenceController: ObservableObject {
 
     private func handleSettingsChange() {
         session.activeWindowSeconds = settings.idleWindowSeconds
+        codexSession.activeWindowSeconds = settings.idleWindowSeconds
+        selectActiveSession()
+        rebuild()
+    }
+
+    private func selectActiveSession() {
+        var candidates: [SessionInfo] = []
+        if settings.agentClaudeEnabled, let claude = session.current { candidates.append(claude) }
+        if settings.agentCodexEnabled, let codex = codexSession.current { candidates.append(codex) }
+        let selected = candidates.max { $0.lastModified < $1.lastModified }
+        if currentSession != selected { currentSession = selected }
+        let agent = selected?.agent
+        if activeAgent != agent { activeAgent = agent }
         rebuild()
     }
 
@@ -115,7 +140,7 @@ final class PresenceController: ObservableObject {
             scheduleClear()
             return
         }
-        guard let info = session.current else {
+        guard let info = currentSession else {
             scheduleClear()
             return
         }
@@ -141,7 +166,7 @@ final class PresenceController: ObservableObject {
             large_image: settings.largeImageKey.isEmpty ? nil : settings.largeImageKey,
             large_text: "agentcord",
             small_image: settings.smallImageKey.isEmpty ? nil : settings.smallImageKey,
-            small_text: "Active session"
+            small_text: "Active \(info.agent.displayName) session"
         )
 
         let type = SettingsStore.allowedActivityTypes.map(\.value).contains(settings.activityType)
@@ -154,8 +179,21 @@ final class PresenceController: ObservableObject {
             state: state,
             timestamps: Timestamps(start: info.startEpochMs, end: nil),
             assets: assets,
-            buttons: [PresenceButton(label: "What is Claude Code", url: "https://www.anthropic.com")]
+            buttons: [Self.presenceButton(for: info.agent)]
         )
+    }
+
+    private static func presenceButton(for agent: AgentKind) -> PresenceButton {
+        switch agent {
+        case .codex:
+            return PresenceButton(label: "What is Codex", url: "https://developers.openai.com/codex")
+        case .claude:
+            return PresenceButton(label: "What is Claude Code", url: "https://www.anthropic.com")
+        case .cursor:
+            return PresenceButton(label: "What is Cursor", url: "https://cursor.com")
+        case .grok:
+            return PresenceButton(label: "What is Grok", url: "https://grok.com")
+        }
     }
 
     static func formatTokens(_ count: Int) -> String {

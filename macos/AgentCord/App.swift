@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(usage)
             .environmentObject(cursorUsage)
             .environmentObject(codexUsage)
+            .environmentObject(controller.codexSession)
             .environmentObject(grokUsage)
             .environmentObject(grokSession)
             .environmentObject(anthropicStatus)
@@ -187,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 0, weight: .regular)
         let title = NSMutableAttributedString()
 
-        if settings.showMenuBarStatus, let info = controller.session.current {
+        if settings.showMenuBarStatus, let info = controller.currentSession {
             title.append(NSAttributedString(
                 string: Self.statusText(for: info, settings: settings),
                 attributes: [.font: font]
@@ -462,6 +463,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var usage: ClaudeUsage
     @EnvironmentObject private var cursorUsage: CursorUsage
     @EnvironmentObject private var codexUsage: CodexUsage
+    @EnvironmentObject private var codexSession: CodexSession
     @EnvironmentObject private var grokUsage: GrokUsage
     @EnvironmentObject private var grokSession: GrokSession
     @EnvironmentObject private var anthropicStatus: AnthropicStatus
@@ -496,7 +498,8 @@ struct MenuContentView: View {
         // A fresh cache is still useful while the short-lived app-server probe
         // starts (or if Codex is temporarily unavailable), so do not hide it
         // behind the authentication flag.
-        case .codex: return codexUsage.isAuthenticated || codexUsage.current != nil
+        case .codex:
+            return codexUsage.isAuthenticated || codexUsage.current != nil || codexSession.isInstalled
         case .grok: return grokUsage.isAuthenticated || grokSession.isAuthenticated
         }
     }
@@ -509,7 +512,8 @@ struct MenuContentView: View {
     private var selectedSession: SessionInfo? {
         switch selectedAgent {
         case .claude: return controller.session.current
-        case .cursor, .codex: return nil
+        case .cursor: return nil
+        case .codex: return codexSession.current
         case .grok: return grokSession.current
         }
     }
@@ -519,7 +523,8 @@ struct MenuContentView: View {
     private func isAgentActive(_ agent: AgentKind) -> Bool {
         switch agent {
         case .claude: return controller.session.current != nil
-        case .cursor, .codex: return false
+        case .cursor: return false
+        case .codex: return codexSession.current != nil
         case .grok: return grokSession.current != nil
         }
     }
@@ -817,10 +822,7 @@ struct MenuContentView: View {
     private var activeSessionCard: some View {
         let session = selectedSession
         let hasSession = session != nil
-        // Discord presence is still Claude-only; Grok sessions show as active
-        // in the popover without claiming they're on Discord unless Claude is
-        // the selected agent and presence is on.
-        let sharing = hasSession && settings.presenceEnabled && selectedAgent == .claude
+        let sharing = hasSession && settings.presenceEnabled && controller.activeAgent == selectedAgent
         let active = hasSession
 
         return VStack(alignment: .leading, spacing: 9) {
@@ -910,10 +912,11 @@ struct MenuContentView: View {
 
     private func broadcastText(hasSession: Bool, presenceOn: Bool, sharing: Bool) -> String {
         if !presenceOn { return "Presence is off" }
-        if selectedAgent != .claude {
-            return hasSession ? "Active — Discord still uses Claude" : "Waiting for a session"
+        if sharing { return "Sharing to Discord as your status" }
+        if hasSession, let active = controller.activeAgent {
+            return "Active — Discord is sharing \(active.displayName)"
         }
-        return sharing ? "Sharing to Discord as your status" : "Waiting for a session"
+        return "Waiting for a session"
     }
 
     // MARK: Usage card

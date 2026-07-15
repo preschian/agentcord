@@ -200,17 +200,34 @@ final class ClaudeUsage: ObservableObject {
 
     // MARK: Credentials
 
-    /// Prefer the on-disk Claude Code credentials file (no keychain prompt),
-    /// then fall back to the login-keychain item Claude Code also maintains.
+    /// A credential we can try, wherever it was stored. `expiresAt` is in
+    /// milliseconds since 1970 (Claude Code's own format); 0 means unknown.
+    private typealias Credential = (token: String, expiresAt: Double)
+
+    /// Claude Code rotates its OAuth token in place, but the credentials file
+    /// and the keychain items are not always equally fresh — after a refresh,
+    /// one of them can hold a token that is already expired. The usage endpoint
+    /// answers an expired token with 429 (not 401), which also trips our
+    /// rate-limit cooldown and leaves the readout frozen on the disk cache. So:
+    /// gather every candidate, skip expired ones, and use whichever expires
+    /// latest.
     private static func readAccessToken() -> String? {
-        if let token = readAccessTokenFromCredentialsFile() {
-            return token
+        var candidates: [Credential] = []
+        if let file = credentialsFileCandidate() {
+            candidates.append(file)
         }
-        return readAccessTokenFromKeychain()
+        if let keychain = keychainCandidate() {
+            candidates.append(keychain)
+        }
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        // Small grace so a token about to lapse mid-request doesn't get used.
+        let usable = candidates.filter { $0.expiresAt == 0 || $0.expiresAt > nowMs + 30_000 }
+        let pool = usable.isEmpty ? candidates : usable
+        return pool.max(by: { $0.expiresAt < $1.expiresAt })?.token
     }
 
     /// `~/.claude/.credentials.json` — same source Claude Code itself writes.
-    private static func readAccessTokenFromCredentialsFile() -> String? {
+    private static func credentialsFileCandidate() -> Credential? {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/.credentials.json")
         guard let data = try? Data(contentsOf: url),
@@ -219,7 +236,7 @@ final class ClaudeUsage: ObservableObject {
               let token = oauth["accessToken"] as? String, !token.isEmpty else {
             return nil
         }
-        return token
+        return (token, oauth["expiresAt"] as? Double ?? 0)
     }
 
     /// Reads Claude Code's OAuth access token from the login keychain without
@@ -239,8 +256,8 @@ final class ClaudeUsage: ObservableObject {
     /// Newer Claude Code versions store the item under a suffixed service name
     /// and may keep several entries, so we scan every `Claude Code-credentials*`
     /// service and return the token that expires latest. Any failure yields nil.
-    private static func readAccessTokenFromKeychain() -> String? {
-        var best: (token: String, expiresAt: Double)?
+    private static func keychainCandidate() -> Credential? {
+        var best: Credential?
         for (service, account) in discoverCredentialServices() {
             guard let oauth = readOAuthViaSecurityCLI(service: service, account: account),
                   let token = oauth["accessToken"] as? String, !token.isEmpty else {
@@ -251,7 +268,7 @@ final class ClaudeUsage: ObservableObject {
                 best = (token, expiresAt)
             }
         }
-        return best?.token
+        return best
     }
 
     /// Enumerate the keychain for every generic-password item whose service name

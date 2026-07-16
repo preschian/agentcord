@@ -41,10 +41,6 @@ final class GrokUsage: ObservableObject {
 
     /// Must match Grok CLI / Orca: credits format returns `creditUsagePercent`.
     private static let billingURL = URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")!
-
-    /// Unified-billing accounts answer `format=credits` with no usage numbers
-    /// at all; the plain billing document carries `monthlyLimit`/`used` instead.
-    private static let fallbackBillingURL = URL(string: "https://cli-chat-proxy.grok.com/v1/billing")!
     private static let cliAuthHeader = "xai-grok-cli"
 
     private static let cacheURL: URL = {
@@ -104,15 +100,15 @@ final class GrokUsage: ObservableObject {
             return
         }
         publishAuth(true)
-        requestBilling(url: Self.billingURL, allowRefresh: true)
+        requestBilling(allowRefresh: true)
     }
 
-    private func requestBilling(url: URL, allowRefresh: Bool) {
+    private func requestBilling(allowRefresh: Bool) {
         guard let access = cachedAccessToken, !access.isEmpty else {
             if allowRefresh {
                 refreshAccessToken { [weak self] ok in
                     guard let self else { return }
-                    if ok { self.requestBilling(url: url, allowRefresh: false) }
+                    if ok { self.requestBilling(allowRefresh: false) }
                     else { self.handleFailure() }
                 }
             } else {
@@ -121,7 +117,7 @@ final class GrokUsage: ObservableObject {
             return
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: Self.billingURL)
         request.httpMethod = "GET"
         request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -138,24 +134,15 @@ final class GrokUsage: ObservableObject {
                 if status == 401, allowRefresh {
                     self.refreshAccessToken { [weak self] ok in
                         guard let self else { return }
-                        if ok { self.requestBilling(url: url, allowRefresh: false) }
+                        if ok { self.requestBilling(allowRefresh: false) }
                         else { self.handleFailure() }
                     }
                     return
                 }
                 guard status == 200, let data,
-                      let decoded = try? JSONDecoder().decode(BillingResponse.self, from: data) else {
+                      let decoded = try? JSONDecoder().decode(BillingResponse.self, from: data),
+                      let info = decoded.toUsageInfo() else {
                     self.handleFailure()
-                    return
-                }
-                guard let info = decoded.toUsageInfo() else {
-                    // A 200 with no usage numbers means a unified-billing
-                    // account: retry once against the plain billing document.
-                    if url != Self.fallbackBillingURL {
-                        self.requestBilling(url: Self.fallbackBillingURL, allowRefresh: false)
-                    } else {
-                        self.handleFailure()
-                    }
                     return
                 }
                 self.lastSuccess = Date()
@@ -323,14 +310,10 @@ final class GrokUsage: ObservableObject {
 
 // MARK: - Models
 
-/// Grok subscription usage (CLI / SuperGrok billing).
+/// Grok weekly subscription credit usage (CLI / SuperGrok billing).
 struct GrokUsageInfo: Equatable, Codable {
-    /// Primary usage window — weekly included credits (`creditUsagePercent`),
-    /// or the monthly included allowance on unified-billing accounts.
+    /// Weekly included credits window (`creditUsagePercent`).
     var weekly: UsageInfo.Window
-    /// Row label for the primary window when it is not the default weekly
-    /// credits, e.g. "Monthly usage". Nil means "Weekly credits".
-    var primaryLabel: String?
     /// On-demand window when a cap is set.
     var onDemand: UsageInfo.Window?
     var billingPeriodStart: Date?
@@ -357,9 +340,6 @@ private struct BillingResponse: Decodable {
         let onDemandUsed: MoneyVal?
         let billingPeriodStart: String?
         let billingPeriodEnd: String?
-        /// Unified-billing shape (plain `/v1/billing`): monthly allowance.
-        let monthlyLimit: MoneyVal?
-        let used: MoneyVal?
     }
 
     let config: Config?
@@ -368,25 +348,18 @@ private struct BillingResponse: Decodable {
 
     func toUsageInfo() -> GrokUsageInfo? {
         let cfg = config
-        // Weekly credits shape first; unified-billing accounts report a
-        // monthly allowance (`used` / `monthlyLimit`) instead.
-        let percentRaw: Double?
-        let primaryLabel: String?
-        if let credits = cfg?.creditUsagePercent ?? creditUsagePercent {
-            percentRaw = credits
-            primaryLabel = nil
-        } else if let limit = cfg?.monthlyLimit?.val, limit > 0 {
-            percentRaw = (cfg?.used?.val ?? 0) / limit * 100
-            primaryLabel = "Monthly usage"
-        } else {
-            percentRaw = nil
-            primaryLabel = nil
-        }
+        let periodEnd = Self.parseISO(cfg?.currentPeriod?.end ?? cfg?.billingPeriodEnd)
+        let periodStart = Self.parseISO(cfg?.currentPeriod?.start ?? cfg?.billingPeriodStart)
+
+        // `creditUsagePercent` is present with the real figure on SuperGrok
+        // weekly accounts. Unified-billing accounts omit it entirely but still
+        // report the weekly `currentPeriod` — the Grok CLI shows that as 0%
+        // used, so treat an absent percent (when we have a period) as zero.
+        let percentRaw = cfg?.creditUsagePercent ?? creditUsagePercent
+            ?? (periodEnd != nil ? 0 : nil)
         guard let percentRaw, percentRaw.isFinite else { return nil }
 
         let percent = min(100, max(0, Int(percentRaw.rounded())))
-        let periodEnd = Self.parseISO(cfg?.currentPeriod?.end ?? cfg?.billingPeriodEnd)
-        let periodStart = Self.parseISO(cfg?.currentPeriod?.start ?? cfg?.billingPeriodStart)
 
         let weekly = UsageInfo.Window(
             percent: percent,
@@ -407,7 +380,6 @@ private struct BillingResponse: Decodable {
 
         return GrokUsageInfo(
             weekly: weekly,
-            primaryLabel: primaryLabel,
             onDemand: onDemand,
             billingPeriodStart: periodStart,
             billingPeriodEnd: periodEnd

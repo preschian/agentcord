@@ -24,7 +24,10 @@ final class GrokUsage: ObservableObject {
 
     var pollInterval: TimeInterval = 300
     var minFetchInterval: TimeInterval = 60
-    var maxStaleness: TimeInterval = 1800
+    /// How long a disk-cached snapshot may still be shown after the last
+    /// successful fetch. Generous so an idle stretch or a relaunch shows the
+    /// last known numbers instead of "Waiting for Grok usage…".
+    var maxStaleness: TimeInterval = 86_400 // 24h
 
     private var lastSuccess: Date = .distantPast
     private var lastAttempt: Date = .distantPast

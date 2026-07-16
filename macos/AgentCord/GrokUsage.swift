@@ -351,12 +351,18 @@ private struct BillingResponse: Decodable {
 
     func toUsageInfo() -> GrokUsageInfo? {
         let cfg = config
+        let periodEnd = Self.parseISO(cfg?.currentPeriod?.end ?? cfg?.billingPeriodEnd)
+        let periodStart = Self.parseISO(cfg?.currentPeriod?.start ?? cfg?.billingPeriodStart)
+
+        // `creditUsagePercent` is present with the real figure on SuperGrok
+        // weekly accounts. Unified-billing accounts omit it entirely but still
+        // report the weekly `currentPeriod` — the Grok CLI shows that as 0%
+        // used, so treat an absent percent (when we have a period) as zero.
         let percentRaw = cfg?.creditUsagePercent ?? creditUsagePercent
+            ?? (periodEnd != nil ? 0 : nil)
         guard let percentRaw, percentRaw.isFinite else { return nil }
 
         let percent = min(100, max(0, Int(percentRaw.rounded())))
-        let periodEnd = Self.parseISO(cfg?.currentPeriod?.end ?? cfg?.billingPeriodEnd)
-        let periodStart = Self.parseISO(cfg?.currentPeriod?.start ?? cfg?.billingPeriodStart)
 
         let weekly = UsageInfo.Window(
             percent: percent,

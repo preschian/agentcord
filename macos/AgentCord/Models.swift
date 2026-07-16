@@ -250,15 +250,19 @@ struct UsageInfo: Equatable, Codable {
     /// Per-model weekly limits, in the order the API returned them. Empty when
     /// the plan has none.
     var modelWeekly: [ModelWindow] = []
+    /// Display-ready plan label from the OAuth profile ("Pro", "Max", …).
+    /// Nil until the profile has been fetched at least once.
+    var planName: String?
 
     enum CodingKeys: String, CodingKey {
-        case fiveHour, weekly, modelWeekly
+        case fiveHour, weekly, modelWeekly, planName
     }
 
-    init(fiveHour: Window, weekly: Window, modelWeekly: [ModelWindow] = []) {
+    init(fiveHour: Window, weekly: Window, modelWeekly: [ModelWindow] = [], planName: String? = nil) {
         self.fiveHour = fiveHour
         self.weekly = weekly
         self.modelWeekly = modelWeekly
+        self.planName = planName
     }
 
     init(from decoder: Decoder) throws {
@@ -267,5 +271,6 @@ struct UsageInfo: Equatable, Codable {
         weekly = try c.decode(Window.self, forKey: .weekly)
         // Older caches omit this key; default rather than failing the whole restore.
         modelWeekly = try c.decodeIfPresent([ModelWindow].self, forKey: .modelWeekly) ?? []
+        planName = try c.decodeIfPresent(String.self, forKey: .planName)
     }
 }

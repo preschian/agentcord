@@ -1036,7 +1036,7 @@ struct MenuContentView: View {
 
     private var claudeUsageCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            usageCardHeader()
+            usageCardHeader(plan: usage.current?.planName)
             if usage.current == nil {
                 Text("Waiting for Claude usage…")
                     .font(.system(size: 12.5))

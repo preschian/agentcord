@@ -1147,7 +1147,7 @@ struct MenuContentView: View {
             usageCardHeader()
 
             if let info = grokUsage.current {
-                usageRow("Weekly credits", info.weekly, accent: agentAccent(.grok))
+                usageRow(info.primaryLabel ?? "Weekly credits", info.weekly, accent: agentAccent(.grok))
                 if let onDemand = info.onDemand {
                     usageRow("On-demand", onDemand, accent: agentAccent(.grok))
                 }

@@ -40,6 +40,11 @@ final class ClaudeUsage: ObservableObject {
     /// "Waiting for Claude usage…".
     var maxStaleness: TimeInterval = 86_400 // 24h
 
+    /// Queue-side copy of the last published snapshot, so the profile fetch can
+    /// amend it without reading the main-thread `current`. Only touched on
+    /// `queue` (and in `init`, before the queue is in use).
+    private var lastInfo: UsageInfo?
+
     /// When the last successful fetch landed. Only touched on `queue`.
     private var lastSuccess: Date = .distantPast
 
@@ -54,6 +59,20 @@ final class ClaudeUsage: ObservableObject {
     private var timer: DispatchSourceTimer?
 
     private static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+
+    /// OAuth profile endpoint — the authoritative source for the subscription
+    /// plan. The `subscriptionType` in Claude Code's credentials goes stale
+    /// after an up/downgrade (it only refreshes on a full re-login), so we ask
+    /// the server instead.
+    private static let profileEndpoint = URL(string: "https://api.anthropic.com/api/oauth/profile")!
+
+    /// Last known plan label ("Pro", "Max", …). Only touched on `queue`.
+    private var planName: String?
+
+    /// When the plan was last fetched. Plans change rarely, so we refresh at
+    /// most once per `planRefreshInterval`. Only touched on `queue`.
+    private var planFetchedAt: Date = .distantPast
+    var planRefreshInterval: TimeInterval = 86_400 // 24h
 
     /// Disk cache so a relaunch (or a stretch of 429s) still shows the last
     /// good numbers instead of blank "Waiting…" rows.
@@ -80,7 +99,9 @@ final class ClaudeUsage: ObservableObject {
         // the popover isn't empty while we wait (or while the API rate-limits).
         if let cached = Self.loadCache(), Date().timeIntervalSince(cached.fetchedAt) <= maxStaleness {
             current = cached.info
+            lastInfo = cached.info
             lastSuccess = cached.fetchedAt
+            planName = cached.info.planName
         }
     }
 
@@ -126,12 +147,9 @@ final class ClaudeUsage: ObservableObject {
             return
         }
 
-        var request = URLRequest(url: Self.endpoint)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        fetchPlanIfStale(token: token)
+
+        let request = Self.makeRequest(url: Self.endpoint, token: token)
 
         urlSession.dataTask(with: request) { [weak self] data, response, _ in
             guard let self else { return }
@@ -149,13 +167,52 @@ final class ClaudeUsage: ObservableObject {
                     self.handleFailure()
                     return
                 }
-                let info = decoded.toUsageInfo()
+                var info = decoded.toUsageInfo()
+                info.planName = self.planName
                 self.lastSuccess = Date()
                 self.earliestNextFetch = .distantPast
                 Self.saveCache(info, fetchedAt: self.lastSuccess)
                 self.publish(info)
             }
         }.resume()
+    }
+
+    /// Refreshes the plan label from the OAuth profile endpoint, at most once
+    /// per `planRefreshInterval`. Best-effort: any failure keeps the last known
+    /// plan (possibly restored from the disk cache). Runs on `queue`.
+    private func fetchPlanIfStale(token: String) {
+        guard Date().timeIntervalSince(planFetchedAt) >= planRefreshInterval else { return }
+        planFetchedAt = Date() // Even on failure, don't retry before the next interval.
+
+        let request = Self.makeRequest(url: Self.profileEndpoint, token: token)
+        urlSession.dataTask(with: request) { [weak self] data, response, _ in
+            guard let self else { return }
+            self.queue.async {
+                guard (response as? HTTPURLResponse)?.statusCode == 200, let data,
+                      let decoded = try? JSONDecoder().decode(ProfileResponse.self, from: data),
+                      let plan = decoded.planLabel else {
+                    return
+                }
+                self.planName = plan
+                // Re-publish the current snapshot with the (possibly new) plan
+                // so the popover doesn't wait for the next usage poll.
+                if var info = self.lastInfo, info.planName != plan {
+                    info.planName = plan
+                    Self.saveCache(info, fetchedAt: self.lastSuccess)
+                    self.publish(info)
+                }
+            }
+        }.resume()
+    }
+
+    private static func makeRequest(url: URL, token: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return request
     }
 
     /// A failed fetch keeps the last good snapshot until it ages past
@@ -170,6 +227,7 @@ final class ClaudeUsage: ObservableObject {
     }
 
     private func publish(_ info: UsageInfo?) {
+        lastInfo = info
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.current != info { self.current = info }
@@ -326,6 +384,36 @@ final class ClaudeUsage: ObservableObject {
 }
 
 // MARK: - Wire format
+
+/// The subset of the `/api/oauth/profile` response we care about: just enough
+/// to name the subscription plan. Every field is optional — a missing or
+/// renamed key silently yields no plan rather than failing the fetch.
+private struct ProfileResponse: Decodable {
+
+    struct Account: Decodable {
+        let has_claude_max: Bool?
+        let has_claude_pro: Bool?
+    }
+
+    struct Organization: Decodable {
+        let organization_type: String?
+    }
+
+    let account: Account?
+    let organization: Organization?
+
+    /// Display label, e.g. "Pro" from "claude_pro". Prefers the organization
+    /// type; falls back to the account's plan booleans.
+    var planLabel: String? {
+        if let type = organization?.organization_type, !type.isEmpty {
+            let stripped = type.hasPrefix("claude_") ? String(type.dropFirst("claude_".count)) : type
+            return stripped.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+        if account?.has_claude_max == true { return "Max" }
+        if account?.has_claude_pro == true { return "Pro" }
+        return nil
+    }
+}
 
 /// The subset of the `/api/oauth/usage` response we care about. The endpoint is
 /// undocumented, so every field is optional and decoding never throws on a

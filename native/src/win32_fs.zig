@@ -209,6 +209,16 @@ pub fn userProfile(buf: []u8) ?[]const u8 {
     return buf[0..utf8_len];
 }
 
+pub fn appData(buf: []u8) ?[]const u8 {
+    if (builtin.os.tag != .windows) return null;
+    const name = std.unicode.utf8ToUtf16LeStringLiteral("APPDATA");
+    var wide: [260]u16 = undefined;
+    const n = GetEnvironmentVariableW(name, &wide, wide.len);
+    if (n == 0 or n >= wide.len) return null;
+    const utf8_len = std.unicode.utf16LeToUtf8(buf, wide[0..n]) catch return null;
+    return buf[0..utf8_len];
+}
+
 pub fn readFile(path: []const u8, buf: []u8) ?[]const u8 {
     if (builtin.os.tag != .windows) return null;
     var wide: [520]u16 = undefined;

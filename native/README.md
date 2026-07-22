@@ -38,7 +38,12 @@ This lives beside the production C# app in [`../windows`](../windows). The C# bu
 - Grok | Cursor switcher; Discord `logo-cursor` when Cursor wins
 - Popover-style window (header, session card, usage bars, Settings)
 
-Not yet: Cursor usage API, Claude/Codex, settings persistence.
+## Phase 6 — Cursor usage
+
+- Token from `%APPDATA%\Cursor\auth.json` or `state.vscdb` (`cursorAuth/accessToken`)
+- `GetCurrentPeriodUsage` → included / auto / API / on-demand bars
+
+Not yet: Claude/Codex, settings persistence.
 
 ## Prerequisites
 
@@ -79,6 +84,7 @@ native build
 | `src/discord_ipc.zig` | Windows named-pipe Discord RPC client |
 | `src/grok_session.zig` | Live Grok session scan (`active_sessions.json`) |
 | `src/cursor_session.zig` | Live Cursor transcript scan (`~/.cursor`) |
+| `src/cursor_usage.zig` | Cursor billing period usage |
 | `src/grok_usage.zig` | Auth + billing parse / header budget |
 | `src/json_lite.zig` | Shared JSON scrapers |
 | `src/win32_fs.zig` | Shared Win32 file / env / directory helpers |

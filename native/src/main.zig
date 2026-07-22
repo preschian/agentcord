@@ -7,6 +7,7 @@ const discord_ipc = @import("discord_ipc.zig");
 const grok_session = @import("grok_session.zig");
 const cursor_session = @import("cursor_session.zig");
 const grok_usage = @import("grok_usage.zig");
+const cursor_usage = @import("cursor_usage.zig");
 const presence = @import("presence.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
@@ -41,6 +42,7 @@ const EffectKeys = struct {
     const usage_timer: u64 = 2;
     const usage_billing: u64 = 10;
     const usage_refresh: u64 = 11;
+    const cursor_usage: u64 = 20;
 };
 
 const UsagePhase = enum { idle, fetching, refreshing };
@@ -59,7 +61,9 @@ pub const AgentKind = enum {
 
 var g_discord: discord_ipc.Client = .{};
 var g_auth: grok_usage.Auth = .{};
+var g_cursor_auth: cursor_usage.Auth = .{};
 var g_usage_phase: UsagePhase = .idle;
+var g_cursor_usage_busy: bool = false;
 /// One refresh attempt per billing cycle / manual Refresh (reset on tick / button).
 var g_usage_allow_refresh: bool = true;
 
@@ -93,8 +97,9 @@ pub const Msg = union(enum) {
     usage_tick: native_sdk.EffectTimer,
     usage_fetched: native_sdk.EffectResponse,
     usage_refreshed: native_sdk.EffectResponse,
+    cursor_usage_fetched: native_sdk.EffectResponse,
 
-    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "show_window", "quit" };
+    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "cursor_usage_fetched", "show_window", "quit" };
 };
 
 pub const Model = struct {
@@ -112,6 +117,10 @@ pub const Model = struct {
         "status_pill_line",     "status_pill_len",       "settings_summary_line",
         "settings_summary_len", "usage_weekly_line",     "usage_weekly_len",
         "usage_ondemand_line",  "usage_status_line",     "usage_status_len",
+        "cursor_included_line", "cursor_included_len",   "cursor_auto_line",
+        "cursor_auto_len",      "cursor_api_line",       "cursor_api_len",
+        "cursor_ondemand_line", "cursor_ondemand_len",   "cursor_status_line",
+        "cursor_status_len",    "cursor_plan_line",      "cursor_plan_len",
         "presence_set",         "status_text",           "conn_label",
         "presence_label",       "grok_status_label",
     };
@@ -167,6 +176,24 @@ pub const Model = struct {
     usage_status_len: usize = 0,
     usage_weekly_frac: f32 = 0,
     usage_ondemand_frac: f32 = 0,
+
+    cursor_usage_has_data: bool = false,
+    cursor_included_line: [80]u8 = .{0} ** 80,
+    cursor_included_len: usize = 0,
+    cursor_included_frac: f32 = 0,
+    cursor_auto_line: [80]u8 = .{0} ** 80,
+    cursor_auto_len: usize = 0,
+    cursor_auto_frac: f32 = 0,
+    cursor_api_line: [80]u8 = .{0} ** 80,
+    cursor_api_len: usize = 0,
+    cursor_api_frac: f32 = 0,
+    cursor_ondemand_line: [80]u8 = .{0} ** 80,
+    cursor_ondemand_len: usize = 0,
+    cursor_ondemand_frac: f32 = 0,
+    cursor_status_line: [96]u8 = .{0} ** 96,
+    cursor_status_len: usize = 0,
+    cursor_plan_line: [40]u8 = .{0} ** 40,
+    cursor_plan_len: usize = 0,
 
     pub fn presence_set(model: *const Model) bool {
         return model.presence_mode != .cleared;
@@ -227,6 +254,24 @@ pub const Model = struct {
     }
     pub fn usage_status_text(model: *const Model) []const u8 {
         return model.usage_status_line[0..model.usage_status_len];
+    }
+    pub fn cursor_included_text(model: *const Model) []const u8 {
+        return model.cursor_included_line[0..model.cursor_included_len];
+    }
+    pub fn cursor_auto_text(model: *const Model) []const u8 {
+        return model.cursor_auto_line[0..model.cursor_auto_len];
+    }
+    pub fn cursor_api_text(model: *const Model) []const u8 {
+        return model.cursor_api_line[0..model.cursor_api_len];
+    }
+    pub fn cursor_ondemand_text(model: *const Model) []const u8 {
+        return model.cursor_ondemand_line[0..model.cursor_ondemand_len];
+    }
+    pub fn cursor_status_text(model: *const Model) []const u8 {
+        return model.cursor_status_line[0..model.cursor_status_len];
+    }
+    pub fn cursor_plan_text(model: *const Model) []const u8 {
+        return model.cursor_plan_line[0..model.cursor_plan_len];
     }
 
     pub fn conn_label(model: *const Model) []const u8 {
@@ -310,7 +355,7 @@ pub const Model = struct {
     ) void {
         model.grok_active = grok != null;
         model.cursor_active = cursor != null;
-        model.cursor_installed = cursor_session.isInstalled();
+        model.cursor_installed = cursor_session.isInstalled() or cursor_usage.loadAuth(&g_cursor_auth);
         model.grok_linked = g_auth.hasAccess() or g_auth.hasRefresh() or grok != null;
 
         const linked = switch (model.selected_agent) {
@@ -321,7 +366,7 @@ pub const Model = struct {
 
         const sub: []const u8 = switch (model.selected_agent) {
             .grok => "Sign in with grok login to track usage, sessions and status here.",
-            .cursor => "Install Cursor so AgentCord can read local agent transcripts.",
+            .cursor => "Install Cursor desktop and sign in to track sessions and usage here.",
         };
         setBuf(&model.connect_subtitle_line, &model.connect_subtitle_len, sub);
 
@@ -409,6 +454,64 @@ pub const Model = struct {
     fn setUsageStatus(model: *Model, text: []const u8) void {
         setBuf(&model.usage_status_line, &model.usage_status_len, text);
     }
+
+    fn applyCursorUsage(model: *Model, snap: cursor_usage.Snapshot, now_ms: i64) void {
+        model.cursor_usage_has_data = snap.hasData();
+        var line_buf: [80]u8 = undefined;
+
+        const included = cursor_usage.formatWindowLine(snap.included, now_ms, &line_buf);
+        setBuf(&model.cursor_included_line, &model.cursor_included_len, included);
+        model.cursor_included_frac = cursor_usage.windowFrac(snap.included);
+
+        if (snap.auto.percent >= 0) {
+            const auto = cursor_usage.formatWindowLine(snap.auto, now_ms, &line_buf);
+            setBuf(&model.cursor_auto_line, &model.cursor_auto_len, auto);
+            model.cursor_auto_frac = cursor_usage.windowFrac(snap.auto);
+        } else {
+            model.cursor_auto_len = 0;
+            model.cursor_auto_frac = 0;
+        }
+        if (snap.api.percent >= 0) {
+            const api = cursor_usage.formatWindowLine(snap.api, now_ms, &line_buf);
+            setBuf(&model.cursor_api_line, &model.cursor_api_len, api);
+            model.cursor_api_frac = cursor_usage.windowFrac(snap.api);
+        } else {
+            model.cursor_api_len = 0;
+            model.cursor_api_frac = 0;
+        }
+        if (snap.on_demand.percent >= 0) {
+            const od = cursor_usage.formatWindowLine(snap.on_demand, now_ms, &line_buf);
+            setBuf(&model.cursor_ondemand_line, &model.cursor_ondemand_len, od);
+            model.cursor_ondemand_frac = cursor_usage.windowFrac(snap.on_demand);
+        } else {
+            model.cursor_ondemand_len = 0;
+            model.cursor_ondemand_frac = 0;
+        }
+
+        if (snap.plan_name_len > 0) {
+            setBuf(&model.cursor_plan_line, &model.cursor_plan_len, snap.planName());
+        } else {
+            model.cursor_plan_len = 0;
+        }
+        setBuf(&model.cursor_status_line, &model.cursor_status_len, "Included usage (current billing period)");
+    }
+
+    fn setCursorUsageStatus(model: *Model, text: []const u8) void {
+        setBuf(&model.cursor_status_line, &model.cursor_status_len, text);
+    }
+
+    fn clearCursorUsage(model: *Model) void {
+        model.cursor_usage_has_data = false;
+        model.cursor_included_len = 0;
+        model.cursor_included_frac = 0;
+        model.cursor_auto_len = 0;
+        model.cursor_auto_frac = 0;
+        model.cursor_api_len = 0;
+        model.cursor_api_frac = 0;
+        model.cursor_ondemand_len = 0;
+        model.cursor_ondemand_frac = 0;
+        model.cursor_plan_len = 0;
+    }
 };
 
 pub const Effects = native_sdk.Effects(Msg);
@@ -470,6 +573,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .refresh_usage => {
             g_usage_allow_refresh = true;
             requestBilling(model, fx);
+            requestCursorUsage(model, fx);
         },
         .open_settings => model.show_settings = true,
         .close_settings => model.show_settings = false,
@@ -499,9 +603,11 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             if (timer.outcome != .fired) return;
             g_usage_allow_refresh = true;
             requestBilling(model, fx);
+            requestCursorUsage(model, fx);
         },
         .usage_fetched => |response| handleBillingResponse(model, fx, response),
         .usage_refreshed => |response| handleRefreshResponse(model, fx, response),
+        .cursor_usage_fetched => |response| handleCursorUsageResponse(model, fx, response),
     }
 }
 
@@ -635,6 +741,66 @@ fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
     requestBilling(model, fx);
 }
 
+fn requestCursorUsage(model: *Model, fx: *Effects) void {
+    if (g_cursor_usage_busy) return;
+    if (!cursor_usage.loadAuth(&g_cursor_auth)) {
+        model.clearCursorUsage();
+        model.setCursorUsageStatus("Not signed in — open Cursor desktop and sign in");
+        return;
+    }
+
+    var bearer_buf: [16 + 4096]u8 = undefined;
+    var headers_buf: [4]std.http.Header = undefined;
+    const headers = cursor_usage.buildPeriodHeaders(&g_cursor_auth, &bearer_buf, &headers_buf) orelse {
+        model.setCursorUsageStatus("Access token too large for fetch header budget");
+        return;
+    };
+
+    g_cursor_usage_busy = true;
+    model.setCursorUsageStatus("Fetching Cursor usage…");
+    fx.fetch(.{
+        .key = EffectKeys.cursor_usage,
+        .method = .POST,
+        .url = cursor_usage.period_usage_url,
+        .headers = headers,
+        .body = cursor_usage.period_body,
+        .timeout_ms = 15_000,
+        .on_response = Effects.responseMsg(.cursor_usage_fetched),
+    });
+}
+
+fn handleCursorUsageResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
+    g_cursor_usage_busy = false;
+    switch (response.outcome) {
+        .ok => {
+            if (response.status == 401) {
+                model.clearCursorUsage();
+                model.setCursorUsageStatus("Cursor auth expired — sign in again in Cursor");
+                return;
+            }
+            if (response.status != 200) {
+                var buf: [64]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Cursor usage HTTP {d}", .{response.status}) catch "Cursor usage error";
+                model.setCursorUsageStatus(msg);
+                return;
+            }
+            var body_buf: [32 * 1024]u8 = undefined;
+            const n = @min(response.body.len, body_buf.len);
+            @memcpy(body_buf[0..n], response.body[0..n]);
+            var snap: cursor_usage.Snapshot = .{};
+            if (!cursor_usage.parsePeriodUsage(body_buf[0..n], &snap)) {
+                model.setCursorUsageStatus("Could not parse Cursor usage response");
+                return;
+            }
+            model.applyCursorUsage(snap, fx.wallMs());
+        },
+        .rejected => model.setCursorUsageStatus("Cursor usage fetch rejected (headers over budget)"),
+        .connect_failed, .tls_failed, .protocol_failed => model.setCursorUsageStatus("Network error fetching Cursor usage"),
+        .timed_out => model.setCursorUsageStatus("Cursor usage fetch timed out"),
+        .cancelled => {},
+    }
+}
+
 fn refreshUi(model: *Model, now_ms: i64) void {
     _ = grok_usage.loadAuth(&g_auth);
     const grok = grok_session.scan();
@@ -684,6 +850,7 @@ fn boot(model: *Model, fx: *Effects) void {
     model.setStatus("Disconnected");
     model.setDetail("Starting…");
     model.setUsageStatus("Loading usage…");
+    model.setCursorUsageStatus("Loading Cursor usage…");
     model.refreshChrome();
     fx.startTimer(.{
         .key = EffectKeys.poll_timer,
@@ -702,6 +869,7 @@ fn boot(model: *Model, fx: *Effects) void {
     syncPresence(model, fx.wallMs());
     g_usage_allow_refresh = true;
     requestBilling(model, fx);
+    requestCursorUsage(model, fx);
 }
 
 // ------------------------------------------------------------------- view
@@ -760,6 +928,7 @@ test {
     _ = @import("discord_ipc.zig");
     _ = @import("grok_session.zig");
     _ = @import("cursor_session.zig");
+    _ = @import("cursor_usage.zig");
     _ = @import("grok_usage.zig");
     _ = @import("json_lite.zig");
     _ = @import("presence.zig");

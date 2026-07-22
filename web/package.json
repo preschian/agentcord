@@ -19,7 +19,7 @@
     "astro": "^6.4.7"
   },
   "devDependencies": {
-    "wrangler": "^4.102.0"
+    "wrangler": "^4.113.0"
   },
   "overrides": {
     "vite": "^7"

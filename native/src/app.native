@@ -1,0 +1,72 @@
+<!-- AgentCord native-sdk: Discord presence + Grok session/usage. -->
+<column gap="12" padding="16" background="background">
+  <row gap="8" cross="center" window-drag="true">
+    <text size="heading" grow="1">AgentCord · Grok</text>
+    <badge>{conn_label}</badge>
+  </row>
+
+  <card padding="12" background="surface" radius="md">
+    <column gap="8">
+      <row gap="8" cross="center">
+        <text grow="1" foreground="text_muted">Discord</text>
+        <badge>{presence_label}</badge>
+      </row>
+      <text>{status_text}</text>
+      <text foreground="text_muted" wrap="true">{detail_text}</text>
+      <if test="{error_len > 0}">
+        <text foreground="destructive" wrap="true">{error_text}</text>
+      </if>
+    </column>
+  </card>
+
+  <card padding="12" background="surface" radius="md">
+    <column gap="8">
+      <row gap="8" cross="center">
+        <text grow="1" foreground="text_muted">Grok session</text>
+        <badge>{grok_status_label}</badge>
+      </row>
+      <if test="{grok_active}">
+        <text>{grok_model_text}</text>
+        <text foreground="text_muted">Working on: {grok_project_text}</text>
+        <if test="{grok_context_len > 0}">
+          <text>{grok_context_text}</text>
+        </if>
+        <text foreground="text_muted">{grok_tokens_text}</text>
+        <text foreground="text_muted">{grok_session_text}</text>
+      </if>
+      <else>
+        <text foreground="text_muted" wrap="true">No live Grok CLI process. Open a Grok session and it will appear here.</text>
+      </else>
+    </column>
+  </card>
+
+  <card padding="12" background="surface" radius="md">
+    <column gap="8">
+      <row gap="8" cross="center">
+        <text grow="1" foreground="text_muted">Usage</text>
+        <button size="sm" variant="ghost" on-press="refresh_usage">Refresh</button>
+      </row>
+      <text foreground="text_muted" wrap="true">{usage_status_text}</text>
+      <if test="{usage_has_data}">
+        <text>Weekly credits · {usage_weekly_text}</text>
+        <if test="{usage_ondemand_len > 0}">
+          <text foreground="text_muted">{usage_ondemand_text}</text>
+        </if>
+      </if>
+    </column>
+  </card>
+
+  <column gap="8">
+    <switch checked="{auto_presence}" on-toggle="toggle_auto">Auto presence from Grok</switch>
+    <row gap="8">
+      <button variant="primary" grow="1" on-press="connect">Connect</button>
+      <button variant="secondary" grow="1" on-press="disconnect">Disconnect</button>
+    </row>
+    <row gap="8">
+      <button variant="ghost" grow="1" on-press="set_test_presence">Set test presence</button>
+      <button variant="ghost" grow="1" on-press="clear_presence">Clear presence</button>
+    </row>
+  </column>
+
+  <status-bar>tray · usage from ~/.grok/auth.json + billing API</status-bar>
+</column>

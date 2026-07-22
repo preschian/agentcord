@@ -33,6 +33,8 @@ pub const SessionInfo = struct {
     model: [64]u8 = .{0} ** 64,
     model_len: usize = 0,
     start_epoch_ms: i64 = 0,
+    /// Best-effort last activity (summary/signals mtime, else start). Used for multi-agent winner.
+    activity_ms: i64 = 0,
     total_tokens: i64 = 0,
     /// Context window fill percent from signals.json (`contextWindowUsage`).
     context_percent: i64 = -1,
@@ -56,9 +58,7 @@ pub const SessionInfo = struct {
     }
 
     pub fn setField(buf: []u8, len: *usize, value: []const u8) void {
-        const n = @min(value.len, buf.len);
-        @memcpy(buf[0..n], value[0..n]);
-        len.* = n;
+        win32_fs.copyBounded(buf, len, value);
     }
 };
 
@@ -92,10 +92,14 @@ pub fn scan() ?SessionInfo {
 
         if (json_lite.extractString(obj, "opened_at")) |opened| {
             info.start_epoch_ms = parseIsoToEpochMs(opened) orelse 0;
+            info.activity_ms = info.start_epoch_ms;
         }
 
         var summary_path_buf: [700]u8 = undefined;
         if (summaryPath(home, cwd, sid, &summary_path_buf)) |summary_path| {
+            if (win32_fs.fileMtimeMs(summary_path)) |mtime| {
+                if (mtime > info.activity_ms) info.activity_ms = mtime;
+            }
             var summary_buf: [64 * 1024]u8 = undefined;
             if (win32_fs.readFile(summary_path, &summary_buf)) |summary| {
                 if (json_lite.extractString(summary, "current_model_id")) |model_raw| {
@@ -109,6 +113,9 @@ pub fn scan() ?SessionInfo {
             }
             var signals_path_buf: [700]u8 = undefined;
             if (siblingPath(summary_path, "signals.json", &signals_path_buf)) |signals_path| {
+                if (win32_fs.fileMtimeMs(signals_path)) |mtime| {
+                    if (mtime > info.activity_ms) info.activity_ms = mtime;
+                }
                 var signals_buf: [64 * 1024]u8 = undefined;
                 if (win32_fs.readFile(signals_path, &signals_buf)) |signals| {
                     if (json_lite.extractI64(signals, "contextTokensUsed")) |tok| {
@@ -134,7 +141,7 @@ pub fn scan() ?SessionInfo {
         }
 
         if (info.project_len == 0) {
-            const base = basename(cwd);
+            const base = win32_fs.basename(cwd);
             SessionInfo.setField(&info.project_name, &info.project_len, if (base.len > 0) base else "Grok");
         }
         if (info.model_len == 0) {
@@ -196,17 +203,6 @@ fn siblingPath(path: []const u8, name: []const u8, buf: []u8) ?[]const u8 {
     const slash = std.mem.lastIndexOfAny(u8, path, "\\/") orelse return null;
     const dir = path[0..slash];
     return std.fmt.bufPrint(buf, "{s}\\{s}", .{ dir, name }) catch null;
-}
-
-fn basename(path: []const u8) []const u8 {
-    if (path.len == 0) return path;
-    var end = path.len;
-    while (end > 0 and (path[end - 1] == '\\' or path[end - 1] == '/')) end -= 1;
-    if (end == 0) return path;
-    if (std.mem.lastIndexOfAny(u8, path[0..end], "\\/")) |idx| {
-        return path[idx + 1 .. end];
-    }
-    return path[0..end];
 }
 
 fn extractFirstGitRemoteRepo(summary: []const u8) ?[]const u8 {

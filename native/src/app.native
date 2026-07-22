@@ -1,72 +1,182 @@
-<!-- AgentCord native-sdk: Discord presence + Grok session/usage. -->
-<column gap="12" padding="16" background="background">
-  <row gap="8" cross="center" window-drag="true">
-    <text size="heading" grow="1">AgentCord · Grok</text>
-    <badge>{conn_label}</badge>
-  </row>
+<!-- AgentCord native-sdk: macOS-like popover UI (Grok + Cursor). -->
+<column gap="0" background="background" grow="1">
+  <scroll grow="1">
+    <column gap="11" padding="13">
 
-  <card padding="12" background="surface" radius="md">
-    <column gap="8">
-      <row gap="8" cross="center">
-        <text grow="1" foreground="text_muted">Discord</text>
-        <badge>{presence_label}</badge>
-      </row>
-      <text>{status_text}</text>
-      <text foreground="text_muted" wrap="true">{detail_text}</text>
-      <if test="{error_len > 0}">
-        <text foreground="destructive" wrap="true">{error_text}</text>
-      </if>
-    </column>
-  </card>
+      <if test="{show_settings}">
+        <column gap="11">
+          <row gap="9" cross="center" window-drag="true">
+            <button size="sm" variant="ghost" icon="chevron-left" label="Back" on-press="close_settings" />
+            <text grow="1">Settings</text>
+          </row>
 
-  <card padding="12" background="surface" radius="md">
-    <column gap="8">
-      <row gap="8" cross="center">
-        <text grow="1" foreground="text_muted">Grok session</text>
-        <badge>{grok_status_label}</badge>
-      </row>
-      <if test="{grok_active}">
-        <text>{grok_model_text}</text>
-        <text foreground="text_muted">Working on: {grok_project_text}</text>
-        <if test="{grok_context_len > 0}">
-          <text>{grok_context_text}</text>
-        </if>
-        <text foreground="text_muted">{grok_tokens_text}</text>
-        <text foreground="text_muted">{grok_session_text}</text>
+          <column gap="6">
+            <text foreground="text_muted">PRESENCE</text>
+            <card padding="12" background="surface" radius="md">
+              <row gap="8" cross="center">
+                <text grow="1">Enable presence</text>
+                <switch checked="{presence_enabled}" on-toggle="toggle_presence" label="Enable presence" />
+              </row>
+            </card>
+          </column>
+
+          <column gap="6">
+            <text foreground="text_muted">DEVELOPER</text>
+            <card padding="12" background="surface" radius="md">
+              <column gap="8">
+                <row gap="8">
+                  <button size="sm" variant="secondary" grow="1" on-press="connect">Connect</button>
+                  <button size="sm" variant="secondary" grow="1" on-press="disconnect">Disconnect</button>
+                </row>
+                <row gap="8">
+                  <button size="sm" variant="ghost" grow="1" on-press="set_test_presence">Test presence</button>
+                  <button size="sm" variant="ghost" grow="1" on-press="clear_presence">Clear</button>
+                </row>
+                <text foreground="text_muted" wrap="true">{detail_text}</text>
+              </column>
+            </card>
+          </column>
+        </column>
       </if>
       <else>
-        <text foreground="text_muted" wrap="true">No live Grok CLI process. Open a Grok session and it will appear here.</text>
+        <column gap="11">
+          <!-- Header -->
+          <row gap="9" cross="center" window-drag="true">
+            <card width="26" height="26" radius="md" background="surface" padding="0">
+              <column main="center" cross="center" grow="1">
+                <icon name="circle-dot" width="13" height="13" />
+              </column>
+            </card>
+            <text grow="1">agentcord</text>
+            <badge>{status_pill_text}</badge>
+          </row>
+
+          <!-- Agent switcher -->
+          <tabs gap="2" label="Agents">
+            <button size="sm" selected="{agent_is_grok}" on-press="select_grok">Grok</button>
+            <button size="sm" selected="{agent_is_cursor}" on-press="select_cursor">Cursor</button>
+          </tabs>
+
+          <if test="{show_connect_card}">
+            <card padding="16" background="surface" radius="md">
+              <column gap="8" cross="center">
+                <text>Connect {agent_name}</text>
+                <text foreground="text_muted" wrap="true" text-alignment="center">{connect_subtitle}</text>
+              </column>
+            </card>
+          </if>
+          <else>
+            <!-- Active session -->
+            <card padding="12" background="surface" radius="md">
+              <column gap="9">
+                <row gap="8" cross="center">
+                  <text grow="1" foreground="text_muted">{session_title}</text>
+                  <badge>{elapsed_text}</badge>
+                </row>
+                <row gap="7" cross="center">
+                  <icon name="folder" width="12" height="12" foreground="text_muted" />
+                  <text grow="1">{project_text}</text>
+                </row>
+                <text foreground="text_muted">{meta_text}</text>
+                <separator />
+                <text foreground="text_muted">{broadcast_text}</text>
+              </column>
+            </card>
+
+            <!-- Usage -->
+            <card padding="12" background="surface" radius="md">
+              <column gap="10">
+                <row gap="8" cross="center">
+                  <text grow="1" foreground="text_muted">USAGE</text>
+                  <if test="{agent_is_cursor}">
+                    <if test="{cursor_plan_len > 0}">
+                      <text foreground="text_muted">{cursor_plan_text}</text>
+                    </if>
+                  </if>
+                  <button size="sm" variant="ghost" on-press="refresh_usage">Refresh</button>
+                </row>
+
+                <if test="{agent_is_grok}">
+                  <column gap="8">
+                    <text foreground="text_muted" wrap="true">{usage_status_text}</text>
+                    <if test="{usage_has_data}">
+                      <column gap="5">
+                        <row gap="8" cross="center">
+                          <text grow="1">Weekly credits</text>
+                          <text>{usage_weekly_text}</text>
+                        </row>
+                        <progress value="{usage_weekly_frac}" label="Weekly credits" />
+                      </column>
+                      <if test="{usage_ondemand_len > 0}">
+                        <column gap="5">
+                          <row gap="8" cross="center">
+                            <text grow="1">On-demand</text>
+                            <text>{usage_ondemand_text}</text>
+                          </row>
+                          <progress value="{usage_ondemand_frac}" label="On-demand" />
+                        </column>
+                      </if>
+                    </if>
+                  </column>
+                </if>
+                <else>
+                  <column gap="8">
+                    <text foreground="text_muted" wrap="true">{cursor_status_text}</text>
+                    <if test="{cursor_usage_has_data}">
+                      <column gap="5">
+                        <row gap="8" cross="center">
+                          <text grow="1">Included usage</text>
+                          <text>{cursor_included_text}</text>
+                        </row>
+                        <progress value="{cursor_included_frac}" label="Included usage" />
+                      </column>
+                      <if test="{cursor_auto_len > 0}">
+                        <column gap="5">
+                          <row gap="8" cross="center">
+                            <text grow="1">Auto + Composer</text>
+                            <text>{cursor_auto_text}</text>
+                          </row>
+                          <progress value="{cursor_auto_frac}" label="Auto usage" />
+                        </column>
+                      </if>
+                      <if test="{cursor_api_len > 0}">
+                        <column gap="5">
+                          <row gap="8" cross="center">
+                            <text grow="1">API models</text>
+                            <text>{cursor_api_text}</text>
+                          </row>
+                          <progress value="{cursor_api_frac}" label="API usage" />
+                        </column>
+                      </if>
+                      <if test="{cursor_ondemand_len > 0}">
+                        <column gap="5">
+                          <row gap="8" cross="center">
+                            <text grow="1">On-demand</text>
+                            <text>{cursor_ondemand_text}</text>
+                          </row>
+                          <progress value="{cursor_ondemand_frac}" label="On-demand" />
+                        </column>
+                      </if>
+                    </if>
+                  </column>
+                </else>
+              </column>
+            </card>
+          </else>
+
+          <!-- Settings nav -->
+          <button variant="ghost" icon="settings" grow="1" on-press="open_settings">Settings · {settings_summary}</button>
+
+          <separator />
+
+          <button variant="ghost" grow="1" on-press="quit">Quit agentcord</button>
+
+          <if test="{error_len > 0}">
+            <text foreground="destructive" wrap="true">{error_text}</text>
+          </if>
+        </column>
       </else>
+
     </column>
-  </card>
-
-  <card padding="12" background="surface" radius="md">
-    <column gap="8">
-      <row gap="8" cross="center">
-        <text grow="1" foreground="text_muted">Usage</text>
-        <button size="sm" variant="ghost" on-press="refresh_usage">Refresh</button>
-      </row>
-      <text foreground="text_muted" wrap="true">{usage_status_text}</text>
-      <if test="{usage_has_data}">
-        <text>Weekly credits · {usage_weekly_text}</text>
-        <if test="{usage_ondemand_len > 0}">
-          <text foreground="text_muted">{usage_ondemand_text}</text>
-        </if>
-      </if>
-    </column>
-  </card>
-
-  <column gap="8">
-    <switch checked="{auto_presence}" on-toggle="toggle_auto">Auto presence from Grok</switch>
-    <row gap="8">
-      <button variant="primary" grow="1" on-press="connect">Connect</button>
-      <button variant="secondary" grow="1" on-press="disconnect">Disconnect</button>
-    </row>
-    <row gap="8">
-      <button variant="ghost" grow="1" on-press="set_test_presence">Set test presence</button>
-      <button variant="ghost" grow="1" on-press="clear_presence">Clear presence</button>
-    </row>
-  </column>
-
-  <status-bar>tray · usage from ~/.grok/auth.json + billing API</status-bar>
+  </scroll>
 </column>

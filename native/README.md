@@ -15,7 +15,7 @@ This lives beside the production C# app in [`../windows`](../windows). The C# bu
 - Read `%USERPROFILE%\.grok\active_sessions.json`
 - Treat a session as active when its PID is still alive
 - Enrich from `sessions/<encoded-cwd>/<id>/summary.json` + `signals.json`
-- Auto `SET_ACTIVITY` (model, project, tokens, elapsed) when **Auto presence** is on
+- Auto `SET_ACTIVITY` (model, project, tokens, elapsed) when presence is on
 - Clear presence when the Grok process exits
 
 ## Phase 3 — System tray
@@ -31,7 +31,19 @@ This lives beside the production C# app in [`../windows`](../windows). The C# bu
 - Auth from `~/.grok/auth.json` (refresh token on 401)
 - Refresh button + auto poll every 5 minutes
 
-Not yet: Claude/Codex/Cursor session scanning, settings persistence.
+## Phase 5 — Cursor session detection + macOS-like UI
+
+- Scan `%USERPROFILE%\.cursor\projects\**\agent-transcripts\**\*.jsonl` (mtime within 60s)
+- Enrich from `~/.cursor\chats\**\<session-id>\meta.json`
+- Grok | Cursor switcher; Discord `logo-cursor` when Cursor wins
+- Popover-style window (header, session card, usage bars, Settings)
+
+## Phase 6 — Cursor usage
+
+- Token from `%APPDATA%\Cursor\auth.json` or `state.vscdb` (`cursorAuth/accessToken`)
+- `GetCurrentPeriodUsage` → included / auto / API / on-demand bars
+
+Not yet: Claude/Codex, settings persistence.
 
 ## Prerequisites
 
@@ -67,12 +79,16 @@ native build
 
 | File | Role |
 |---|---|
-| `src/main.zig` | Model / Msg / update dispatch |
+| `src/main.zig` | Msg / update / usage fetch orchestration |
+| `src/app_model.zig` | Model + chrome / session / usage projection |
+| `src/usage_fx.zig` | Shared usage fetch helpers (Grok + Cursor) |
 | `src/presence.zig` | Presence mode + session→Activity policy |
 | `src/discord_ipc.zig` | Windows named-pipe Discord RPC client |
 | `src/grok_session.zig` | Live Grok session scan (`active_sessions.json`) |
+| `src/cursor_session.zig` | Live Cursor transcript scan (`~/.cursor`) |
+| `src/cursor_usage.zig` | Cursor auth stores + period/legacy usage |
 | `src/grok_usage.zig` | Auth + billing parse / header budget |
 | `src/json_lite.zig` | Shared JSON scrapers |
-| `src/win32_fs.zig` | Shared Win32 file / env helpers |
-| `src/app.native` | Status UI |
+| `src/win32_fs.zig` | Shared Win32 file / env / process helpers |
+| `src/app.native` | macOS-like status UI |
 | `app.zon` | App manifest |

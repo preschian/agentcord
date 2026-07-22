@@ -21,7 +21,7 @@ pub const SessionInfo = struct {
     cwd: [260]u8 = .{0} ** 260,
     cwd_len: usize = 0,
     start_epoch_ms: i64 = 0,
-    /// Transcript / meta activity time — used to pick among agents.
+    /// Ranking clock: max(transcript mtime, meta updatedAtMs).
     activity_ms: i64 = 0,
     total_tokens: i64 = 0,
 
@@ -36,9 +36,7 @@ pub const SessionInfo = struct {
     }
 
     pub fn setField(buf: []u8, len: *usize, value: []const u8) void {
-        const n = @min(value.len, buf.len);
-        @memcpy(buf[0..n], value[0..n]);
-        len.* = n;
+        win32_fs.copyBounded(buf, len, value);
     }
 };
 
@@ -69,13 +67,12 @@ pub fn scanWithWindow(active_window_ms: i64, now_ms: i64) ?SessionInfo {
     var newest_path: [700]u8 = undefined;
     var newest_len: usize = 0;
     var newest_mtime: i64 = 0;
-
     var walk = WalkNewest{
         .newest_path = &newest_path,
         .newest_len = &newest_len,
         .newest_mtime = &newest_mtime,
     };
-    walkDir(projects, 0, &walk);
+    win32_fs.walkFiles(projects, 12, &walk, WalkNewest.onTranscript);
 
     if (newest_len == 0) return null;
     const transcript = newest_path[0..newest_len];
@@ -109,79 +106,25 @@ const WalkNewest = struct {
     newest_path: []u8,
     newest_len: *usize,
     newest_mtime: *i64,
-};
 
-const ChildName = struct {
-    name: [260]u8 = undefined,
-    len: usize = 0,
-    is_dir: bool = false,
-};
-
-fn collectChildren(dir: []const u8, out: []ChildName) usize {
-    var name_buf: [260]u8 = undefined;
-    var count: usize = 0;
-    const Ctx = struct {
-        out: []ChildName,
-        count: *usize,
-        fn onEntry(self: @This(), entry: win32_fs.DirEntry) void {
-            if (self.count.* >= self.out.len) return;
-            const n = @min(entry.name.len, self.out[self.count.*].name.len);
-            @memcpy(self.out[self.count.*].name[0..n], entry.name[0..n]);
-            self.out[self.count.*].len = n;
-            self.out[self.count.*].is_dir = entry.kind == .directory;
-            self.count.* += 1;
-        }
-    };
-    win32_fs.forEachChild(dir, &name_buf, Ctx{ .out = out, .count = &count }, Ctx.onEntry);
-    return count;
-}
-
-fn walkDir(dir: []const u8, depth: u8, walk: *WalkNewest) void {
-    if (depth > 12) return;
-    var child_names: [64]ChildName = undefined;
-    const child_count = collectChildren(dir, &child_names);
-
-    for (child_names[0..child_count]) |child| {
-        const name = child.name[0..child.len];
-        var path_buf: [700]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "{s}\\{s}", .{ dir, name }) catch continue;
-        if (child.is_dir) {
-            walkDir(path, depth + 1, walk);
-            continue;
-        }
-        if (!std.mem.endsWith(u8, name, ".jsonl")) continue;
-        if (!pathContains(path, "agent-transcripts")) continue;
-        const mtime = win32_fs.fileMtimeMs(path) orelse continue;
-        if (walk.newest_len.* == 0 or mtime > walk.newest_mtime.*) {
-            const n = @min(path.len, walk.newest_path.len);
-            @memcpy(walk.newest_path[0..n], path[0..n]);
-            walk.newest_len.* = n;
-            walk.newest_mtime.* = mtime;
-        }
+    fn onTranscript(self: *@This(), path: []const u8) void {
+        if (!std.mem.endsWith(u8, path, ".jsonl")) return;
+        if (std.mem.indexOf(u8, path, "agent-transcripts") == null) return;
+        const mtime = win32_fs.fileMtimeMs(path) orelse return;
+        if (self.newest_len.* != 0 and mtime <= self.newest_mtime.*) return;
+        const n = @min(path.len, self.newest_path.len);
+        @memcpy(self.newest_path[0..n], path[0..n]);
+        self.newest_len.* = n;
+        self.newest_mtime.* = mtime;
     }
-}
-
-fn pathContains(path: []const u8, needle: []const u8) bool {
-    return std.mem.indexOf(u8, path, needle) != null;
-}
+};
 
 fn sessionIdFromTranscript(path: []const u8) []const u8 {
-    const base = basename(path);
+    const base = win32_fs.basename(path);
     if (std.mem.endsWith(u8, base, ".jsonl")) {
         return base[0 .. base.len - ".jsonl".len];
     }
     return base;
-}
-
-fn basename(path: []const u8) []const u8 {
-    if (path.len == 0) return path;
-    var end = path.len;
-    while (end > 0 and (path[end - 1] == '\\' or path[end - 1] == '/')) end -= 1;
-    if (end == 0) return path;
-    if (std.mem.lastIndexOfAny(u8, path[0..end], "\\/")) |idx| {
-        return path[idx + 1 .. end];
-    }
-    return path[0..end];
 }
 
 fn findMetaPath(chats_root: []const u8, session_id: []const u8, out: []u8) ?[]const u8 {
@@ -192,7 +135,7 @@ fn findMetaPath(chats_root: []const u8, session_id: []const u8, out: []u8) ?[]co
         .found = &found,
         .found_len = &found_len,
     };
-    walkMeta(chats_root, 0, &search);
+    win32_fs.walkFiles(chats_root, 8, &search, MetaSearch.onMeta);
     if (found_len == 0) return null;
     const n = @min(found_len, out.len);
     @memcpy(out[0..n], found[0..n]);
@@ -203,30 +146,19 @@ const MetaSearch = struct {
     session_id: []const u8,
     found: []u8,
     found_len: *usize,
-};
 
-fn walkMeta(dir: []const u8, depth: u8, search: *MetaSearch) void {
-    if (depth > 8 or search.found_len.* > 0) return;
-    var child_names: [64]ChildName = undefined;
-    const child_count = collectChildren(dir, &child_names);
-
-    for (child_names[0..child_count]) |child| {
-        const name = child.name[0..child.len];
-        var path_buf: [700]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "{s}\\{s}", .{ dir, name }) catch continue;
-        if (child.is_dir) {
-            walkMeta(path, depth + 1, search);
-            continue;
-        }
-        if (!std.mem.eql(u8, name, "meta.json")) continue;
-        const parent = basename(dir);
-        if (!std.mem.eql(u8, parent, search.session_id)) continue;
-        const n = @min(path.len, search.found.len);
-        @memcpy(search.found[0..n], path[0..n]);
-        search.found_len.* = n;
-        return;
+    fn onMeta(self: *@This(), path: []const u8) void {
+        if (self.found_len.* > 0) return;
+        if (!std.mem.endsWith(u8, path, "\\meta.json") and !std.mem.endsWith(u8, path, "/meta.json")) return;
+        // Parent directory name is the session id.
+        const slash = std.mem.lastIndexOfAny(u8, path, "\\/") orelse return;
+        const parent = win32_fs.basename(path[0..slash]);
+        if (!std.mem.eql(u8, parent, self.session_id)) return;
+        const n = @min(path.len, self.found.len);
+        @memcpy(self.found[0..n], path[0..n]);
+        self.found_len.* = n;
     }
-}
+};
 
 fn applyMeta(meta_path: []const u8, info: *SessionInfo, transcript_mtime: i64) void {
     var buf: [8 * 1024]u8 = undefined;
@@ -236,7 +168,7 @@ fn applyMeta(meta_path: []const u8, info: *SessionInfo, transcript_mtime: i64) v
         var cwd_buf: [260]u8 = undefined;
         if (json_lite.jsonUnescape(cwd_raw, &cwd_buf)) |cwd| {
             SessionInfo.setField(&info.cwd, &info.cwd_len, cwd);
-            const base = basename(cwd);
+            const base = win32_fs.basename(cwd);
             if (base.len > 0) {
                 SessionInfo.setField(&info.project_name, &info.project_len, base);
             }
@@ -245,11 +177,12 @@ fn applyMeta(meta_path: []const u8, info: *SessionInfo, transcript_mtime: i64) v
     if (json_lite.extractI64(json, "createdAtMs")) |created| {
         if (created > 0) info.start_epoch_ms = created;
     }
+    // Ranking must not prefer stale meta over a hot transcript.
+    var activity = transcript_mtime;
     if (json_lite.extractI64(json, "updatedAtMs")) |updated| {
-        if (updated > 0) info.activity_ms = updated;
-    } else {
-        info.activity_ms = transcript_mtime;
+        if (updated > activity) activity = updated;
     }
+    info.activity_ms = activity;
 }
 
 /// `.../projects/D-Workspace-agentcord/agent-transcripts/...` → `agentcord`
@@ -284,21 +217,32 @@ test "projectFromTranscriptPath" {
     );
 }
 
-test "applyMeta parses cwd and timestamps" {
-    // Unit-level: parse the same shape as real meta.json via json_lite.
+test "activity prefers newer of transcript and updatedAtMs" {
     const json =
         \\{"schemaVersion":1,"createdAtMs":1000,"updatedAtMs":2000,"cwd":"D:\\Workspace\\agentcord"}
     ;
     var info: SessionInfo = .{};
+    applyMetaFromJson(json, &info, 5000);
+    try std.testing.expectEqual(@as(i64, 5000), info.activity_ms);
+    try std.testing.expectEqualStrings("agentcord", info.project());
+
+    applyMetaFromJson(json, &info, 1500);
+    try std.testing.expectEqual(@as(i64, 2000), info.activity_ms);
+}
+
+fn applyMetaFromJson(json: []const u8, info: *SessionInfo, transcript_mtime: i64) void {
     if (json_lite.extractString(json, "cwd")) |cwd_raw| {
         var cwd_buf: [260]u8 = undefined;
         const cwd = json_lite.jsonUnescape(cwd_raw, &cwd_buf).?;
         SessionInfo.setField(&info.cwd, &info.cwd_len, cwd);
-        SessionInfo.setField(&info.project_name, &info.project_len, basename(cwd));
+        SessionInfo.setField(&info.project_name, &info.project_len, win32_fs.basename(cwd));
     }
-    info.start_epoch_ms = json_lite.extractI64(json, "createdAtMs").?;
-    info.activity_ms = json_lite.extractI64(json, "updatedAtMs").?;
-    try std.testing.expectEqualStrings("agentcord", info.project());
-    try std.testing.expectEqual(@as(i64, 1000), info.start_epoch_ms);
-    try std.testing.expectEqual(@as(i64, 2000), info.activity_ms);
+    if (json_lite.extractI64(json, "createdAtMs")) |created| {
+        if (created > 0) info.start_epoch_ms = created;
+    }
+    var activity = transcript_mtime;
+    if (json_lite.extractI64(json, "updatedAtMs")) |updated| {
+        if (updated > activity) activity = updated;
+    }
+    info.activity_ms = activity;
 }

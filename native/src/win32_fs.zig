@@ -237,3 +237,65 @@ pub fn readFile(path: []const u8, buf: []u8) ?[]const u8 {
     if (total == 0) return null;
     return buf[0..total];
 }
+
+/// Copy `value` into `buf`, clamping to capacity. Writes length into `len`.
+pub fn copyBounded(buf: []u8, len: *usize, value: []const u8) void {
+    const n = @min(value.len, buf.len);
+    @memcpy(buf[0..n], value[0..n]);
+    len.* = n;
+}
+
+/// Final path component (handles `\` and `/`).
+pub fn basename(path: []const u8) []const u8 {
+    if (path.len == 0) return path;
+    var end = path.len;
+    while (end > 0 and (path[end - 1] == '\\' or path[end - 1] == '/')) end -= 1;
+    if (end == 0) return path;
+    if (std.mem.lastIndexOfAny(u8, path[0..end], "\\/")) |idx| {
+        return path[idx + 1 .. end];
+    }
+    return path[0..end];
+}
+
+/// Recursively visit files under `root` (depth-limited). No per-directory entry cap.
+pub fn walkFiles(
+    root: []const u8,
+    max_depth: u8,
+    context: anytype,
+    comptime on_file: *const fn (@TypeOf(context), path: []const u8) void,
+) void {
+    if (builtin.os.tag != .windows) return;
+    walkFilesRec(root, 0, max_depth, context, on_file);
+}
+
+fn walkFilesRec(
+    dir: []const u8,
+    depth: u8,
+    max_depth: u8,
+    context: anytype,
+    comptime on_file: *const fn (@TypeOf(context), path: []const u8) void,
+) void {
+    if (depth > max_depth) return;
+    var name_buf: [260]u8 = undefined;
+    const Ctx = struct {
+        dir: []const u8,
+        depth: u8,
+        max_depth: u8,
+        parent_ctx: @TypeOf(context),
+        fn onEntry(self: @This(), entry: DirEntry) void {
+            var path_buf: [700]u8 = undefined;
+            const path = std.fmt.bufPrint(&path_buf, "{s}\\{s}", .{ self.dir, entry.name }) catch return;
+            if (entry.kind == .directory) {
+                walkFilesRec(path, self.depth + 1, self.max_depth, self.parent_ctx, on_file);
+            } else {
+                on_file(self.parent_ctx, path);
+            }
+        }
+    };
+    forEachChild(dir, &name_buf, Ctx{
+        .dir = dir,
+        .depth = depth,
+        .max_depth = max_depth,
+        .parent_ctx = context,
+    }, Ctx.onEntry);
+}

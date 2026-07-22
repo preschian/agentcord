@@ -78,7 +78,6 @@ pub const Msg = union(enum) {
     connect,
     disconnect,
     toggle_presence,
-    toggle_auto,
     set_test_presence,
     clear_presence,
     refresh_usage,
@@ -95,7 +94,7 @@ pub const Msg = union(enum) {
     usage_fetched: native_sdk.EffectResponse,
     usage_refreshed: native_sdk.EffectResponse,
 
-    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "show_window", "quit", "toggle_auto" };
+    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "show_window", "quit" };
 };
 
 pub const Model = struct {
@@ -233,7 +232,7 @@ pub const Model = struct {
     pub fn conn_label(model: *const Model) []const u8 {
         return switch (model.conn_state) {
             .connecting => "Connecting…",
-            .connected => if (model.ready) "Connected" else "Connected",
+            .connected => "Connected",
             .disconnected => "Disconnected",
         };
     }
@@ -279,8 +278,6 @@ pub const Model = struct {
             setBuf(&model.status_pill_line, &model.status_pill_len, "Off");
         } else if (model.conn_state == .connected and model.ready) {
             setBuf(&model.status_pill_line, &model.status_pill_len, "Connected");
-        } else if (model.conn_state == .connecting or (model.conn_state == .connected and !model.ready)) {
-            setBuf(&model.status_pill_line, &model.status_pill_len, "Connecting");
         } else {
             setBuf(&model.status_pill_line, &model.status_pill_len, "Connecting");
         }
@@ -322,12 +319,10 @@ pub const Model = struct {
         };
         model.show_connect_card = !linked;
 
-        var sub_buf: [120]u8 = undefined;
-        const sub = std.fmt.bufPrint(
-            &sub_buf,
-            "Link your {s} account to track usage, sessions and status here.",
-            .{model.selected_agent.displayName()},
-        ) catch "Connect to track sessions.";
+        const sub: []const u8 = switch (model.selected_agent) {
+            .grok => "Sign in with grok login to track usage, sessions and status here.",
+            .cursor => "Install Cursor so AgentCord can read local agent transcripts.",
+        };
         setBuf(&model.connect_subtitle_line, &model.connect_subtitle_len, sub);
 
         const active = switch (model.selected_agent) {
@@ -337,17 +332,16 @@ pub const Model = struct {
         setBuf(
             &model.session_title_line,
             &model.session_title_len,
-            if (active) "ACTIVE SESSION" else "LAST SESSION",
+            if (active) "ACTIVE SESSION" else "NO SESSION",
         );
 
         var elapsed_buf: [16]u8 = undefined;
-        switch (model.selected_agent) {
-            .grok => {
-                if (grok) |s| {
+        if (active) {
+            switch (model.selected_agent) {
+                .grok => {
+                    const s = grok.?;
                     setBuf(&model.project_line, &model.project_len, s.project());
-                    const elapsed = formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf);
-                    setBuf(&model.elapsed_line, &model.elapsed_len, elapsed);
-
+                    setBuf(&model.elapsed_line, &model.elapsed_len, formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf));
                     var meta_buf: [96]u8 = undefined;
                     var tok_buf: [32]u8 = undefined;
                     const meta = if (s.total_tokens > 0) blk: {
@@ -355,24 +349,18 @@ pub const Model = struct {
                         break :blk std.fmt.bufPrint(&meta_buf, "{s}  ·  {s} tokens", .{ s.modelName(), tok }) catch s.modelName();
                     } else s.modelName();
                     setBuf(&model.meta_line, &model.meta_len, meta);
-                } else {
-                    setBuf(&model.project_line, &model.project_len, "No active session");
-                    setBuf(&model.elapsed_line, &model.elapsed_len, "—");
-                    setBuf(&model.meta_line, &model.meta_len, "Waiting for a session");
-                }
-            },
-            .cursor => {
-                if (cursor) |s| {
+                },
+                .cursor => {
+                    const s = cursor.?;
                     setBuf(&model.project_line, &model.project_len, s.project());
-                    const elapsed = formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf);
-                    setBuf(&model.elapsed_line, &model.elapsed_len, elapsed);
+                    setBuf(&model.elapsed_line, &model.elapsed_len, formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf));
                     setBuf(&model.meta_line, &model.meta_len, "Cursor");
-                } else {
-                    setBuf(&model.project_line, &model.project_len, "No active session");
-                    setBuf(&model.elapsed_line, &model.elapsed_len, "—");
-                    setBuf(&model.meta_line, &model.meta_len, "Waiting for a session");
-                }
-            },
+                },
+            }
+        } else {
+            setBuf(&model.project_line, &model.project_len, "No active session");
+            setBuf(&model.elapsed_line, &model.elapsed_len, "—");
+            setBuf(&model.meta_line, &model.meta_len, "Waiting for a session");
         }
 
         if (!model.auto_presence or model.presence_paused) {
@@ -438,19 +426,21 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         },
         .disconnect => {
             model.presence_paused = true;
+            g_discord.setActivity(null);
             g_discord.disconnect();
             model.presence_mode = .cleared;
             model.setDetail("Disconnected — presence paused until Connect.");
             model.applyDiscordSnapshot(g_discord.snapshot());
+            refreshUi(model, fx.wallMs());
         },
         .toggle_presence => {
             if (model.presence_enabled()) {
                 model.auto_presence = false;
-                if (model.presence_mode == .grok_auto or model.presence_mode == .cursor_auto) {
-                    g_discord.setActivity(null);
-                    model.presence_mode = .cleared;
-                }
+                g_discord.setActivity(null);
+                model.presence_mode = .cleared;
                 model.setDetail("Presence off.");
+                model.applyDiscordSnapshot(g_discord.snapshot());
+                refreshUi(model, fx.wallMs());
             } else {
                 model.auto_presence = true;
                 model.presence_paused = false;
@@ -458,14 +448,9 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
                     g_discord.connect(discord_client_id);
                 }
                 model.setDetail("Presence on — scanning sessions.");
+                model.applyDiscordSnapshot(g_discord.snapshot());
                 syncPresence(model, fx.wallMs());
             }
-            model.applyDiscordSnapshot(g_discord.snapshot());
-        },
-        .toggle_auto => {
-            // Kept for tests / hot-reload of older markup.
-            model.auto_presence = !model.auto_presence;
-            syncPresence(model, fx.wallMs());
         },
         .set_test_presence => {
             g_discord.setActivity(presence.activityManualTest(fx.wallMs()));
@@ -480,6 +465,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             model.presence_mode = .cleared;
             model.setDetail("Cleared presence (activity: null).");
             model.applyDiscordSnapshot(g_discord.snapshot());
+            refreshUi(model, fx.wallMs());
         },
         .refresh_usage => {
             g_usage_allow_refresh = true;
@@ -489,11 +475,11 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .close_settings => model.show_settings = false,
         .select_grok => {
             model.selected_agent = .grok;
-            syncPresence(model, fx.wallMs());
+            refreshUi(model, fx.wallMs());
         },
         .select_cursor => {
             model.selected_agent = .cursor;
-            syncPresence(model, fx.wallMs());
+            refreshUi(model, fx.wallMs());
         },
         .show_window => {
             fx.showWindow(main_window_label);
@@ -647,6 +633,18 @@ fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
     }
     g_usage_allow_refresh = false;
     requestBilling(model, fx);
+}
+
+fn refreshUi(model: *Model, now_ms: i64) void {
+    _ = grok_usage.loadAuth(&g_auth);
+    const grok = grok_session.scan();
+    const cursor = cursor_session.scan();
+    const sharing: ?AgentKind = switch (model.presence_mode) {
+        .grok_auto => .grok,
+        .cursor_auto => .cursor,
+        else => null,
+    };
+    model.applySessions(grok, cursor, now_ms, sharing);
 }
 
 fn syncPresence(model: *Model, now_ms: i64) void {

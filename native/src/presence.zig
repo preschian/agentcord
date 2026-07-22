@@ -95,22 +95,22 @@ pub fn activityFromCursor(s: cursor_session.SessionInfo, scratch: *Scratch) disc
 }
 
 fn pickWinner(sessions: LiveSessions) Winner {
-    const grok_ms: i64 = if (sessions.grok) |s|
-        if (s.start_epoch_ms > 0) s.start_epoch_ms else std.math.maxInt(i64)
-    else
-        0;
-    const cursor_ms: i64 = if (sessions.cursor) |s|
-        if (s.activity_ms > 0) s.activity_ms else s.start_epoch_ms
-    else
-        0;
+    const grok_ms: i64 = if (sessions.grok) |s| activityMs(s.activity_ms, s.start_epoch_ms) else 0;
+    const cursor_ms: i64 = if (sessions.cursor) |s| activityMs(s.activity_ms, s.start_epoch_ms) else 0;
 
     if (sessions.grok != null and sessions.cursor != null) {
-        // Prefer the more recently active agent (macOS lastModified max).
+        // Same clock: last activity (macOS lastModified max). Unknown (0) loses ties.
         return if (cursor_ms >= grok_ms) .cursor else .grok;
     }
     if (sessions.cursor != null) return .cursor;
     if (sessions.grok != null) return .grok;
     return .none;
+}
+
+fn activityMs(activity: i64, start: i64) i64 {
+    if (activity > 0) return activity;
+    if (start > 0) return start;
+    return 0;
 }
 
 fn liveSummary(sessions: LiveSessions, scratch: *Scratch, suffix: []const u8) []const u8 {
@@ -247,6 +247,7 @@ test "decide prefers newer cursor over grok" {
     grok_session.SessionInfo.setField(&grok.model, &grok.model_len, "Grok 4.5");
     grok_session.SessionInfo.setField(&grok.project_name, &grok.project_len, "old");
     grok.start_epoch_ms = 1000;
+    grok.activity_ms = 1000;
 
     var cursor: cursor_session.SessionInfo = .{};
     cursor_session.SessionInfo.setField(&cursor.project_name, &cursor.project_len, "agentcord");
@@ -257,6 +258,39 @@ test "decide prefers newer cursor over grok" {
     try std.testing.expect(d.action == .set);
     try std.testing.expect(d.mode == .cursor_auto);
     try std.testing.expectEqualStrings("logo-cursor", d.activity.?.large_image);
+}
+
+test "decide prefers newer grok activity over cursor" {
+    var scratch: Scratch = .{};
+    var grok: grok_session.SessionInfo = .{};
+    grok_session.SessionInfo.setField(&grok.model, &grok.model_len, "Grok 4.5");
+    grok_session.SessionInfo.setField(&grok.project_name, &grok.project_len, "agentcord");
+    grok.start_epoch_ms = 1000;
+    grok.activity_ms = 9000;
+
+    var cursor: cursor_session.SessionInfo = .{};
+    cursor_session.SessionInfo.setField(&cursor.project_name, &cursor.project_len, "other");
+    cursor.activity_ms = 5000;
+    cursor.start_epoch_ms = 4000;
+
+    const d = decide(.cleared, true, false, true, .{ .grok = grok, .cursor = cursor }, &scratch);
+    try std.testing.expect(d.action == .set);
+    try std.testing.expect(d.mode == .grok_auto);
+}
+
+test "decide missing grok activity does not always win" {
+    var scratch: Scratch = .{};
+    var grok: grok_session.SessionInfo = .{};
+    grok_session.SessionInfo.setField(&grok.model, &grok.model_len, "Grok");
+    grok_session.SessionInfo.setField(&grok.project_name, &grok.project_len, "x");
+    // start/activity both 0 — unknown clock must not beat Cursor.
+
+    var cursor: cursor_session.SessionInfo = .{};
+    cursor_session.SessionInfo.setField(&cursor.project_name, &cursor.project_len, "agentcord");
+    cursor.activity_ms = 5000;
+
+    const d = decide(.cleared, true, false, true, .{ .grok = grok, .cursor = cursor }, &scratch);
+    try std.testing.expect(d.mode == .cursor_auto);
 }
 
 test "decide sets cursor-only activity" {

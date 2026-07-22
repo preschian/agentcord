@@ -1,7 +1,7 @@
 .{
     .id = "dev.agentcord.native",
     .name = "agentcord-native",
-    .display_name = "AgentCord Native",
+    .display_name = "AgentCord",
     .description = "AgentCord Discord Rich Presence prototype on Native SDK (Windows first).",
     .version = "0.1.0",
     .icons = .{"assets/icon.png"},
@@ -12,9 +12,9 @@
         .windows = .{
             .{
                 .label = "main",
-                .title = "AgentCord Native",
-                .width = 460,
-                .height = 480,
+                .title = "AgentCord",
+                .width = 300,
+                .height = 560,
                 .restore_state = false,
                 .restore_policy = "center_on_primary",
                 // Menu-bar / tray app shape: close hides; tray Open brings it back.

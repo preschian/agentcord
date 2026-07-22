@@ -1,13 +1,11 @@
-//! AgentCord native-sdk prototype — Discord Rich Presence + Grok session detection.
-//!
-//! Phase 2: auto-set Discord presence from a live Grok CLI session
-//! (`~/.grok/active_sessions.json` + summary/signals). Phase 1 Discord IPC remains.
+//! AgentCord native-sdk prototype — Discord Rich Presence + Grok/Cursor sessions.
 
 const std = @import("std");
 const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 const discord_ipc = @import("discord_ipc.zig");
 const grok_session = @import("grok_session.zig");
+const cursor_session = @import("cursor_session.zig");
 const grok_usage = @import("grok_usage.zig");
 const presence = @import("presence.zig");
 
@@ -17,8 +15,8 @@ const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 
 const canvas_label = "main-canvas";
-const window_width: f32 = 460;
-const window_height: f32 = 480;
+const window_width: f32 = 300;
+const window_height: f32 = 560;
 
 /// Baked-in Application ID from the production AgentCord app (not a secret).
 const discord_client_id = "1517099756063686677";
@@ -29,7 +27,7 @@ const shell_views = [_]native_sdk.ShellView{
 };
 const shell_windows = [_]native_sdk.ShellWindow{.{
     .label = "main",
-    .title = "AgentCord Native",
+    .title = "AgentCord",
     .width = window_width,
     .height = window_height,
     .restore_state = false,
@@ -46,6 +44,18 @@ const EffectKeys = struct {
 };
 
 const UsagePhase = enum { idle, fetching, refreshing };
+
+pub const AgentKind = enum {
+    grok,
+    cursor,
+
+    pub fn displayName(self: AgentKind) []const u8 {
+        return switch (self) {
+            .grok => "Grok",
+            .cursor => "Cursor",
+        };
+    }
+};
 
 var g_discord: discord_ipc.Client = .{};
 var g_auth: grok_usage.Auth = .{};
@@ -67,10 +77,15 @@ const tray_menu_items = [_]native_sdk.TrayMenuItem{
 pub const Msg = union(enum) {
     connect,
     disconnect,
+    toggle_presence,
     toggle_auto,
     set_test_presence,
     clear_presence,
     refresh_usage,
+    open_settings,
+    close_settings,
+    select_grok,
+    select_cursor,
     /// Tray / menu: un-hide + activate the main window.
     show_window,
     /// Tray / menu: graceful app quit (clears presence via main's defer).
@@ -80,17 +95,37 @@ pub const Msg = union(enum) {
     usage_fetched: native_sdk.EffectResponse,
     usage_refreshed: native_sdk.EffectResponse,
 
-    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "show_window", "quit" };
+    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "show_window", "quit", "toggle_auto" };
 };
 
 pub const Model = struct {
+    /// Internal / helper state not bound directly in markup (accessors are).
+    pub const view_unbound = .{
+        "conn_state",           "ready",                 "auto_presence",
+        "presence_paused",      "presence_mode",         "selected_agent",
+        "status_line",          "status_len",            "detail_line",
+        "detail_len",           "error_line",            "grok_active",
+        "cursor_active",        "cursor_installed",      "grok_linked",
+        "session_title_line",   "session_title_len",     "elapsed_line",
+        "elapsed_len",          "project_line",          "project_len",
+        "meta_line",            "meta_len",              "broadcast_line",
+        "broadcast_len",        "connect_subtitle_line", "connect_subtitle_len",
+        "status_pill_line",     "status_pill_len",       "settings_summary_line",
+        "settings_summary_len", "usage_weekly_line",     "usage_weekly_len",
+        "usage_ondemand_line",  "usage_status_line",     "usage_status_len",
+        "presence_set",         "status_text",           "conn_label",
+        "presence_label",       "grok_status_label",
+    };
+
     conn_state: discord_ipc.ConnState = .disconnected,
     ready: bool = false,
-    /// Auto-push Grok session activity to Discord.
+    /// Auto-push session activity to Discord (macOS "Enable presence").
     auto_presence: bool = true,
     /// After Disconnect, skip Discord writes until Connect.
     presence_paused: bool = false,
     presence_mode: presence.Mode = .cleared,
+    show_settings: bool = false,
+    selected_agent: AgentKind = .grok,
 
     status_line: [160]u8 = .{0} ** 160,
     status_len: usize = 0,
@@ -99,19 +134,31 @@ pub const Model = struct {
     error_line: [160]u8 = .{0} ** 160,
     error_len: usize = 0,
 
+    // --- selected-agent session card ---
     grok_active: bool = false,
-    grok_model: [64]u8 = .{0} ** 64,
-    grok_model_len: usize = 0,
-    grok_project: [96]u8 = .{0} ** 96,
-    grok_project_len: usize = 0,
-    grok_tokens_line: [48]u8 = .{0} ** 48,
-    grok_tokens_len: usize = 0,
-    grok_context_line: [64]u8 = .{0} ** 64,
-    grok_context_len: usize = 0,
-    grok_session_line: [80]u8 = .{0} ** 80,
-    grok_session_len: usize = 0,
+    cursor_active: bool = false,
+    cursor_installed: bool = false,
+    grok_linked: bool = false,
+    show_connect_card: bool = false,
 
-    /// Weekly credits from billing API (-1 unknown).
+    session_title_line: [32]u8 = .{0} ** 32,
+    session_title_len: usize = 0,
+    elapsed_line: [16]u8 = .{0} ** 16,
+    elapsed_len: usize = 0,
+    project_line: [96]u8 = .{0} ** 96,
+    project_len: usize = 0,
+    meta_line: [96]u8 = .{0} ** 96,
+    meta_len: usize = 0,
+    broadcast_line: [80]u8 = .{0} ** 80,
+    broadcast_len: usize = 0,
+    connect_subtitle_line: [120]u8 = .{0} ** 120,
+    connect_subtitle_len: usize = 0,
+    status_pill_line: [32]u8 = .{0} ** 32,
+    status_pill_len: usize = 0,
+    settings_summary_line: [32]u8 = .{0} ** 32,
+    settings_summary_len: usize = 0,
+
+    /// Weekly credits from billing API.
     usage_has_data: bool = false,
     usage_weekly_line: [80]u8 = .{0} ** 80,
     usage_weekly_len: usize = 0,
@@ -119,9 +166,25 @@ pub const Model = struct {
     usage_ondemand_len: usize = 0,
     usage_status_line: [96]u8 = .{0} ** 96,
     usage_status_len: usize = 0,
+    usage_weekly_frac: f32 = 0,
+    usage_ondemand_frac: f32 = 0,
 
     pub fn presence_set(model: *const Model) bool {
         return model.presence_mode != .cleared;
+    }
+
+    pub fn presence_enabled(model: *const Model) bool {
+        return model.auto_presence and !model.presence_paused;
+    }
+
+    pub fn agent_is_grok(model: *const Model) bool {
+        return model.selected_agent == .grok;
+    }
+    pub fn agent_is_cursor(model: *const Model) bool {
+        return model.selected_agent == .cursor;
+    }
+    pub fn agent_name(model: *const Model) []const u8 {
+        return model.selected_agent.displayName();
     }
 
     pub fn status_text(model: *const Model) []const u8 {
@@ -133,20 +196,29 @@ pub const Model = struct {
     pub fn error_text(model: *const Model) []const u8 {
         return model.error_line[0..model.error_len];
     }
-    pub fn grok_model_text(model: *const Model) []const u8 {
-        return model.grok_model[0..model.grok_model_len];
+    pub fn session_title(model: *const Model) []const u8 {
+        return model.session_title_line[0..model.session_title_len];
     }
-    pub fn grok_project_text(model: *const Model) []const u8 {
-        return model.grok_project[0..model.grok_project_len];
+    pub fn elapsed_text(model: *const Model) []const u8 {
+        return model.elapsed_line[0..model.elapsed_len];
     }
-    pub fn grok_tokens_text(model: *const Model) []const u8 {
-        return model.grok_tokens_line[0..model.grok_tokens_len];
+    pub fn project_text(model: *const Model) []const u8 {
+        return model.project_line[0..model.project_len];
     }
-    pub fn grok_context_text(model: *const Model) []const u8 {
-        return model.grok_context_line[0..model.grok_context_len];
+    pub fn meta_text(model: *const Model) []const u8 {
+        return model.meta_line[0..model.meta_len];
     }
-    pub fn grok_session_text(model: *const Model) []const u8 {
-        return model.grok_session_line[0..model.grok_session_len];
+    pub fn broadcast_text(model: *const Model) []const u8 {
+        return model.broadcast_line[0..model.broadcast_len];
+    }
+    pub fn connect_subtitle(model: *const Model) []const u8 {
+        return model.connect_subtitle_line[0..model.connect_subtitle_len];
+    }
+    pub fn status_pill_text(model: *const Model) []const u8 {
+        return model.status_pill_line[0..model.status_pill_len];
+    }
+    pub fn settings_summary(model: *const Model) []const u8 {
+        return model.settings_summary_line[0..model.settings_summary_len];
     }
     pub fn usage_weekly_text(model: *const Model) []const u8 {
         return model.usage_weekly_line[0..model.usage_weekly_len];
@@ -161,7 +233,7 @@ pub const Model = struct {
     pub fn conn_label(model: *const Model) []const u8 {
         return switch (model.conn_state) {
             .connecting => "Connecting…",
-            .connected => if (model.ready) "Connected (READY)" else "Connected",
+            .connected => if (model.ready) "Connected" else "Connected",
             .disconnected => "Disconnected",
         };
     }
@@ -199,47 +271,129 @@ pub const Model = struct {
             model.error_len = 0;
         }
         model.setStatus(model.conn_label());
+        model.refreshChrome();
     }
 
-    fn applyGrok(model: *Model, session: ?grok_session.SessionInfo) void {
-        if (session) |s| {
-            model.grok_active = true;
-            setBuf(&model.grok_model, &model.grok_model_len, s.modelName());
-            setBuf(&model.grok_project, &model.grok_project_len, s.project());
-            var tok_buf: [32]u8 = undefined;
-            const tok = if (s.total_tokens > 0)
-                grok_session.formatTokens(s.total_tokens, &tok_buf)
-            else
-                "—";
-            var line_buf: [48]u8 = undefined;
-            const line = std.fmt.bufPrint(&line_buf, "{s} tokens used", .{tok}) catch "tokens";
-            setBuf(&model.grok_tokens_line, &model.grok_tokens_len, line);
-
-            if (s.context_percent >= 0) {
-                var ctx_buf: [64]u8 = undefined;
-                const ctx = if (s.context_window_tokens > 0) blk: {
-                    var win_buf: [32]u8 = undefined;
-                    const win = grok_session.formatTokens(s.context_window_tokens, &win_buf);
-                    break :blk std.fmt.bufPrint(&ctx_buf, "Context {d}% of {s}", .{ s.context_percent, win }) catch "Context";
-                } else std.fmt.bufPrint(&ctx_buf, "Context {d}%", .{s.context_percent}) catch "Context";
-                setBuf(&model.grok_context_line, &model.grok_context_len, ctx);
-            } else {
-                model.grok_context_len = 0;
-            }
-
-            const sid = s.sessionId();
-            const short = if (sid.len > 8) sid[0..8] else sid;
-            var sess_buf: [80]u8 = undefined;
-            const sess_line = std.fmt.bufPrint(&sess_buf, "session {s}…", .{short}) catch "session";
-            setBuf(&model.grok_session_line, &model.grok_session_len, sess_line);
+    fn refreshChrome(model: *Model) void {
+        if (!model.auto_presence or model.presence_paused) {
+            setBuf(&model.status_pill_line, &model.status_pill_len, "Off");
+        } else if (model.conn_state == .connected and model.ready) {
+            setBuf(&model.status_pill_line, &model.status_pill_len, "Connected");
+        } else if (model.conn_state == .connecting or (model.conn_state == .connected and !model.ready)) {
+            setBuf(&model.status_pill_line, &model.status_pill_len, "Connecting");
         } else {
-            model.grok_active = false;
-            model.grok_model_len = 0;
-            model.grok_project_len = 0;
-            model.grok_context_len = 0;
-            setBuf(&model.grok_tokens_line, &model.grok_tokens_len, "no live session");
-            setBuf(&model.grok_session_line, &model.grok_session_len, "check ~/.grok/active_sessions.json");
+            setBuf(&model.status_pill_line, &model.status_pill_len, "Connecting");
         }
+
+        if (model.presence_enabled()) {
+            setBuf(&model.settings_summary_line, &model.settings_summary_len, "Presence on");
+        } else {
+            setBuf(&model.settings_summary_line, &model.settings_summary_len, "Presence off");
+        }
+    }
+
+    fn formatElapsed(start_ms: i64, now_ms: i64, buf: []u8) []const u8 {
+        if (start_ms <= 0) return "—";
+        const total = @max(@divTrunc(now_ms - start_ms, 1000), 0);
+        const h = @divTrunc(total, 3600);
+        const m = @divTrunc(@rem(total, 3600), 60);
+        const s = @rem(total, 60);
+        if (h > 0) {
+            return std.fmt.bufPrint(buf, "{d}:{d:0>2}:{d:0>2}", .{ h, m, s }) catch "—";
+        }
+        return std.fmt.bufPrint(buf, "{d}:{d:0>2}", .{ m, s }) catch "—";
+    }
+
+    fn applySessions(
+        model: *Model,
+        grok: ?grok_session.SessionInfo,
+        cursor: ?cursor_session.SessionInfo,
+        now_ms: i64,
+        sharing_agent: ?AgentKind,
+    ) void {
+        model.grok_active = grok != null;
+        model.cursor_active = cursor != null;
+        model.cursor_installed = cursor_session.isInstalled();
+        model.grok_linked = g_auth.hasAccess() or g_auth.hasRefresh() or grok != null;
+
+        const linked = switch (model.selected_agent) {
+            .grok => model.grok_linked,
+            .cursor => model.cursor_installed,
+        };
+        model.show_connect_card = !linked;
+
+        var sub_buf: [120]u8 = undefined;
+        const sub = std.fmt.bufPrint(
+            &sub_buf,
+            "Link your {s} account to track usage, sessions and status here.",
+            .{model.selected_agent.displayName()},
+        ) catch "Connect to track sessions.";
+        setBuf(&model.connect_subtitle_line, &model.connect_subtitle_len, sub);
+
+        const active = switch (model.selected_agent) {
+            .grok => grok != null,
+            .cursor => cursor != null,
+        };
+        setBuf(
+            &model.session_title_line,
+            &model.session_title_len,
+            if (active) "ACTIVE SESSION" else "LAST SESSION",
+        );
+
+        var elapsed_buf: [16]u8 = undefined;
+        switch (model.selected_agent) {
+            .grok => {
+                if (grok) |s| {
+                    setBuf(&model.project_line, &model.project_len, s.project());
+                    const elapsed = formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf);
+                    setBuf(&model.elapsed_line, &model.elapsed_len, elapsed);
+
+                    var meta_buf: [96]u8 = undefined;
+                    var tok_buf: [32]u8 = undefined;
+                    const meta = if (s.total_tokens > 0) blk: {
+                        const tok = grok_session.formatTokens(s.total_tokens, &tok_buf);
+                        break :blk std.fmt.bufPrint(&meta_buf, "{s}  ·  {s} tokens", .{ s.modelName(), tok }) catch s.modelName();
+                    } else s.modelName();
+                    setBuf(&model.meta_line, &model.meta_len, meta);
+                } else {
+                    setBuf(&model.project_line, &model.project_len, "No active session");
+                    setBuf(&model.elapsed_line, &model.elapsed_len, "—");
+                    setBuf(&model.meta_line, &model.meta_len, "Waiting for a session");
+                }
+            },
+            .cursor => {
+                if (cursor) |s| {
+                    setBuf(&model.project_line, &model.project_len, s.project());
+                    const elapsed = formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf);
+                    setBuf(&model.elapsed_line, &model.elapsed_len, elapsed);
+                    setBuf(&model.meta_line, &model.meta_len, "Cursor");
+                } else {
+                    setBuf(&model.project_line, &model.project_len, "No active session");
+                    setBuf(&model.elapsed_line, &model.elapsed_len, "—");
+                    setBuf(&model.meta_line, &model.meta_len, "Waiting for a session");
+                }
+            },
+        }
+
+        if (!model.auto_presence or model.presence_paused) {
+            setBuf(&model.broadcast_line, &model.broadcast_len, "Presence is off");
+        } else if (sharing_agent) |agent| {
+            if (agent == model.selected_agent) {
+                setBuf(&model.broadcast_line, &model.broadcast_len, "Sharing to Discord as your status");
+            } else {
+                var bbuf: [80]u8 = undefined;
+                const line = std.fmt.bufPrint(
+                    &bbuf,
+                    "Active — Discord is sharing {s}",
+                    .{agent.displayName()},
+                ) catch "Sharing another agent";
+                setBuf(&model.broadcast_line, &model.broadcast_len, line);
+            }
+        } else {
+            setBuf(&model.broadcast_line, &model.broadcast_len, "Waiting for a session");
+        }
+
+        model.refreshChrome();
     }
 
     fn applyUsage(model: *Model, snap: grok_usage.Snapshot, now_ms: i64) void {
@@ -247,13 +401,19 @@ pub const Model = struct {
         var weekly_buf: [80]u8 = undefined;
         const weekly = grok_usage.formatWeeklyLine(snap, now_ms, &weekly_buf);
         setBuf(&model.usage_weekly_line, &model.usage_weekly_len, weekly);
+        model.usage_weekly_frac = if (snap.weekly_percent >= 0)
+            @as(f32, @floatFromInt(snap.weekly_percent)) / 100.0
+        else
+            0;
 
         if (snap.on_demand_percent >= 0) {
             var od_buf: [80]u8 = undefined;
-            const od = std.fmt.bufPrint(&od_buf, "On-demand {d}%", .{snap.on_demand_percent}) catch "On-demand";
+            const od = std.fmt.bufPrint(&od_buf, "{d}%", .{snap.on_demand_percent}) catch "On-demand";
             setBuf(&model.usage_ondemand_line, &model.usage_ondemand_len, od);
+            model.usage_ondemand_frac = @as(f32, @floatFromInt(snap.on_demand_percent)) / 100.0;
         } else {
             model.usage_ondemand_len = 0;
+            model.usage_ondemand_frac = 0;
         }
         setBuf(&model.usage_status_line, &model.usage_status_len, "Weekly credits (SuperGrok / CLI)");
     }
@@ -269,11 +429,12 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     switch (msg) {
         .connect => {
             model.presence_paused = false;
+            model.auto_presence = true;
             model.setDetail("Connecting with AgentCord Application ID…");
             model.error_len = 0;
             g_discord.connect(discord_client_id);
             model.applyDiscordSnapshot(g_discord.snapshot());
-            syncPresence(model);
+            syncPresence(model, fx.wallMs());
         },
         .disconnect => {
             model.presence_paused = true;
@@ -282,21 +443,35 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             model.setDetail("Disconnected — presence paused until Connect.");
             model.applyDiscordSnapshot(g_discord.snapshot());
         },
-        .toggle_auto => {
-            model.auto_presence = !model.auto_presence;
-            if (!model.auto_presence and model.presence_mode == .grok_auto) {
-                g_discord.setActivity(null);
-                model.presence_mode = .cleared;
-                model.setDetail("Auto presence off — cleared Grok activity.");
-            } else if (model.auto_presence) {
-                model.setDetail("Auto presence on — scanning Grok sessions.");
-                syncPresence(model);
+        .toggle_presence => {
+            if (model.presence_enabled()) {
+                model.auto_presence = false;
+                if (model.presence_mode == .grok_auto or model.presence_mode == .cursor_auto) {
+                    g_discord.setActivity(null);
+                    model.presence_mode = .cleared;
+                }
+                model.setDetail("Presence off.");
+            } else {
+                model.auto_presence = true;
+                model.presence_paused = false;
+                if (model.conn_state == .disconnected) {
+                    g_discord.connect(discord_client_id);
+                }
+                model.setDetail("Presence on — scanning sessions.");
+                syncPresence(model, fx.wallMs());
             }
+            model.applyDiscordSnapshot(g_discord.snapshot());
+        },
+        .toggle_auto => {
+            // Kept for tests / hot-reload of older markup.
+            model.auto_presence = !model.auto_presence;
+            syncPresence(model, fx.wallMs());
         },
         .set_test_presence => {
             g_discord.setActivity(presence.activityManualTest(fx.wallMs()));
             model.presence_mode = .manual_test;
             model.presence_paused = false;
+            model.auto_presence = true;
             model.setDetail("SET_ACTIVITY: manual test presence");
             model.applyDiscordSnapshot(g_discord.snapshot());
         },
@@ -310,6 +485,16 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             g_usage_allow_refresh = true;
             requestBilling(model, fx);
         },
+        .open_settings => model.show_settings = true,
+        .close_settings => model.show_settings = false,
+        .select_grok => {
+            model.selected_agent = .grok;
+            syncPresence(model, fx.wallMs());
+        },
+        .select_cursor => {
+            model.selected_agent = .cursor;
+            syncPresence(model, fx.wallMs());
+        },
         .show_window => {
             fx.showWindow(main_window_label);
             model.setDetail("Window shown from tray.");
@@ -322,7 +507,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .poll => |timer| {
             if (timer.outcome != .fired) return;
             model.applyDiscordSnapshot(g_discord.snapshot());
-            syncPresence(model);
+            syncPresence(model, fx.wallMs());
         },
         .usage_tick => |timer| {
             if (timer.outcome != .fired) return;
@@ -353,6 +538,8 @@ fn requestBilling(model: *Model, fx: *Effects) void {
         model.usage_has_data = false;
         model.usage_weekly_len = 0;
         model.usage_ondemand_len = 0;
+        model.usage_weekly_frac = 0;
+        model.usage_ondemand_frac = 0;
         return;
     }
 
@@ -462,9 +649,10 @@ fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
     requestBilling(model, fx);
 }
 
-fn syncPresence(model: *Model) void {
-    const session = grok_session.scan();
-    model.applyGrok(session);
+fn syncPresence(model: *Model, now_ms: i64) void {
+    _ = grok_usage.loadAuth(&g_auth);
+    const grok = grok_session.scan();
+    const cursor = cursor_session.scan();
 
     var scratch: presence.Scratch = .{};
     const decision = presence.decide(
@@ -472,7 +660,7 @@ fn syncPresence(model: *Model) void {
         model.auto_presence,
         model.presence_paused,
         model.ready,
-        session,
+        .{ .grok = grok, .cursor = cursor },
         &scratch,
     );
 
@@ -485,13 +673,20 @@ fn syncPresence(model: *Model) void {
     }
     model.presence_mode = decision.mode;
     model.setDetail(decision.detail);
+
+    const sharing: ?AgentKind = switch (decision.mode) {
+        .grok_auto => .grok,
+        .cursor_auto => .cursor,
+        else => null,
+    };
+    model.applySessions(grok, cursor, now_ms, sharing);
 }
 
 fn boot(model: *Model, fx: *Effects) void {
     model.setStatus("Disconnected");
     model.setDetail("Starting…");
-    model.applyGrok(null);
     model.setUsageStatus("Loading usage…");
+    model.refreshChrome();
     fx.startTimer(.{
         .key = EffectKeys.poll_timer,
         .interval_ms = 2000,
@@ -506,7 +701,7 @@ fn boot(model: *Model, fx: *Effects) void {
     });
     g_discord.connect(discord_client_id);
     model.applyDiscordSnapshot(g_discord.snapshot());
-    syncPresence(model);
+    syncPresence(model, fx.wallMs());
     g_usage_allow_refresh = true;
     requestBilling(model, fx);
 }
@@ -550,7 +745,7 @@ pub fn main(init: std.process.Init) !void {
 
     try runner.runWithOptions(app_state.app(), .{
         .app_name = "agentcord-native",
-        .window_title = "AgentCord Native",
+        .window_title = "AgentCord",
         .bundle_id = "dev.agentcord.native",
         .icon_path = "assets/icon.png",
         .default_frame = geometry.RectF.init(0, 0, window_width, window_height),
@@ -566,6 +761,7 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = @import("discord_ipc.zig");
     _ = @import("grok_session.zig");
+    _ = @import("cursor_session.zig");
     _ = @import("grok_usage.zig");
     _ = @import("json_lite.zig");
     _ = @import("presence.zig");

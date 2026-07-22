@@ -8,6 +8,7 @@ const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 const discord_ipc = @import("discord_ipc.zig");
 const grok_session = @import("grok_session.zig");
+const grok_usage = @import("grok_usage.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
@@ -46,13 +47,28 @@ const shell_windows = [_]native_sdk.ShellWindow{.{
     .width = window_width,
     .height = window_height,
     .restore_state = false,
+    .close_policy = .hide,
     .views = &shell_views,
 }};
 const shell_scene: native_sdk.ShellConfig = .{ .windows = &shell_windows };
 
 var g_discord: discord_ipc.Client = .{};
+var g_auth: grok_usage.Auth = .{};
+var g_usage_in_flight: bool = false;
+var g_usage_allow_refresh: bool = true;
 
 const poll_timer_key: u64 = 1;
+const usage_timer_key: u64 = 2;
+const usage_billing_key: u64 = 10;
+const usage_refresh_key: u64 = 11;
+const main_window_label = "main";
+
+/// Tray dropdown: Open (show window) + Quit. Static for the prototype.
+const tray_menu_items = [_]native_sdk.TrayMenuItem{
+    .{ .id = 1, .label = "Open AgentCord", .command = "app.open" },
+    .{ .separator = true },
+    .{ .id = 2, .label = "Quit", .command = "app.quit" },
+};
 
 // ------------------------------------------------------------------ model
 
@@ -62,9 +78,17 @@ pub const Msg = union(enum) {
     toggle_auto,
     set_test_presence,
     clear_presence,
+    refresh_usage,
+    /// Tray / menu: un-hide + activate the main window.
+    show_window,
+    /// Tray / menu: graceful app quit (clears presence via main's defer).
+    quit,
     poll: native_sdk.EffectTimer,
+    usage_tick: native_sdk.EffectTimer,
+    usage_fetched: native_sdk.EffectResponse,
+    usage_refreshed: native_sdk.EffectResponse,
 
-    pub const view_unbound = .{"poll"};
+    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "show_window", "quit" };
 };
 
 pub const Model = struct {
@@ -91,8 +115,19 @@ pub const Model = struct {
     grok_project_len: usize = 0,
     grok_tokens_line: [48]u8 = .{0} ** 48,
     grok_tokens_len: usize = 0,
+    grok_context_line: [64]u8 = .{0} ** 64,
+    grok_context_len: usize = 0,
     grok_session_line: [80]u8 = .{0} ** 80,
     grok_session_len: usize = 0,
+
+    /// Weekly credits from billing API (-1 unknown).
+    usage_has_data: bool = false,
+    usage_weekly_line: [80]u8 = .{0} ** 80,
+    usage_weekly_len: usize = 0,
+    usage_ondemand_line: [80]u8 = .{0} ** 80,
+    usage_ondemand_len: usize = 0,
+    usage_status_line: [96]u8 = .{0} ** 96,
+    usage_status_len: usize = 0,
 
     pub fn status_text(model: *const Model) []const u8 {
         return model.status_line[0..model.status_len];
@@ -112,8 +147,20 @@ pub const Model = struct {
     pub fn grok_tokens_text(model: *const Model) []const u8 {
         return model.grok_tokens_line[0..model.grok_tokens_len];
     }
+    pub fn grok_context_text(model: *const Model) []const u8 {
+        return model.grok_context_line[0..model.grok_context_len];
+    }
     pub fn grok_session_text(model: *const Model) []const u8 {
         return model.grok_session_line[0..model.grok_session_len];
+    }
+    pub fn usage_weekly_text(model: *const Model) []const u8 {
+        return model.usage_weekly_line[0..model.usage_weekly_len];
+    }
+    pub fn usage_ondemand_text(model: *const Model) []const u8 {
+        return model.usage_ondemand_line[0..model.usage_ondemand_len];
+    }
+    pub fn usage_status_text(model: *const Model) []const u8 {
+        return model.usage_status_line[0..model.usage_status_len];
     }
 
     pub fn conn_label(model: *const Model) []const u8 {
@@ -178,8 +225,20 @@ pub const Model = struct {
             else
                 "—";
             var line_buf: [48]u8 = undefined;
-            const line = std.fmt.bufPrint(&line_buf, "{s} tokens", .{tok}) catch "tokens";
+            const line = std.fmt.bufPrint(&line_buf, "{s} tokens used", .{tok}) catch "tokens";
             setBuf(&model.grok_tokens_line, &model.grok_tokens_len, line);
+
+            if (s.context_percent >= 0) {
+                var ctx_buf: [64]u8 = undefined;
+                const ctx = if (s.context_window_tokens > 0) blk: {
+                    var win_buf: [32]u8 = undefined;
+                    const win = grok_session.formatTokens(s.context_window_tokens, &win_buf);
+                    break :blk std.fmt.bufPrint(&ctx_buf, "Context {d}% of {s}", .{ s.context_percent, win }) catch "Context";
+                } else std.fmt.bufPrint(&ctx_buf, "Context {d}%", .{s.context_percent}) catch "Context";
+                setBuf(&model.grok_context_line, &model.grok_context_len, ctx);
+            } else {
+                model.grok_context_len = 0;
+            }
 
             const sid = s.sessionId();
             const short = if (sid.len > 8) sid[0..8] else sid;
@@ -190,9 +249,30 @@ pub const Model = struct {
             model.grok_active = false;
             model.grok_model_len = 0;
             model.grok_project_len = 0;
+            model.grok_context_len = 0;
             setBuf(&model.grok_tokens_line, &model.grok_tokens_len, "no live session");
             setBuf(&model.grok_session_line, &model.grok_session_len, "check ~/.grok/active_sessions.json");
         }
+    }
+
+    fn applyUsage(model: *Model, snap: grok_usage.Snapshot, now_ms: i64) void {
+        model.usage_has_data = snap.weekly_percent >= 0;
+        var weekly_buf: [80]u8 = undefined;
+        const weekly = grok_usage.formatWeeklyLine(snap, now_ms, &weekly_buf);
+        setBuf(&model.usage_weekly_line, &model.usage_weekly_len, weekly);
+
+        if (snap.on_demand_percent >= 0) {
+            var od_buf: [80]u8 = undefined;
+            const od = std.fmt.bufPrint(&od_buf, "On-demand {d}%", .{snap.on_demand_percent}) catch "On-demand";
+            setBuf(&model.usage_ondemand_line, &model.usage_ondemand_len, od);
+        } else {
+            model.usage_ondemand_len = 0;
+        }
+        setBuf(&model.usage_status_line, &model.usage_status_len, "Weekly credits (SuperGrok / CLI)");
+    }
+
+    fn setUsageStatus(model: *Model, text: []const u8) void {
+        setBuf(&model.usage_status_line, &model.usage_status_len, text);
     }
 };
 
@@ -252,12 +332,181 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             model.setDetail("Cleared presence (activity: null).");
             model.applyDiscordSnapshot(g_discord.snapshot());
         },
+        .refresh_usage => {
+            g_usage_allow_refresh = true;
+            requestBilling(model, fx);
+        },
+        .show_window => {
+            fx.showWindow(main_window_label);
+            model.setDetail("Window shown from tray.");
+        },
+        .quit => {
+            // Best-effort clear before the process tears down.
+            g_discord.setActivity(null);
+            g_discord.disconnect();
+            fx.quitApp();
+        },
         .poll => |timer| {
             if (timer.outcome != .fired) return;
             model.applyDiscordSnapshot(g_discord.snapshot());
             syncPresence(model, fx);
         },
+        .usage_tick => |timer| {
+            if (timer.outcome != .fired) return;
+            g_usage_allow_refresh = true;
+            requestBilling(model, fx);
+        },
+        .usage_fetched => |response| handleBillingResponse(model, fx, response),
+        .usage_refreshed => |response| handleRefreshResponse(model, fx, response),
     }
+}
+
+/// Map tray / app-menu command names to Msg arms.
+fn onCommand(name: []const u8) ?Msg {
+    if (std.mem.eql(u8, name, "app.open")) return .show_window;
+    if (std.mem.eql(u8, name, "app.quit")) return .quit;
+    return null;
+}
+
+fn requestBilling(model: *Model, fx: *Effects) void {
+    if (g_usage_in_flight) return;
+    _ = grok_usage.loadAuth(&g_auth);
+    if (!g_auth.hasAccess()) {
+        if (g_auth.hasRefresh() and g_usage_allow_refresh) {
+            requestTokenRefresh(model, fx);
+            return;
+        }
+        model.setUsageStatus("Not signed in — run grok login");
+        model.usage_has_data = false;
+        model.usage_weekly_len = 0;
+        model.usage_ondemand_len = 0;
+        return;
+    }
+
+    // Header budget is 1 KiB total — keep names short (skip User-Agent).
+    var auth_val: [16 + 2048]u8 = undefined;
+    const bearer = std.fmt.bufPrint(&auth_val, "Bearer {s}", .{g_auth.accessSlice()}) catch {
+        model.setUsageStatus("Access token too large");
+        return;
+    };
+
+    var headers_buf: [4]std.http.Header = undefined;
+    var header_count: usize = 0;
+    headers_buf[header_count] = .{ .name = "Authorization", .value = bearer };
+    header_count += 1;
+    headers_buf[header_count] = .{ .name = "Accept", .value = "application/json" };
+    header_count += 1;
+    headers_buf[header_count] = .{ .name = "X-XAI-Token-Auth", .value = grok_usage.token_auth_header };
+    header_count += 1;
+    if (g_auth.user_id_len > 0) {
+        headers_buf[header_count] = .{ .name = "x-userid", .value = g_auth.userIdSlice() };
+        header_count += 1;
+    }
+
+    g_usage_in_flight = true;
+    model.setUsageStatus("Fetching usage…");
+    fx.fetch(.{
+        .key = usage_billing_key,
+        .method = .GET,
+        .url = grok_usage.billing_url,
+        .headers = headers_buf[0..header_count],
+        .timeout_ms = 15_000,
+        .on_response = Effects.responseMsg(.usage_fetched),
+    });
+}
+
+fn requestTokenRefresh(model: *Model, fx: *Effects) void {
+    if (!g_auth.hasRefresh()) {
+        model.setUsageStatus("Not signed in — run grok login");
+        return;
+    }
+    var url_buf: [256]u8 = undefined;
+    const url = grok_usage.tokenUrl(&g_auth, &url_buf) orelse {
+        model.setUsageStatus("Invalid OIDC issuer");
+        return;
+    };
+    var body_buf: [1024]u8 = undefined;
+    const body = grok_usage.refreshBody(&g_auth, &body_buf) orelse {
+        model.setUsageStatus("Could not build refresh body");
+        return;
+    };
+
+    g_usage_in_flight = true;
+    g_usage_allow_refresh = false;
+    model.setUsageStatus("Refreshing sign-in…");
+    fx.fetch(.{
+        .key = usage_refresh_key,
+        .method = .POST,
+        .url = url,
+        .headers = &.{
+            .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
+            .{ .name = "Accept", .value = "application/json" },
+        },
+        .body = body,
+        .timeout_ms = 15_000,
+        .on_response = Effects.responseMsg(.usage_refreshed),
+    });
+}
+
+fn handleBillingResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
+    g_usage_in_flight = false;
+    switch (response.outcome) {
+        .ok => {
+            if (response.status == 401) {
+                if (g_usage_allow_refresh and g_auth.hasRefresh()) {
+                    requestTokenRefresh(model, fx);
+                    return;
+                }
+                model.setUsageStatus("Auth expired — run grok login");
+                return;
+            }
+            if (response.status != 200) {
+                var buf: [64]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Billing HTTP {d}", .{response.status}) catch "Billing error";
+                model.setUsageStatus(msg);
+                return;
+            }
+            // COPY body — drain scratch dies after this update.
+            var body_buf: [16 * 1024]u8 = undefined;
+            const n = @min(response.body.len, body_buf.len);
+            @memcpy(body_buf[0..n], response.body[0..n]);
+            const body = body_buf[0..n];
+
+            var snap: grok_usage.Snapshot = .{};
+            if (!grok_usage.parseBilling(body, &snap)) {
+                model.setUsageStatus("Could not parse billing response");
+                return;
+            }
+            model.applyUsage(snap, fx.wallMs());
+        },
+        .rejected => model.setUsageStatus("Usage fetch rejected (headers/budget?)"),
+        .connect_failed, .tls_failed, .protocol_failed => model.setUsageStatus("Network error fetching usage"),
+        .timed_out => model.setUsageStatus("Usage fetch timed out"),
+        .cancelled => {},
+    }
+}
+
+fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
+    g_usage_in_flight = false;
+    if (response.outcome != .ok or response.status != 200) {
+        model.setUsageStatus("Token refresh failed — run grok login");
+        return;
+    }
+    var body_buf: [8 * 1024]u8 = undefined;
+    const n = @min(response.body.len, body_buf.len);
+    @memcpy(body_buf[0..n], response.body[0..n]);
+    const body = body_buf[0..n];
+    const access = grok_session.extractString(body, "access_token") orelse {
+        model.setUsageStatus("Refresh response missing access_token");
+        return;
+    };
+    g_auth.setAccess(access);
+    if (grok_session.extractString(body, "refresh_token")) |new_refresh| {
+        if (new_refresh.len > 0) g_auth.setRefresh(new_refresh);
+    }
+    // Retry billing once with the new access token.
+    g_usage_allow_refresh = false;
+    requestBilling(model, fx);
 }
 
 fn syncPresence(model: *Model, fx: *Effects) void {
@@ -327,15 +576,25 @@ fn boot(model: *Model, fx: *Effects) void {
     model.setStatus("Disconnected");
     model.setDetail("Starting…");
     model.applyGrok(null);
+    model.setUsageStatus("Loading usage…");
     fx.startTimer(.{
         .key = poll_timer_key,
         .interval_ms = 2000,
         .mode = .repeating,
         .on_fire = Effects.timerMsg(.poll),
     });
+    // Weekly credits poll (matches macOS GrokUsage cadence of ~5 min).
+    fx.startTimer(.{
+        .key = usage_timer_key,
+        .interval_ms = 300_000,
+        .mode = .repeating,
+        .on_fire = Effects.timerMsg(.usage_tick),
+    });
     g_discord.connect(discord_client_id);
     model.applyDiscordSnapshot(g_discord.snapshot());
     syncPresence(model, fx);
+    g_usage_allow_refresh = true;
+    requestBilling(model, fx);
 }
 
 // ------------------------------------------------------------------- view
@@ -360,6 +619,15 @@ pub fn main(init: std.process.Init) !void {
         .canvas_label = canvas_label,
         .update_fx = update,
         .init_fx = boot,
+        .on_command = onCommand,
+        // System tray (Windows notification area / macOS status item).
+        // icon_path is the app icon; title is the text fallback if the icon fails.
+        .status_item = .{
+            .title = "AC",
+            .icon_path = "assets/icon.png",
+            .tooltip = "AgentCord",
+            .items = &tray_menu_items,
+        },
         .markup = .{ .source = app_markup, .watch_path = "src/app.native", .io = init.io },
     });
     defer {
@@ -386,5 +654,6 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = @import("discord_ipc.zig");
     _ = @import("grok_session.zig");
+    _ = @import("grok_usage.zig");
     _ = @import("tests.zig");
 }

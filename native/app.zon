@@ -7,16 +7,18 @@
     .icons = .{"assets/icon.png"},
     .platforms = .{ "windows", "macos", "linux" },
     .permissions = .{ "view", "command" },
-    .capabilities = .{ "native_views", "gpu_surfaces" },
+    .capabilities = .{ "native_views", "gpu_surfaces", "tray" },
     .shell = .{
         .windows = .{
             .{
                 .label = "main",
                 .title = "AgentCord Native",
-                .width = 440,
-                .height = 420,
+                .width = 460,
+                .height = 480,
                 .restore_state = false,
                 .restore_policy = "center_on_primary",
+                // Menu-bar / tray app shape: close hides; tray Open brings it back.
+                .close_policy = "hide",
                 .views = .{
                     .{ .label = "main-canvas", .kind = "gpu_surface", .fill = true, .role = "AgentCord presence", .accessibility_label = "AgentCord", .gpu_backend = "metal", .gpu_pixel_format = "bgra8_unorm", .gpu_present_mode = "timer", .gpu_alpha_mode = "opaque", .gpu_color_space = "srgb", .gpu_vsync = true },
                 },

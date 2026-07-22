@@ -1,4 +1,4 @@
-<!-- AgentCord native-sdk: Discord presence driven by live Grok sessions. -->
+<!-- AgentCord native-sdk: Discord presence + Grok session/usage. -->
 <column gap="12" padding="16" background="background">
   <row gap="8" cross="center" window-drag="true">
     <text size="heading" grow="1">AgentCord · Grok</text>
@@ -28,12 +28,31 @@
       <if test="{grok_active}">
         <text>{grok_model_text}</text>
         <text foreground="text_muted">Working on: {grok_project_text}</text>
+        <if test="{grok_context_len > 0}">
+          <text>{grok_context_text}</text>
+        </if>
         <text foreground="text_muted">{grok_tokens_text}</text>
         <text foreground="text_muted">{grok_session_text}</text>
       </if>
       <else>
-        <text foreground="text_muted" wrap="true">No live Grok CLI process. Open a Grok session in this workspace and it will appear here.</text>
+        <text foreground="text_muted" wrap="true">No live Grok CLI process. Open a Grok session and it will appear here.</text>
       </else>
+    </column>
+  </card>
+
+  <card padding="12" background="surface" radius="md">
+    <column gap="8">
+      <row gap="8" cross="center">
+        <text grow="1" foreground="text_muted">Usage</text>
+        <button size="sm" variant="ghost" on-press="refresh_usage">Refresh</button>
+      </row>
+      <text foreground="text_muted" wrap="true">{usage_status_text}</text>
+      <if test="{usage_has_data}">
+        <text>Weekly credits · {usage_weekly_text}</text>
+        <if test="{usage_ondemand_len > 0}">
+          <text foreground="text_muted">{usage_ondemand_text}</text>
+        </if>
+      </if>
     </column>
   </card>
 
@@ -49,5 +68,5 @@
     </row>
   </column>
 
-  <status-bar>polls ~/.grok every 2s · large image logo-grok</status-bar>
+  <status-bar>tray · usage from ~/.grok/auth.json + billing API</status-bar>
 </column>

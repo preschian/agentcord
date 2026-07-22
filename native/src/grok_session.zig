@@ -62,6 +62,9 @@ pub const SessionInfo = struct {
     model_len: usize = 0,
     start_epoch_ms: i64 = 0,
     total_tokens: i64 = 0,
+    /// Context window fill percent from signals.json (`contextWindowUsage`).
+    context_percent: i64 = -1,
+    context_window_tokens: i64 = 0,
     session_id: [64]u8 = .{0} ** 64,
     session_id_len: usize = 0,
     cwd: [260]u8 = .{0} ** 260,
@@ -143,6 +146,14 @@ pub fn scan() ?SessionInfo {
                     if (extractI64(signals, "contextTokensUsed")) |tok| {
                         info.total_tokens = tok;
                     }
+                    if (extractI64(signals, "contextWindowTokens")) |win| {
+                        info.context_window_tokens = win;
+                    }
+                    if (extractI64(signals, "contextWindowUsage")) |pct| {
+                        info.context_percent = pct;
+                    } else if (info.total_tokens > 0 and info.context_window_tokens > 0) {
+                        info.context_percent = @divTrunc(info.total_tokens * 100, info.context_window_tokens);
+                    }
                     if (info.model_len == 0) {
                         if (extractString(signals, "primaryModelId")) |model_raw| {
                             var pretty_buf: [64]u8 = undefined;
@@ -204,7 +215,7 @@ fn copyTo(buf: []u8, value: []const u8) []const u8 {
     return buf[0..n];
 }
 
-fn userProfile(buf: []u8) ?[]const u8 {
+pub fn userProfile(buf: []u8) ?[]const u8 {
     const name = std.unicode.utf8ToUtf16LeStringLiteral("USERPROFILE");
     var wide: [260]u16 = undefined;
     const n = GetEnvironmentVariableW(name, &wide, wide.len);
@@ -222,7 +233,7 @@ fn processIsAlive(pid: u32) bool {
     return code == STILL_ACTIVE;
 }
 
-fn readFile(path: []const u8, buf: []u8) ?[]const u8 {
+pub fn readFile(path: []const u8, buf: []u8) ?[]const u8 {
     var wide: [520]u16 = undefined;
     const wide_len = std.unicode.utf8ToUtf16Le(wide[0 .. wide.len - 1], path) catch return null;
     wide[wide_len] = 0;
@@ -362,7 +373,7 @@ fn jsonUnescape(src: []const u8, out: []u8) ?[]const u8 {
     return out[0..o];
 }
 
-fn extractString(json: []const u8, key: []const u8) ?[]const u8 {
+pub fn extractString(json: []const u8, key: []const u8) ?[]const u8 {
     var pattern_buf: [96]u8 = undefined;
     const pattern = std.fmt.bufPrint(&pattern_buf, "\"{s}\"", .{key}) catch return null;
     var search_from: usize = 0;
@@ -400,7 +411,7 @@ fn extractString(json: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-fn extractI64(json: []const u8, key: []const u8) ?i64 {
+pub fn extractI64(json: []const u8, key: []const u8) ?i64 {
     var pattern_buf: [96]u8 = undefined;
     const pattern = std.fmt.bufPrint(&pattern_buf, "\"{s}\"", .{key}) catch return null;
     const key_at = std.mem.indexOf(u8, json, pattern) orelse return null;
@@ -450,7 +461,7 @@ fn repoNameFromRemote(remote: []const u8) []const u8 {
 }
 
 /// Parse ISO-8601 timestamps like `2026-07-22T04:20:53.376422Z` to epoch ms (UTC).
-fn parseIsoToEpochMs(iso: []const u8) ?i64 {
+pub fn parseIsoToEpochMs(iso: []const u8) ?i64 {
     if (iso.len < 20) return null;
     const year = std.fmt.parseInt(i32, iso[0..4], 10) catch return null;
     const month = std.fmt.parseInt(u32, iso[5..7], 10) catch return null;

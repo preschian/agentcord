@@ -18,7 +18,20 @@ This lives beside the production C# app in [`../windows`](../windows). The C# bu
 - Auto `SET_ACTIVITY` (model, project, tokens, elapsed) when **Auto presence** is on
 - Clear presence when the Grok process exits
 
-Not yet: Claude/Codex session scanning, tray icon, usage bars, settings persistence.
+## Phase 3 — System tray
+
+- Status item / notification-area icon (`assets/icon.png`)
+- Tray menu: **Open AgentCord**, **Quit**
+- Window close **hides** (keeps running in tray); Open shows the window again
+
+## Phase 4 — Grok usage
+
+- Session context % from `signals.json` (`contextWindowUsage`)
+- Weekly SuperGrok/CLI credits via billing API (`creditUsagePercent` + period end → “resets in …”)
+- Auth from `~/.grok/auth.json` (refresh token on 401)
+- Refresh button + auto poll every 5 minutes
+
+Not yet: Claude/Codex/Cursor session scanning, settings persistence.
 
 ## Prerequisites
 

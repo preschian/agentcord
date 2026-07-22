@@ -8,7 +8,9 @@ const grok_session = @import("grok_session.zig");
 const cursor_session = @import("cursor_session.zig");
 const grok_usage = @import("grok_usage.zig");
 const cursor_usage = @import("cursor_usage.zig");
+const usage_fx = @import("usage_fx.zig");
 const presence = @import("presence.zig");
+const app_model = @import("app_model.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
@@ -42,30 +44,24 @@ const EffectKeys = struct {
     const usage_timer: u64 = 2;
     const usage_billing: u64 = 10;
     const usage_refresh: u64 = 11;
-    const cursor_usage: u64 = 20;
+    const cursor_period: u64 = 20;
+    const cursor_legacy: u64 = 21;
 };
 
 const UsagePhase = enum { idle, fetching, refreshing };
 
-pub const AgentKind = enum {
-    grok,
-    cursor,
-
-    pub fn displayName(self: AgentKind) []const u8 {
-        return switch (self) {
-            .grok => "Grok",
-            .cursor => "Cursor",
-        };
-    }
-};
+pub const AgentKind = app_model.AgentKind;
+pub const Model = app_model.Model;
 
 var g_discord: discord_ipc.Client = .{};
 var g_auth: grok_usage.Auth = .{};
-var g_cursor_auth: cursor_usage.Auth = .{};
+var g_cursor: usage_fx.CursorState = .{};
 var g_usage_phase: UsagePhase = .idle;
-var g_cursor_usage_busy: bool = false;
 /// One refresh attempt per billing cycle / manual Refresh (reset on tick / button).
 var g_usage_allow_refresh: bool = true;
+/// Throttle expensive `.cursor/projects` walks (poll is 2s; scan every 3rd tick).
+var g_poll_n: u32 = 0;
+var g_cached_cursor: ?cursor_session.SessionInfo = null;
 
 const main_window_label = "main";
 
@@ -98,421 +94,11 @@ pub const Msg = union(enum) {
     usage_fetched: native_sdk.EffectResponse,
     usage_refreshed: native_sdk.EffectResponse,
     cursor_usage_fetched: native_sdk.EffectResponse,
+    cursor_legacy_fetched: native_sdk.EffectResponse,
 
-    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "cursor_usage_fetched", "show_window", "quit" };
+    pub const view_unbound = .{ "poll", "usage_tick", "usage_fetched", "usage_refreshed", "cursor_usage_fetched", "cursor_legacy_fetched", "show_window", "quit" };
 };
 
-pub const Model = struct {
-    /// Internal / helper state not bound directly in markup (accessors are).
-    pub const view_unbound = .{
-        "conn_state",           "ready",                 "auto_presence",
-        "presence_paused",      "presence_mode",         "selected_agent",
-        "status_line",          "status_len",            "detail_line",
-        "detail_len",           "error_line",            "grok_active",
-        "cursor_active",        "cursor_installed",      "grok_linked",
-        "session_title_line",   "session_title_len",     "elapsed_line",
-        "elapsed_len",          "project_line",          "project_len",
-        "meta_line",            "meta_len",              "broadcast_line",
-        "broadcast_len",        "connect_subtitle_line", "connect_subtitle_len",
-        "status_pill_line",     "status_pill_len",       "settings_summary_line",
-        "settings_summary_len", "usage_weekly_line",     "usage_weekly_len",
-        "usage_ondemand_line",  "usage_status_line",     "usage_status_len",
-        "cursor_included_line", "cursor_included_len",   "cursor_auto_line",
-        "cursor_auto_len",      "cursor_api_line",       "cursor_api_len",
-        "cursor_ondemand_line", "cursor_ondemand_len",   "cursor_status_line",
-        "cursor_status_len",    "cursor_plan_line",      "cursor_plan_len",
-        "presence_set",         "status_text",           "conn_label",
-        "presence_label",       "grok_status_label",
-    };
-
-    conn_state: discord_ipc.ConnState = .disconnected,
-    ready: bool = false,
-    /// Auto-push session activity to Discord (macOS "Enable presence").
-    auto_presence: bool = true,
-    /// After Disconnect, skip Discord writes until Connect.
-    presence_paused: bool = false,
-    presence_mode: presence.Mode = .cleared,
-    show_settings: bool = false,
-    selected_agent: AgentKind = .grok,
-
-    status_line: [160]u8 = .{0} ** 160,
-    status_len: usize = 0,
-    detail_line: [200]u8 = .{0} ** 200,
-    detail_len: usize = 0,
-    error_line: [160]u8 = .{0} ** 160,
-    error_len: usize = 0,
-
-    // --- selected-agent session card ---
-    grok_active: bool = false,
-    cursor_active: bool = false,
-    cursor_installed: bool = false,
-    grok_linked: bool = false,
-    show_connect_card: bool = false,
-
-    session_title_line: [32]u8 = .{0} ** 32,
-    session_title_len: usize = 0,
-    elapsed_line: [16]u8 = .{0} ** 16,
-    elapsed_len: usize = 0,
-    project_line: [96]u8 = .{0} ** 96,
-    project_len: usize = 0,
-    meta_line: [96]u8 = .{0} ** 96,
-    meta_len: usize = 0,
-    broadcast_line: [80]u8 = .{0} ** 80,
-    broadcast_len: usize = 0,
-    connect_subtitle_line: [120]u8 = .{0} ** 120,
-    connect_subtitle_len: usize = 0,
-    status_pill_line: [32]u8 = .{0} ** 32,
-    status_pill_len: usize = 0,
-    settings_summary_line: [32]u8 = .{0} ** 32,
-    settings_summary_len: usize = 0,
-
-    /// Weekly credits from billing API.
-    usage_has_data: bool = false,
-    usage_weekly_line: [80]u8 = .{0} ** 80,
-    usage_weekly_len: usize = 0,
-    usage_ondemand_line: [80]u8 = .{0} ** 80,
-    usage_ondemand_len: usize = 0,
-    usage_status_line: [96]u8 = .{0} ** 96,
-    usage_status_len: usize = 0,
-    usage_weekly_frac: f32 = 0,
-    usage_ondemand_frac: f32 = 0,
-
-    cursor_usage_has_data: bool = false,
-    cursor_included_line: [80]u8 = .{0} ** 80,
-    cursor_included_len: usize = 0,
-    cursor_included_frac: f32 = 0,
-    cursor_auto_line: [80]u8 = .{0} ** 80,
-    cursor_auto_len: usize = 0,
-    cursor_auto_frac: f32 = 0,
-    cursor_api_line: [80]u8 = .{0} ** 80,
-    cursor_api_len: usize = 0,
-    cursor_api_frac: f32 = 0,
-    cursor_ondemand_line: [80]u8 = .{0} ** 80,
-    cursor_ondemand_len: usize = 0,
-    cursor_ondemand_frac: f32 = 0,
-    cursor_status_line: [96]u8 = .{0} ** 96,
-    cursor_status_len: usize = 0,
-    cursor_plan_line: [40]u8 = .{0} ** 40,
-    cursor_plan_len: usize = 0,
-
-    pub fn presence_set(model: *const Model) bool {
-        return model.presence_mode != .cleared;
-    }
-
-    pub fn presence_enabled(model: *const Model) bool {
-        return model.auto_presence and !model.presence_paused;
-    }
-
-    pub fn agent_is_grok(model: *const Model) bool {
-        return model.selected_agent == .grok;
-    }
-    pub fn agent_is_cursor(model: *const Model) bool {
-        return model.selected_agent == .cursor;
-    }
-    pub fn agent_name(model: *const Model) []const u8 {
-        return model.selected_agent.displayName();
-    }
-
-    pub fn status_text(model: *const Model) []const u8 {
-        return model.status_line[0..model.status_len];
-    }
-    pub fn detail_text(model: *const Model) []const u8 {
-        return model.detail_line[0..model.detail_len];
-    }
-    pub fn error_text(model: *const Model) []const u8 {
-        return model.error_line[0..model.error_len];
-    }
-    pub fn session_title(model: *const Model) []const u8 {
-        return model.session_title_line[0..model.session_title_len];
-    }
-    pub fn elapsed_text(model: *const Model) []const u8 {
-        return model.elapsed_line[0..model.elapsed_len];
-    }
-    pub fn project_text(model: *const Model) []const u8 {
-        return model.project_line[0..model.project_len];
-    }
-    pub fn meta_text(model: *const Model) []const u8 {
-        return model.meta_line[0..model.meta_len];
-    }
-    pub fn broadcast_text(model: *const Model) []const u8 {
-        return model.broadcast_line[0..model.broadcast_len];
-    }
-    pub fn connect_subtitle(model: *const Model) []const u8 {
-        return model.connect_subtitle_line[0..model.connect_subtitle_len];
-    }
-    pub fn status_pill_text(model: *const Model) []const u8 {
-        return model.status_pill_line[0..model.status_pill_len];
-    }
-    pub fn settings_summary(model: *const Model) []const u8 {
-        return model.settings_summary_line[0..model.settings_summary_len];
-    }
-    pub fn usage_weekly_text(model: *const Model) []const u8 {
-        return model.usage_weekly_line[0..model.usage_weekly_len];
-    }
-    pub fn usage_ondemand_text(model: *const Model) []const u8 {
-        return model.usage_ondemand_line[0..model.usage_ondemand_len];
-    }
-    pub fn usage_status_text(model: *const Model) []const u8 {
-        return model.usage_status_line[0..model.usage_status_len];
-    }
-    pub fn cursor_included_text(model: *const Model) []const u8 {
-        return model.cursor_included_line[0..model.cursor_included_len];
-    }
-    pub fn cursor_auto_text(model: *const Model) []const u8 {
-        return model.cursor_auto_line[0..model.cursor_auto_len];
-    }
-    pub fn cursor_api_text(model: *const Model) []const u8 {
-        return model.cursor_api_line[0..model.cursor_api_len];
-    }
-    pub fn cursor_ondemand_text(model: *const Model) []const u8 {
-        return model.cursor_ondemand_line[0..model.cursor_ondemand_len];
-    }
-    pub fn cursor_status_text(model: *const Model) []const u8 {
-        return model.cursor_status_line[0..model.cursor_status_len];
-    }
-    pub fn cursor_plan_text(model: *const Model) []const u8 {
-        return model.cursor_plan_line[0..model.cursor_plan_len];
-    }
-
-    pub fn conn_label(model: *const Model) []const u8 {
-        return switch (model.conn_state) {
-            .connecting => "Connecting…",
-            .connected => "Connected",
-            .disconnected => "Disconnected",
-        };
-    }
-
-    pub fn presence_label(model: *const Model) []const u8 {
-        return model.presence_mode.label();
-    }
-
-    pub fn grok_status_label(model: *const Model) []const u8 {
-        return if (model.grok_active) "Grok: active" else "Grok: idle";
-    }
-
-    fn setBuf(buf: []u8, len: *usize, text: []const u8) void {
-        const n = @min(text.len, buf.len);
-        @memcpy(buf[0..n], text[0..n]);
-        len.* = n;
-    }
-
-    fn setStatus(model: *Model, text: []const u8) void {
-        setBuf(&model.status_line, &model.status_len, text);
-    }
-    fn setDetail(model: *Model, text: []const u8) void {
-        setBuf(&model.detail_line, &model.detail_len, text);
-    }
-    fn setError(model: *Model, text: []const u8) void {
-        setBuf(&model.error_line, &model.error_len, text);
-    }
-
-    fn applyDiscordSnapshot(model: *Model, snap: discord_ipc.Snapshot) void {
-        model.conn_state = snap.state;
-        model.ready = snap.ready;
-        if (snap.last_error_len > 0) {
-            model.setError(snap.errorSlice());
-        } else {
-            model.error_len = 0;
-        }
-        model.setStatus(model.conn_label());
-        model.refreshChrome();
-    }
-
-    fn refreshChrome(model: *Model) void {
-        if (!model.auto_presence or model.presence_paused) {
-            setBuf(&model.status_pill_line, &model.status_pill_len, "Off");
-        } else if (model.conn_state == .connected and model.ready) {
-            setBuf(&model.status_pill_line, &model.status_pill_len, "Connected");
-        } else {
-            setBuf(&model.status_pill_line, &model.status_pill_len, "Connecting");
-        }
-
-        if (model.presence_enabled()) {
-            setBuf(&model.settings_summary_line, &model.settings_summary_len, "Presence on");
-        } else {
-            setBuf(&model.settings_summary_line, &model.settings_summary_len, "Presence off");
-        }
-    }
-
-    fn formatElapsed(start_ms: i64, now_ms: i64, buf: []u8) []const u8 {
-        if (start_ms <= 0) return "—";
-        const total = @max(@divTrunc(now_ms - start_ms, 1000), 0);
-        const h = @divTrunc(total, 3600);
-        const m = @divTrunc(@rem(total, 3600), 60);
-        const s = @rem(total, 60);
-        if (h > 0) {
-            return std.fmt.bufPrint(buf, "{d}:{d:0>2}:{d:0>2}", .{ h, m, s }) catch "—";
-        }
-        return std.fmt.bufPrint(buf, "{d}:{d:0>2}", .{ m, s }) catch "—";
-    }
-
-    fn applySessions(
-        model: *Model,
-        grok: ?grok_session.SessionInfo,
-        cursor: ?cursor_session.SessionInfo,
-        now_ms: i64,
-        sharing_agent: ?AgentKind,
-    ) void {
-        model.grok_active = grok != null;
-        model.cursor_active = cursor != null;
-        model.cursor_installed = cursor_session.isInstalled() or cursor_usage.loadAuth(&g_cursor_auth);
-        model.grok_linked = g_auth.hasAccess() or g_auth.hasRefresh() or grok != null;
-
-        const linked = switch (model.selected_agent) {
-            .grok => model.grok_linked,
-            .cursor => model.cursor_installed,
-        };
-        model.show_connect_card = !linked;
-
-        const sub: []const u8 = switch (model.selected_agent) {
-            .grok => "Sign in with grok login to track usage, sessions and status here.",
-            .cursor => "Install Cursor desktop and sign in to track sessions and usage here.",
-        };
-        setBuf(&model.connect_subtitle_line, &model.connect_subtitle_len, sub);
-
-        const active = switch (model.selected_agent) {
-            .grok => grok != null,
-            .cursor => cursor != null,
-        };
-        setBuf(
-            &model.session_title_line,
-            &model.session_title_len,
-            if (active) "ACTIVE SESSION" else "NO SESSION",
-        );
-
-        var elapsed_buf: [16]u8 = undefined;
-        if (active) {
-            switch (model.selected_agent) {
-                .grok => {
-                    const s = grok.?;
-                    setBuf(&model.project_line, &model.project_len, s.project());
-                    setBuf(&model.elapsed_line, &model.elapsed_len, formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf));
-                    var meta_buf: [96]u8 = undefined;
-                    var tok_buf: [32]u8 = undefined;
-                    const meta = if (s.total_tokens > 0) blk: {
-                        const tok = grok_session.formatTokens(s.total_tokens, &tok_buf);
-                        break :blk std.fmt.bufPrint(&meta_buf, "{s}  ·  {s} tokens", .{ s.modelName(), tok }) catch s.modelName();
-                    } else s.modelName();
-                    setBuf(&model.meta_line, &model.meta_len, meta);
-                },
-                .cursor => {
-                    const s = cursor.?;
-                    setBuf(&model.project_line, &model.project_len, s.project());
-                    setBuf(&model.elapsed_line, &model.elapsed_len, formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf));
-                    setBuf(&model.meta_line, &model.meta_len, "Cursor");
-                },
-            }
-        } else {
-            setBuf(&model.project_line, &model.project_len, "No active session");
-            setBuf(&model.elapsed_line, &model.elapsed_len, "—");
-            setBuf(&model.meta_line, &model.meta_len, "Waiting for a session");
-        }
-
-        if (!model.auto_presence or model.presence_paused) {
-            setBuf(&model.broadcast_line, &model.broadcast_len, "Presence is off");
-        } else if (sharing_agent) |agent| {
-            if (agent == model.selected_agent) {
-                setBuf(&model.broadcast_line, &model.broadcast_len, "Sharing to Discord as your status");
-            } else {
-                var bbuf: [80]u8 = undefined;
-                const line = std.fmt.bufPrint(
-                    &bbuf,
-                    "Active — Discord is sharing {s}",
-                    .{agent.displayName()},
-                ) catch "Sharing another agent";
-                setBuf(&model.broadcast_line, &model.broadcast_len, line);
-            }
-        } else {
-            setBuf(&model.broadcast_line, &model.broadcast_len, "Waiting for a session");
-        }
-
-        model.refreshChrome();
-    }
-
-    fn applyUsage(model: *Model, snap: grok_usage.Snapshot, now_ms: i64) void {
-        model.usage_has_data = snap.weekly_percent >= 0;
-        var weekly_buf: [80]u8 = undefined;
-        const weekly = grok_usage.formatWeeklyLine(snap, now_ms, &weekly_buf);
-        setBuf(&model.usage_weekly_line, &model.usage_weekly_len, weekly);
-        model.usage_weekly_frac = if (snap.weekly_percent >= 0)
-            @as(f32, @floatFromInt(snap.weekly_percent)) / 100.0
-        else
-            0;
-
-        if (snap.on_demand_percent >= 0) {
-            var od_buf: [80]u8 = undefined;
-            const od = std.fmt.bufPrint(&od_buf, "{d}%", .{snap.on_demand_percent}) catch "On-demand";
-            setBuf(&model.usage_ondemand_line, &model.usage_ondemand_len, od);
-            model.usage_ondemand_frac = @as(f32, @floatFromInt(snap.on_demand_percent)) / 100.0;
-        } else {
-            model.usage_ondemand_len = 0;
-            model.usage_ondemand_frac = 0;
-        }
-        setBuf(&model.usage_status_line, &model.usage_status_len, "Weekly credits (SuperGrok / CLI)");
-    }
-
-    fn setUsageStatus(model: *Model, text: []const u8) void {
-        setBuf(&model.usage_status_line, &model.usage_status_len, text);
-    }
-
-    fn applyCursorUsage(model: *Model, snap: cursor_usage.Snapshot, now_ms: i64) void {
-        model.cursor_usage_has_data = snap.hasData();
-        var line_buf: [80]u8 = undefined;
-
-        const included = cursor_usage.formatWindowLine(snap.included, now_ms, &line_buf);
-        setBuf(&model.cursor_included_line, &model.cursor_included_len, included);
-        model.cursor_included_frac = cursor_usage.windowFrac(snap.included);
-
-        if (snap.auto.percent >= 0) {
-            const auto = cursor_usage.formatWindowLine(snap.auto, now_ms, &line_buf);
-            setBuf(&model.cursor_auto_line, &model.cursor_auto_len, auto);
-            model.cursor_auto_frac = cursor_usage.windowFrac(snap.auto);
-        } else {
-            model.cursor_auto_len = 0;
-            model.cursor_auto_frac = 0;
-        }
-        if (snap.api.percent >= 0) {
-            const api = cursor_usage.formatWindowLine(snap.api, now_ms, &line_buf);
-            setBuf(&model.cursor_api_line, &model.cursor_api_len, api);
-            model.cursor_api_frac = cursor_usage.windowFrac(snap.api);
-        } else {
-            model.cursor_api_len = 0;
-            model.cursor_api_frac = 0;
-        }
-        if (snap.on_demand.percent >= 0) {
-            const od = cursor_usage.formatWindowLine(snap.on_demand, now_ms, &line_buf);
-            setBuf(&model.cursor_ondemand_line, &model.cursor_ondemand_len, od);
-            model.cursor_ondemand_frac = cursor_usage.windowFrac(snap.on_demand);
-        } else {
-            model.cursor_ondemand_len = 0;
-            model.cursor_ondemand_frac = 0;
-        }
-
-        if (snap.plan_name_len > 0) {
-            setBuf(&model.cursor_plan_line, &model.cursor_plan_len, snap.planName());
-        } else {
-            model.cursor_plan_len = 0;
-        }
-        setBuf(&model.cursor_status_line, &model.cursor_status_len, "Included usage (current billing period)");
-    }
-
-    fn setCursorUsageStatus(model: *Model, text: []const u8) void {
-        setBuf(&model.cursor_status_line, &model.cursor_status_len, text);
-    }
-
-    fn clearCursorUsage(model: *Model) void {
-        model.cursor_usage_has_data = false;
-        model.cursor_included_len = 0;
-        model.cursor_included_frac = 0;
-        model.cursor_auto_len = 0;
-        model.cursor_auto_frac = 0;
-        model.cursor_api_len = 0;
-        model.cursor_api_frac = 0;
-        model.cursor_ondemand_len = 0;
-        model.cursor_ondemand_frac = 0;
-        model.cursor_plan_len = 0;
-    }
-};
 
 pub const Effects = native_sdk.Effects(Msg);
 
@@ -607,7 +193,8 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         },
         .usage_fetched => |response| handleBillingResponse(model, fx, response),
         .usage_refreshed => |response| handleRefreshResponse(model, fx, response),
-        .cursor_usage_fetched => |response| handleCursorUsageResponse(model, fx, response),
+        .cursor_usage_fetched => |response| handleCursorPeriodResponse(model, fx, response),
+        .cursor_legacy_fetched => |response| handleCursorLegacyResponse(model, fx, response),
     }
 }
 
@@ -689,39 +276,31 @@ fn requestTokenRefresh(model: *Model, fx: *Effects) void {
 
 fn handleBillingResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
     g_usage_phase = .idle;
-    switch (response.outcome) {
-        .ok => {
-            if (response.status == 401) {
-                if (g_usage_allow_refresh and g_auth.hasRefresh()) {
-                    requestTokenRefresh(model, fx);
-                    return;
-                }
-                model.setUsageStatus("Auth expired — run grok login");
-                return;
-            }
-            if (response.status != 200) {
-                var buf: [64]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Billing HTTP {d}", .{response.status}) catch "Billing error";
-                model.setUsageStatus(msg);
-                return;
-            }
-            var body_buf: [16 * 1024]u8 = undefined;
-            const n = @min(response.body.len, body_buf.len);
-            @memcpy(body_buf[0..n], response.body[0..n]);
-            const body = body_buf[0..n];
-
-            var snap: grok_usage.Snapshot = .{};
-            if (!grok_usage.parseBilling(body, &snap)) {
-                model.setUsageStatus("Could not parse billing response");
-                return;
-            }
-            model.applyUsage(snap, fx.wallMs());
-        },
-        .rejected => model.setUsageStatus("Usage fetch rejected (headers over 1 KiB budget)"),
-        .connect_failed, .tls_failed, .protocol_failed => model.setUsageStatus("Network error fetching usage"),
-        .timed_out => model.setUsageStatus("Usage fetch timed out"),
-        .cancelled => {},
+    if (usage_fx.transportStatus(response.outcome, "Usage")) |msg| {
+        model.setUsageStatus(msg);
+        return;
     }
+    if (response.status == 401) {
+        if (g_usage_allow_refresh and g_auth.hasRefresh()) {
+            requestTokenRefresh(model, fx);
+            return;
+        }
+        model.setUsageStatus("Auth expired — run grok login");
+        return;
+    }
+    if (response.status != 200) {
+        var buf: [64]u8 = undefined;
+        model.setUsageStatus(usage_fx.httpStatusMsg(response.status, &buf, "Billing"));
+        return;
+    }
+    var body_buf: [16 * 1024]u8 = undefined;
+    const body = usage_fx.copyBody(response, &body_buf);
+    var snap: grok_usage.Snapshot = .{};
+    if (!grok_usage.parseBilling(body, &snap)) {
+        model.setUsageStatus("Could not parse billing response");
+        return;
+    }
+    model.applyUsage(snap, fx.wallMs());
 }
 
 fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
@@ -731,9 +310,8 @@ fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
         return;
     }
     var body_buf: [8 * 1024]u8 = undefined;
-    const n = @min(response.body.len, body_buf.len);
-    @memcpy(body_buf[0..n], response.body[0..n]);
-    if (!grok_usage.applyRefreshResponse(&g_auth, body_buf[0..n])) {
+    const body = usage_fx.copyBody(response, &body_buf);
+    if (!grok_usage.applyRefreshResponse(&g_auth, body)) {
         model.setUsageStatus("Refresh response missing access_token");
         return;
     }
@@ -742,24 +320,30 @@ fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
 }
 
 fn requestCursorUsage(model: *Model, fx: *Effects) void {
-    if (g_cursor_usage_busy) return;
-    if (!cursor_usage.loadAuth(&g_cursor_auth)) {
+    if (g_cursor.phase != .idle) return;
+    g_cursor.tried_alt = false;
+    if (!cursor_usage.loadAuth(&g_cursor.auth)) {
         model.clearCursorUsage();
         model.setCursorUsageStatus("Not signed in — open Cursor desktop and sign in");
         return;
     }
+    g_cursor.reloadMembership();
+    fireCursorPeriod(model, fx);
+}
 
+fn fireCursorPeriod(model: *Model, fx: *Effects) void {
     var bearer_buf: [16 + 4096]u8 = undefined;
     var headers_buf: [4]std.http.Header = undefined;
-    const headers = cursor_usage.buildPeriodHeaders(&g_cursor_auth, &bearer_buf, &headers_buf) orelse {
-        model.setCursorUsageStatus("Access token too large for fetch header budget");
+    const headers = cursor_usage.buildPeriodHeaders(&g_cursor.auth, &bearer_buf, &headers_buf) orelse {
+        // Token too large for period headers — try legacy (Authorization only).
+        fireCursorLegacy(model, fx);
         return;
     };
 
-    g_cursor_usage_busy = true;
+    g_cursor.phase = .period;
     model.setCursorUsageStatus("Fetching Cursor usage…");
     fx.fetch(.{
-        .key = EffectKeys.cursor_usage,
+        .key = EffectKeys.cursor_period,
         .method = .POST,
         .url = cursor_usage.period_usage_url,
         .headers = headers,
@@ -769,54 +353,129 @@ fn requestCursorUsage(model: *Model, fx: *Effects) void {
     });
 }
 
-fn handleCursorUsageResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
-    g_cursor_usage_busy = false;
-    switch (response.outcome) {
-        .ok => {
-            if (response.status == 401) {
-                model.clearCursorUsage();
-                model.setCursorUsageStatus("Cursor auth expired — sign in again in Cursor");
-                return;
-            }
-            if (response.status != 200) {
-                var buf: [64]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Cursor usage HTTP {d}", .{response.status}) catch "Cursor usage error";
-                model.setCursorUsageStatus(msg);
-                return;
-            }
-            var body_buf: [32 * 1024]u8 = undefined;
-            const n = @min(response.body.len, body_buf.len);
-            @memcpy(body_buf[0..n], response.body[0..n]);
-            var snap: cursor_usage.Snapshot = .{};
-            if (!cursor_usage.parsePeriodUsage(body_buf[0..n], &snap)) {
-                model.setCursorUsageStatus("Could not parse Cursor usage response");
-                return;
-            }
-            model.applyCursorUsage(snap, fx.wallMs());
-        },
-        .rejected => model.setCursorUsageStatus("Cursor usage fetch rejected (headers over budget)"),
-        .connect_failed, .tls_failed, .protocol_failed => model.setCursorUsageStatus("Network error fetching Cursor usage"),
-        .timed_out => model.setCursorUsageStatus("Cursor usage fetch timed out"),
-        .cancelled => {},
+fn fireCursorLegacy(model: *Model, fx: *Effects) void {
+    var bearer_buf: [16 + 4096]u8 = undefined;
+    var headers_buf: [2]std.http.Header = undefined;
+    const headers = cursor_usage.buildLegacyHeaders(&g_cursor.auth, &bearer_buf, &headers_buf) orelse {
+        model.setCursorUsageStatus("Access token too large for fetch header budget");
+        g_cursor.phase = .idle;
+        return;
+    };
+    g_cursor.phase = .legacy;
+    model.setCursorUsageStatus("Fetching Cursor usage (legacy)…");
+    fx.fetch(.{
+        .key = EffectKeys.cursor_legacy,
+        .method = .GET,
+        .url = cursor_usage.legacy_usage_url,
+        .headers = headers,
+        .timeout_ms = 15_000,
+        .on_response = Effects.responseMsg(.cursor_legacy_fetched),
+    });
+}
+
+fn tryCursorAltAuth(model: *Model, fx: *Effects) bool {
+    if (g_cursor.tried_alt) return false;
+    const prev = g_cursor.auth.source;
+    if (!cursor_usage.loadAuthAlternate(&g_cursor.auth, prev)) return false;
+    g_cursor.tried_alt = true;
+    g_cursor.reloadMembership();
+    fireCursorPeriod(model, fx);
+    return true;
+}
+
+fn finishCursorSnap(model: *Model, fx: *Effects, snap: *cursor_usage.Snapshot) void {
+    g_cursor.applyMembership(snap);
+    model.applyCursorUsage(snap.*, fx.wallMs());
+    g_cursor.phase = .idle;
+}
+
+fn handleCursorPeriodResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
+    if (usage_fx.transportStatus(response.outcome, "Cursor usage")) |msg| {
+        g_cursor.phase = .idle;
+        model.setCursorUsageStatus(msg);
+        return;
     }
+    if (response.status == 401) {
+        if (tryCursorAltAuth(model, fx)) return;
+        g_cursor.phase = .idle;
+        model.clearCursorUsage();
+        model.setCursorUsageStatus("Cursor auth expired — sign in again in Cursor");
+        return;
+    }
+    if (response.status != 200) {
+        fireCursorLegacy(model, fx);
+        return;
+    }
+    var body_buf: [32 * 1024]u8 = undefined;
+    const body = usage_fx.copyBody(response, &body_buf);
+    var snap: cursor_usage.Snapshot = .{};
+    if (!cursor_usage.parsePeriodUsage(body, &snap)) {
+        fireCursorLegacy(model, fx);
+        return;
+    }
+    finishCursorSnap(model, fx, &snap);
+}
+
+fn handleCursorLegacyResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
+    g_cursor.phase = .idle;
+    if (usage_fx.transportStatus(response.outcome, "Cursor usage")) |msg| {
+        model.setCursorUsageStatus(msg);
+        return;
+    }
+    if (response.status == 401) {
+        if (tryCursorAltAuth(model, fx)) return;
+        model.clearCursorUsage();
+        model.setCursorUsageStatus("Cursor auth expired — sign in again in Cursor");
+        return;
+    }
+    if (response.status != 200) {
+        var buf: [64]u8 = undefined;
+        model.setCursorUsageStatus(usage_fx.httpStatusMsg(response.status, &buf, "Cursor usage"));
+        return;
+    }
+    var body_buf: [32 * 1024]u8 = undefined;
+    const body = usage_fx.copyBody(response, &body_buf);
+    var snap: cursor_usage.Snapshot = .{};
+    if (!cursor_usage.parseLegacyUsage(body, &snap)) {
+        model.setCursorUsageStatus("Could not parse Cursor usage response");
+        return;
+    }
+    finishCursorSnap(model, fx, &snap);
+}
+
+fn linkedFlags(grok: ?grok_session.SessionInfo) struct { grok: bool, cursor: bool } {
+    return .{
+        .grok = g_auth.hasAccess() or g_auth.hasRefresh() or grok != null,
+        .cursor = cursor_session.isInstalled() or cursor_usage.looksSignedIn(),
+    };
+}
+
+fn scanCursorThrottled(force: bool) ?cursor_session.SessionInfo {
+    if (force or g_poll_n % 3 == 0) {
+        g_cached_cursor = cursor_session.scan();
+    }
+    return g_cached_cursor;
 }
 
 fn refreshUi(model: *Model, now_ms: i64) void {
     _ = grok_usage.loadAuth(&g_auth);
     const grok = grok_session.scan();
-    const cursor = cursor_session.scan();
+    const cursor = scanCursorThrottled(model.selected_agent == .cursor);
     const sharing: ?AgentKind = switch (model.presence_mode) {
         .grok_auto => .grok,
         .cursor_auto => .cursor,
         else => null,
     };
-    model.applySessions(grok, cursor, now_ms, sharing);
+    const linked = linkedFlags(grok);
+    model.applySessions(grok, cursor, now_ms, sharing, linked.grok, linked.cursor);
 }
 
 fn syncPresence(model: *Model, now_ms: i64) void {
     _ = grok_usage.loadAuth(&g_auth);
+    g_poll_n +%= 1;
     const grok = grok_session.scan();
-    const cursor = cursor_session.scan();
+    const cursor = scanCursorThrottled(false);
+    const linked = linkedFlags(grok);
 
     var scratch: presence.Scratch = .{};
     const decision = presence.decide(
@@ -843,7 +502,7 @@ fn syncPresence(model: *Model, now_ms: i64) void {
         .cursor_auto => .cursor,
         else => null,
     };
-    model.applySessions(grok, cursor, now_ms, sharing);
+    model.applySessions(grok, cursor, now_ms, sharing, linked.grok, linked.cursor);
 }
 
 fn boot(model: *Model, fx: *Effects) void {
@@ -929,6 +588,8 @@ test {
     _ = @import("grok_session.zig");
     _ = @import("cursor_session.zig");
     _ = @import("cursor_usage.zig");
+    _ = @import("usage_fx.zig");
+    _ = @import("app_model.zig");
     _ = @import("grok_usage.zig");
     _ = @import("json_lite.zig");
     _ = @import("presence.zig");

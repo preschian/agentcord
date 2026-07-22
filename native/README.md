@@ -79,14 +79,16 @@ native build
 
 | File | Role |
 |---|---|
-| `src/main.zig` | Model / Msg / update dispatch |
+| `src/main.zig` | Msg / update / usage fetch orchestration |
+| `src/app_model.zig` | Model + chrome / session / usage projection |
+| `src/usage_fx.zig` | Shared usage fetch helpers (Grok + Cursor) |
 | `src/presence.zig` | Presence mode + session→Activity policy |
 | `src/discord_ipc.zig` | Windows named-pipe Discord RPC client |
 | `src/grok_session.zig` | Live Grok session scan (`active_sessions.json`) |
 | `src/cursor_session.zig` | Live Cursor transcript scan (`~/.cursor`) |
-| `src/cursor_usage.zig` | Cursor billing period usage |
+| `src/cursor_usage.zig` | Cursor auth stores + period/legacy usage |
 | `src/grok_usage.zig` | Auth + billing parse / header budget |
 | `src/json_lite.zig` | Shared JSON scrapers |
-| `src/win32_fs.zig` | Shared Win32 file / env / directory helpers |
+| `src/win32_fs.zig` | Shared Win32 file / env / process helpers |
 | `src/app.native` | macOS-like status UI |
 | `app.zon` | App manifest |

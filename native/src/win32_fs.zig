@@ -96,6 +96,206 @@ pub extern "kernel32" fn GetSystemTimeAsFileTime(
     lpSystemTimeAsFileTime: *FILETIME,
 ) callconv(.winapi) void;
 
+pub extern "kernel32" fn CreatePipe(
+    hReadPipe: *windows.HANDLE,
+    hWritePipe: *windows.HANDLE,
+    lpPipeAttributes: ?*SECURITY_ATTRIBUTES,
+    nSize: windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+pub extern "kernel32" fn SetHandleInformation(
+    hObject: windows.HANDLE,
+    dwMask: windows.DWORD,
+    dwFlags: windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+pub extern "kernel32" fn CreateProcessW(
+    lpApplicationName: ?[*:0]const u16,
+    lpCommandLine: ?[*:0]u16,
+    lpProcessAttributes: ?*anyopaque,
+    lpThreadAttributes: ?*anyopaque,
+    bInheritHandles: windows.BOOL,
+    dwCreationFlags: windows.DWORD,
+    lpEnvironment: ?*anyopaque,
+    lpCurrentDirectory: ?[*:0]const u16,
+    lpStartupInfo: *STARTUPINFOW,
+    lpProcessInformation: *PROCESS_INFORMATION,
+) callconv(.winapi) windows.BOOL;
+
+pub extern "kernel32" fn WaitForSingleObject(
+    hHandle: windows.HANDLE,
+    dwMilliseconds: windows.DWORD,
+) callconv(.winapi) windows.DWORD;
+
+pub extern "kernel32" fn GetExitCodeProcess(
+    hProcess: windows.HANDLE,
+    lpExitCode: *windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+pub extern "kernel32" fn TerminateProcess(
+    hProcess: windows.HANDLE,
+    uExitCode: windows.UINT,
+) callconv(.winapi) windows.BOOL;
+
+pub extern "kernel32" fn SearchPathW(
+    lpPath: ?[*:0]const u16,
+    lpFileName: [*:0]const u16,
+    lpExtension: ?[*:0]const u16,
+    nBufferLength: windows.DWORD,
+    lpBuffer: [*]u16,
+    lpFilePart: ?*?[*:0]u16,
+) callconv(.winapi) windows.DWORD;
+
+const HANDLE_FLAG_INHERIT: windows.DWORD = 0x00000001;
+const CREATE_NO_WINDOW: windows.DWORD = 0x08000000;
+const STARTF_USESTDHANDLES: windows.DWORD = 0x00000100;
+const WAIT_OBJECT_0: windows.DWORD = 0;
+const WAIT_TIMEOUT: windows.DWORD = 0x00000102;
+
+const SECURITY_ATTRIBUTES = extern struct {
+    nLength: windows.DWORD,
+    lpSecurityDescriptor: ?*anyopaque,
+    bInheritHandle: windows.BOOL,
+};
+
+const STARTUPINFOW = extern struct {
+    cb: windows.DWORD,
+    lpReserved: ?[*:0]u16 = null,
+    lpDesktop: ?[*:0]u16 = null,
+    lpTitle: ?[*:0]u16 = null,
+    dwX: windows.DWORD = 0,
+    dwY: windows.DWORD = 0,
+    dwXSize: windows.DWORD = 0,
+    dwYSize: windows.DWORD = 0,
+    dwXCountChars: windows.DWORD = 0,
+    dwYCountChars: windows.DWORD = 0,
+    dwFillAttribute: windows.DWORD = 0,
+    dwFlags: windows.DWORD = 0,
+    wShowWindow: windows.WORD = 0,
+    cbReserved2: windows.WORD = 0,
+    lpReserved2: ?*u8 = null,
+    hStdInput: ?windows.HANDLE = null,
+    hStdOutput: ?windows.HANDLE = null,
+    hStdError: ?windows.HANDLE = null,
+};
+
+const PROCESS_INFORMATION = extern struct {
+    hProcess: windows.HANDLE,
+    hThread: windows.HANDLE,
+    dwProcessId: windows.DWORD,
+    dwThreadId: windows.DWORD,
+};
+
+/// Resolve `name` (e.g. `sqlite3.exe`) on PATH into `out` as UTF-8. Returns null if missing.
+pub fn searchPath(name: []const u8, out: []u8) ?[]const u8 {
+    if (builtin.os.tag != .windows) return null;
+    var name_wide: [260]u16 = undefined;
+    const name_len = std.unicode.utf8ToUtf16Le(name_wide[0 .. name_wide.len - 1], name) catch return null;
+    name_wide[name_len] = 0;
+    var found: [520]u16 = undefined;
+    const n = SearchPathW(null, name_wide[0..name_len :0].ptr, null, found.len, &found, null);
+    if (n == 0 or n >= found.len) return null;
+    const utf8_len = std.unicode.utf16LeToUtf8(out, found[0..n]) catch return null;
+    return out[0..utf8_len];
+}
+
+/// Run `argv[0..]` (argv[0] = exe path or name), capture stdout into `out` (truncated).
+/// Returns stdout slice on exit code 0; null on spawn/timeout/nonzero exit.
+pub fn runCapture(argv: []const []const u8, out: []u8, timeout_ms: u32) ?[]const u8 {
+    if (builtin.os.tag != .windows) return null;
+    if (argv.len == 0 or out.len == 0) return null;
+
+    var cmdline_utf8: [4096]u8 = undefined;
+    var cmdline_len: usize = 0;
+    for (argv, 0..) |arg, i| {
+        if (i > 0) {
+            if (cmdline_len >= cmdline_utf8.len) return null;
+            cmdline_utf8[cmdline_len] = ' ';
+            cmdline_len += 1;
+        }
+        const quoted = quoteArg(arg, cmdline_utf8[cmdline_len..]) orelse return null;
+        cmdline_len += quoted.len;
+    }
+    var cmdline_wide: [4096]u16 = undefined;
+    const wide_len = std.unicode.utf8ToUtf16Le(cmdline_wide[0 .. cmdline_wide.len - 1], cmdline_utf8[0..cmdline_len]) catch return null;
+    cmdline_wide[wide_len] = 0;
+
+    var sa = SECURITY_ATTRIBUTES{
+        .nLength = @sizeOf(SECURITY_ATTRIBUTES),
+        .lpSecurityDescriptor = null,
+        .bInheritHandle = windows.BOOL.TRUE,
+    };
+    var read_pipe: windows.HANDLE = undefined;
+    var write_pipe: windows.HANDLE = undefined;
+    if (!CreatePipe(&read_pipe, &write_pipe, &sa, 0).toBool()) return null;
+    // Parent keeps read; child inherits write. Clear inherit on read end.
+    _ = SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+
+    var si = STARTUPINFOW{
+        .cb = @sizeOf(STARTUPINFOW),
+        .dwFlags = STARTF_USESTDHANDLES,
+        .hStdInput = null,
+        .hStdOutput = write_pipe,
+        .hStdError = write_pipe,
+    };
+    var pi: PROCESS_INFORMATION = undefined;
+    const ok = CreateProcessW(
+        null,
+        cmdline_wide[0..wide_len :0].ptr,
+        null,
+        null,
+        windows.BOOL.TRUE,
+        CREATE_NO_WINDOW,
+        null,
+        null,
+        &si,
+        &pi,
+    );
+    windows.CloseHandle(write_pipe);
+    if (!ok.toBool()) {
+        windows.CloseHandle(read_pipe);
+        return null;
+    }
+    defer {
+        windows.CloseHandle(pi.hThread);
+        windows.CloseHandle(pi.hProcess);
+        windows.CloseHandle(read_pipe);
+    }
+
+    var total: usize = 0;
+    while (total < out.len) {
+        var n: windows.DWORD = 0;
+        if (!ReadFile(read_pipe, out[total..].ptr, @intCast(out.len - total), &n, null).toBool()) break;
+        if (n == 0) break;
+        total += n;
+    }
+
+    const wait = WaitForSingleObject(pi.hProcess, timeout_ms);
+    if (wait == WAIT_TIMEOUT) {
+        _ = TerminateProcess(pi.hProcess, 1);
+        return null;
+    }
+    if (wait != WAIT_OBJECT_0) return null;
+    var code: windows.DWORD = 1;
+    _ = GetExitCodeProcess(pi.hProcess, &code);
+    if (code != 0 or total == 0) return null;
+    // Trim trailing whitespace / newlines from sqlite3 output.
+    while (total > 0 and (out[total - 1] == '\n' or out[total - 1] == '\r' or out[total - 1] == ' ' or out[total - 1] == '\t')) {
+        total -= 1;
+    }
+    if (total == 0) return null;
+    return out[0..total];
+}
+
+fn quoteArg(arg: []const u8, buf: []u8) ?[]const u8 {
+    // Always quote — safe for paths with spaces.
+    if (buf.len < arg.len + 2) return null;
+    buf[0] = '"';
+    @memcpy(buf[1 .. 1 + arg.len], arg);
+    buf[1 + arg.len] = '"';
+    return buf[0 .. arg.len + 2];
+}
+
 /// UTF-8 path → null-terminated UTF-16 into `wide` (must hold path + NUL).
 pub fn pathToWide(path: []const u8, wide: []u16) ?[:0]u16 {
     if (wide.len < 2) return null;

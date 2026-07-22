@@ -287,6 +287,99 @@ pub fn runCapture(argv: []const []const u8, out: []u8, timeout_ms: u32) ?[]const
     return out[0..total];
 }
 
+/// Run a short-lived JSONL-style command, supplying stdin and capturing stdout.
+/// Used for local protocol clients such as `codex app-server`; credentials stay
+/// with the tool process and never enter AgentCord's model or cache.
+pub fn runCaptureWithInput(
+    argv: []const []const u8,
+    input: []const u8,
+    out: []u8,
+    timeout_ms: u32,
+) ?[]const u8 {
+    if (builtin.os.tag != .windows or argv.len == 0 or out.len == 0) return null;
+
+    var cmdline_utf8: [4096]u8 = undefined;
+    var cmdline_len: usize = 0;
+    for (argv, 0..) |arg, i| {
+        if (i > 0) {
+            if (cmdline_len >= cmdline_utf8.len) return null;
+            cmdline_utf8[cmdline_len] = ' ';
+            cmdline_len += 1;
+        }
+        const quoted = quoteArg(arg, cmdline_utf8[cmdline_len..]) orelse return null;
+        cmdline_len += quoted.len;
+    }
+    var cmdline_wide: [4096]u16 = undefined;
+    const wide_len = std.unicode.utf8ToUtf16Le(cmdline_wide[0 .. cmdline_wide.len - 1], cmdline_utf8[0..cmdline_len]) catch return null;
+    cmdline_wide[wide_len] = 0;
+
+    var sa = SECURITY_ATTRIBUTES{
+        .nLength = @sizeOf(SECURITY_ATTRIBUTES),
+        .lpSecurityDescriptor = null,
+        .bInheritHandle = windows.BOOL.TRUE,
+    };
+    var stdin_read: windows.HANDLE = undefined;
+    var stdin_write: windows.HANDLE = undefined;
+    var stdout_read: windows.HANDLE = undefined;
+    var stdout_write: windows.HANDLE = undefined;
+    if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0).toBool()) return null;
+    errdefer windows.CloseHandle(stdin_read);
+    errdefer windows.CloseHandle(stdin_write);
+    if (!SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0).toBool()) return null;
+    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0).toBool()) return null;
+    errdefer windows.CloseHandle(stdout_read);
+    errdefer windows.CloseHandle(stdout_write);
+    if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0).toBool()) return null;
+
+    var si = STARTUPINFOW{
+        .cb = @sizeOf(STARTUPINFOW),
+        .dwFlags = STARTF_USESTDHANDLES,
+        .hStdInput = stdin_read,
+        .hStdOutput = stdout_write,
+        .hStdError = stdout_write,
+    };
+    var pi: PROCESS_INFORMATION = undefined;
+    const started = CreateProcessW(null, cmdline_wide[0..wide_len :0].ptr, null, null, windows.BOOL.TRUE, CREATE_NO_WINDOW, null, null, &si, &pi);
+    windows.CloseHandle(stdin_read);
+    windows.CloseHandle(stdout_write);
+    if (!started.toBool()) {
+        windows.CloseHandle(stdin_write);
+        windows.CloseHandle(stdout_read);
+        return null;
+    }
+    defer {
+        windows.CloseHandle(pi.hThread);
+        windows.CloseHandle(pi.hProcess);
+        windows.CloseHandle(stdout_read);
+    }
+
+    var written: windows.DWORD = 0;
+    if (input.len > 0 and !WriteFile(stdin_write, input.ptr, @intCast(input.len), &written, null).toBool()) {
+        windows.CloseHandle(stdin_write);
+        _ = TerminateProcess(pi.hProcess, 1);
+        return null;
+    }
+    windows.CloseHandle(stdin_write); // EOF tells app-server no more requests are coming.
+
+    var total: usize = 0;
+    while (total < out.len) {
+        var n: windows.DWORD = 0;
+        if (!ReadFile(stdout_read, out[total..].ptr, @intCast(out.len - total), &n, null).toBool()) break;
+        if (n == 0) break;
+        total += n;
+    }
+    const wait = WaitForSingleObject(pi.hProcess, timeout_ms);
+    if (wait == WAIT_TIMEOUT) {
+        _ = TerminateProcess(pi.hProcess, 1);
+        return null;
+    }
+    if (wait != WAIT_OBJECT_0) return null;
+    var code: windows.DWORD = 1;
+    _ = GetExitCodeProcess(pi.hProcess, &code);
+    if (code != 0 or total == 0) return null;
+    return out[0..total];
+}
+
 fn quoteArg(arg: []const u8, buf: []u8) ?[]const u8 {
     // Always quote — safe for paths with spaces.
     if (buf.len < arg.len + 2) return null;

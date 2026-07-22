@@ -43,7 +43,7 @@ This lives beside the production C# app in [`../windows`](../windows). The C# bu
 - Token from `%APPDATA%\Cursor\auth.json` or `state.vscdb` (`cursorAuth/accessToken`)
 - `GetCurrentPeriodUsage` → included / auto / API / on-demand bars
 
-Not yet: Claude/Codex, settings persistence.
+Not yet: settings persistence.
 
 ## Prerequisites
 
@@ -65,7 +65,7 @@ native dev
 With Discord desktop open and a Grok CLI session running, the window should show **Grok: active** and push presence automatically. Toggle **Auto presence from Grok** off to stop.
 
 Uses the AgentCord Discord Application ID. Large-image assets are per agent
-(`logo-claude`, `logo-chatgpt`, `logo-cursor`, `logo-grok`) — today only Grok
+(`logo-codex`, `logo-cursor`, `logo-grok`) — today Codex, Cursor, and Grok
 detection is wired, so live presence uses `logo-grok`.
 
 ## Check / build

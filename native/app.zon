@@ -4,6 +4,9 @@
     .display_name = "AgentCord",
     .description = "AgentCord Discord Rich Presence prototype on Native SDK (Windows first).",
     .version = "0.1.0",
+    // Native SDK's neutral theme with an AgentCord violet accent.
+    .theme = "geist",
+    .theme_accent = "#6d5dfc",
     .icons = .{"assets/icon.png"},
     .platforms = .{ "windows", "macos", "linux" },
     .permissions = .{ "view", "command" },
@@ -13,8 +16,8 @@
             .{
                 .label = "main",
                 .title = "AgentCord",
-                .width = 300,
-                .height = 560,
+                .width = 340,
+                .height = 620,
                 .restore_state = false,
                 .restore_policy = "center_on_primary",
                 // Menu-bar / tray app shape: close hides; tray Open brings it back.

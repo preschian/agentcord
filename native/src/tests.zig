@@ -10,7 +10,7 @@ test "initial model is disconnected" {
     try std.testing.expect(!model.ready);
     try std.testing.expect(!model.presence_set());
     try std.testing.expect(model.auto_presence);
-    try std.testing.expect(model.selected_agent == .grok);
+    try std.testing.expect(model.selected_agent == .codex);
 }
 
 test "conn_label tracks conn_state" {
@@ -29,6 +29,8 @@ test "presence_label tracks mode" {
     try std.testing.expectEqualStrings("Presence: cleared", model.presence_label());
     model.presence_mode = .grok_auto;
     try std.testing.expectEqualStrings("Presence: Grok session", model.presence_label());
+    model.presence_mode = .codex_auto;
+    try std.testing.expectEqualStrings("Presence: Codex session", model.presence_label());
     model.presence_mode = .cursor_auto;
     try std.testing.expectEqualStrings("Presence: Cursor session", model.presence_label());
     model.presence_mode = .manual_test;
@@ -48,9 +50,9 @@ test "presence_enabled respects pause and auto" {
 
 test "agent selection helpers" {
     var model = main.initialModel();
-    try std.testing.expect(model.agent_is_grok());
+    try std.testing.expect(model.agent_is_codex());
     try std.testing.expect(!model.agent_is_cursor());
-    try std.testing.expectEqualStrings("Grok", model.agent_name());
+    try std.testing.expectEqualStrings("Codex", model.agent_name());
     model.selected_agent = .cursor;
     try std.testing.expect(model.agent_is_cursor());
     try std.testing.expectEqualStrings("Cursor", model.agent_name());

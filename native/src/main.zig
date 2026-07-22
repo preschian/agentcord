@@ -9,6 +9,7 @@ const native_sdk = @import("native_sdk");
 const discord_ipc = @import("discord_ipc.zig");
 const grok_session = @import("grok_session.zig");
 const grok_usage = @import("grok_usage.zig");
+const presence = @import("presence.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
@@ -21,21 +22,6 @@ const window_height: f32 = 480;
 
 /// Baked-in Application ID from the production AgentCord app (not a secret).
 const discord_client_id = "1517099756063686677";
-
-/// Discord Rich Presence Art Asset keys (uploaded in the Developer Portal).
-const logo_claude = "logo-claude";
-const logo_chatgpt = "logo-chatgpt";
-const logo_cursor = "logo-cursor";
-const logo_grok = "logo-grok";
-
-/// Large-image asset for a detected agent. Keep in sync with portal uploads.
-fn logoForAgent(agent: []const u8) []const u8 {
-    if (std.mem.eql(u8, agent, "claude")) return logo_claude;
-    if (std.mem.eql(u8, agent, "codex") or std.mem.eql(u8, agent, "chatgpt")) return logo_chatgpt;
-    if (std.mem.eql(u8, agent, "cursor")) return logo_cursor;
-    if (std.mem.eql(u8, agent, "grok")) return logo_grok;
-    return logo_grok;
-}
 
 const app_permissions = [_][]const u8{ native_sdk.security.permission_command, native_sdk.security.permission_view };
 const shell_views = [_]native_sdk.ShellView{
@@ -52,15 +38,21 @@ const shell_windows = [_]native_sdk.ShellWindow{.{
 }};
 const shell_scene: native_sdk.ShellConfig = .{ .windows = &shell_windows };
 
+const EffectKeys = struct {
+    const poll_timer: u64 = 1;
+    const usage_timer: u64 = 2;
+    const usage_billing: u64 = 10;
+    const usage_refresh: u64 = 11;
+};
+
+const UsagePhase = enum { idle, fetching, refreshing };
+
 var g_discord: discord_ipc.Client = .{};
 var g_auth: grok_usage.Auth = .{};
-var g_usage_in_flight: bool = false;
+var g_usage_phase: UsagePhase = .idle;
+/// One refresh attempt per billing cycle / manual Refresh (reset on tick / button).
 var g_usage_allow_refresh: bool = true;
 
-const poll_timer_key: u64 = 1;
-const usage_timer_key: u64 = 2;
-const usage_billing_key: u64 = 10;
-const usage_refresh_key: u64 = 11;
 const main_window_label = "main";
 
 /// Tray dropdown: Open (show window) + Quit. Static for the prototype.
@@ -92,14 +84,13 @@ pub const Msg = union(enum) {
 };
 
 pub const Model = struct {
-    /// 0 disconnected, 1 connecting, 2 connected
-    conn_code: i64 = 0,
+    conn_state: discord_ipc.ConnState = .disconnected,
     ready: bool = false,
     /// Auto-push Grok session activity to Discord.
     auto_presence: bool = true,
-    presence_set: bool = false,
-    /// 0 none, 1 grok live, 2 manual test
-    presence_source: i64 = 0,
+    /// After Disconnect, skip Discord writes until Connect.
+    presence_paused: bool = false,
+    presence_mode: presence.Mode = .cleared,
 
     status_line: [160]u8 = .{0} ** 160,
     status_len: usize = 0,
@@ -128,6 +119,10 @@ pub const Model = struct {
     usage_ondemand_len: usize = 0,
     usage_status_line: [96]u8 = .{0} ** 96,
     usage_status_len: usize = 0,
+
+    pub fn presence_set(model: *const Model) bool {
+        return model.presence_mode != .cleared;
+    }
 
     pub fn status_text(model: *const Model) []const u8 {
         return model.status_line[0..model.status_len];
@@ -164,19 +159,15 @@ pub const Model = struct {
     }
 
     pub fn conn_label(model: *const Model) []const u8 {
-        return switch (model.conn_code) {
-            1 => "Connecting…",
-            2 => if (model.ready) "Connected (READY)" else "Connected",
-            else => "Disconnected",
+        return switch (model.conn_state) {
+            .connecting => "Connecting…",
+            .connected => if (model.ready) "Connected (READY)" else "Connected",
+            .disconnected => "Disconnected",
         };
     }
 
     pub fn presence_label(model: *const Model) []const u8 {
-        return switch (model.presence_source) {
-            1 => "Presence: Grok session",
-            2 => "Presence: manual test",
-            else => "Presence: cleared",
-        };
+        return model.presence_mode.label();
     }
 
     pub fn grok_status_label(model: *const Model) []const u8 {
@@ -200,11 +191,7 @@ pub const Model = struct {
     }
 
     fn applyDiscordSnapshot(model: *Model, snap: discord_ipc.Snapshot) void {
-        model.conn_code = switch (snap.state) {
-            .disconnected => 0,
-            .connecting => 1,
-            .connected => 2,
-        };
+        model.conn_state = snap.state;
         model.ready = snap.ready;
         if (snap.last_error_len > 0) {
             model.setError(snap.errorSlice());
@@ -281,54 +268,41 @@ pub const Effects = native_sdk.Effects(Msg);
 pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     switch (msg) {
         .connect => {
+            model.presence_paused = false;
             model.setDetail("Connecting with AgentCord Application ID…");
             model.error_len = 0;
             g_discord.connect(discord_client_id);
             model.applyDiscordSnapshot(g_discord.snapshot());
+            syncPresence(model);
         },
         .disconnect => {
+            model.presence_paused = true;
             g_discord.disconnect();
-            model.presence_set = false;
-            model.presence_source = 0;
-            model.setDetail("Disconnected from Discord IPC.");
+            model.presence_mode = .cleared;
+            model.setDetail("Disconnected — presence paused until Connect.");
             model.applyDiscordSnapshot(g_discord.snapshot());
         },
         .toggle_auto => {
             model.auto_presence = !model.auto_presence;
-            if (!model.auto_presence and model.presence_source == 1) {
+            if (!model.auto_presence and model.presence_mode == .grok_auto) {
                 g_discord.setActivity(null);
-                model.presence_set = false;
-                model.presence_source = 0;
+                model.presence_mode = .cleared;
                 model.setDetail("Auto presence off — cleared Grok activity.");
             } else if (model.auto_presence) {
                 model.setDetail("Auto presence on — scanning Grok sessions.");
-                syncPresence(model, fx);
+                syncPresence(model);
             }
         },
         .set_test_presence => {
-            const start_ms = fx.wallMs();
-            g_discord.setActivity(.{
-                .type = 0,
-                .name = "Grok 4.5",
-                .details = "Working on: agentcord",
-                .state = "manual test presence",
-                .large_image = logoForAgent("grok"),
-                .large_text = "Grok",
-                .small_image = "",
-                .small_text = "",
-                .start_ms = start_ms,
-                .button_label = "What is Grok",
-                .button_url = "https://grok.com",
-            });
-            model.presence_set = true;
-            model.presence_source = 2;
+            g_discord.setActivity(presence.activityManualTest(fx.wallMs()));
+            model.presence_mode = .manual_test;
+            model.presence_paused = false;
             model.setDetail("SET_ACTIVITY: manual test presence");
             model.applyDiscordSnapshot(g_discord.snapshot());
         },
         .clear_presence => {
             g_discord.setActivity(null);
-            model.presence_set = false;
-            model.presence_source = 0;
+            model.presence_mode = .cleared;
             model.setDetail("Cleared presence (activity: null).");
             model.applyDiscordSnapshot(g_discord.snapshot());
         },
@@ -341,7 +315,6 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             model.setDetail("Window shown from tray.");
         },
         .quit => {
-            // Best-effort clear before the process tears down.
             g_discord.setActivity(null);
             g_discord.disconnect();
             fx.quitApp();
@@ -349,7 +322,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .poll => |timer| {
             if (timer.outcome != .fired) return;
             model.applyDiscordSnapshot(g_discord.snapshot());
-            syncPresence(model, fx);
+            syncPresence(model);
         },
         .usage_tick => |timer| {
             if (timer.outcome != .fired) return;
@@ -369,7 +342,7 @@ fn onCommand(name: []const u8) ?Msg {
 }
 
 fn requestBilling(model: *Model, fx: *Effects) void {
-    if (g_usage_in_flight) return;
+    if (g_usage_phase != .idle) return;
     _ = grok_usage.loadAuth(&g_auth);
     if (!g_auth.hasAccess()) {
         if (g_auth.hasRefresh() and g_usage_allow_refresh) {
@@ -383,33 +356,20 @@ fn requestBilling(model: *Model, fx: *Effects) void {
         return;
     }
 
-    // Header budget is 1 KiB total — keep names short (skip User-Agent).
     var auth_val: [16 + 2048]u8 = undefined;
-    const bearer = std.fmt.bufPrint(&auth_val, "Bearer {s}", .{g_auth.accessSlice()}) catch {
-        model.setUsageStatus("Access token too large");
+    var headers_buf: [4]std.http.Header = undefined;
+    const headers = grok_usage.buildBillingHeaders(&g_auth, &auth_val, &headers_buf) orelse {
+        model.setUsageStatus("Access token too large for fetch header budget");
         return;
     };
 
-    var headers_buf: [4]std.http.Header = undefined;
-    var header_count: usize = 0;
-    headers_buf[header_count] = .{ .name = "Authorization", .value = bearer };
-    header_count += 1;
-    headers_buf[header_count] = .{ .name = "Accept", .value = "application/json" };
-    header_count += 1;
-    headers_buf[header_count] = .{ .name = "X-XAI-Token-Auth", .value = grok_usage.token_auth_header };
-    header_count += 1;
-    if (g_auth.user_id_len > 0) {
-        headers_buf[header_count] = .{ .name = "x-userid", .value = g_auth.userIdSlice() };
-        header_count += 1;
-    }
-
-    g_usage_in_flight = true;
+    g_usage_phase = .fetching;
     model.setUsageStatus("Fetching usage…");
     fx.fetch(.{
-        .key = usage_billing_key,
+        .key = EffectKeys.usage_billing,
         .method = .GET,
         .url = grok_usage.billing_url,
-        .headers = headers_buf[0..header_count],
+        .headers = headers,
         .timeout_ms = 15_000,
         .on_response = Effects.responseMsg(.usage_fetched),
     });
@@ -425,17 +385,17 @@ fn requestTokenRefresh(model: *Model, fx: *Effects) void {
         model.setUsageStatus("Invalid OIDC issuer");
         return;
     };
-    var body_buf: [1024]u8 = undefined;
+    var body_buf: [2048]u8 = undefined;
     const body = grok_usage.refreshBody(&g_auth, &body_buf) orelse {
         model.setUsageStatus("Could not build refresh body");
         return;
     };
 
-    g_usage_in_flight = true;
+    g_usage_phase = .refreshing;
     g_usage_allow_refresh = false;
     model.setUsageStatus("Refreshing sign-in…");
     fx.fetch(.{
-        .key = usage_refresh_key,
+        .key = EffectKeys.usage_refresh,
         .method = .POST,
         .url = url,
         .headers = &.{
@@ -449,7 +409,7 @@ fn requestTokenRefresh(model: *Model, fx: *Effects) void {
 }
 
 fn handleBillingResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
-    g_usage_in_flight = false;
+    g_usage_phase = .idle;
     switch (response.outcome) {
         .ok => {
             if (response.status == 401) {
@@ -466,7 +426,6 @@ fn handleBillingResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
                 model.setUsageStatus(msg);
                 return;
             }
-            // COPY body — drain scratch dies after this update.
             var body_buf: [16 * 1024]u8 = undefined;
             const n = @min(response.body.len, body_buf.len);
             @memcpy(body_buf[0..n], response.body[0..n]);
@@ -479,7 +438,7 @@ fn handleBillingResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
             }
             model.applyUsage(snap, fx.wallMs());
         },
-        .rejected => model.setUsageStatus("Usage fetch rejected (headers/budget?)"),
+        .rejected => model.setUsageStatus("Usage fetch rejected (headers over 1 KiB budget)"),
         .connect_failed, .tls_failed, .protocol_failed => model.setUsageStatus("Network error fetching usage"),
         .timed_out => model.setUsageStatus("Usage fetch timed out"),
         .cancelled => {},
@@ -487,7 +446,7 @@ fn handleBillingResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
 }
 
 fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.EffectResponse) void {
-    g_usage_in_flight = false;
+    g_usage_phase = .idle;
     if (response.outcome != .ok or response.status != 200) {
         model.setUsageStatus("Token refresh failed — run grok login");
         return;
@@ -495,81 +454,37 @@ fn handleRefreshResponse(model: *Model, fx: *Effects, response: native_sdk.Effec
     var body_buf: [8 * 1024]u8 = undefined;
     const n = @min(response.body.len, body_buf.len);
     @memcpy(body_buf[0..n], response.body[0..n]);
-    const body = body_buf[0..n];
-    const access = grok_session.extractString(body, "access_token") orelse {
+    if (!grok_usage.applyRefreshResponse(&g_auth, body_buf[0..n])) {
         model.setUsageStatus("Refresh response missing access_token");
         return;
-    };
-    g_auth.setAccess(access);
-    if (grok_session.extractString(body, "refresh_token")) |new_refresh| {
-        if (new_refresh.len > 0) g_auth.setRefresh(new_refresh);
     }
-    // Retry billing once with the new access token.
     g_usage_allow_refresh = false;
     requestBilling(model, fx);
 }
 
-fn syncPresence(model: *Model, fx: *Effects) void {
-    _ = fx;
+fn syncPresence(model: *Model) void {
     const session = grok_session.scan();
     model.applyGrok(session);
 
-    if (!model.auto_presence) {
-        if (session) |s| {
-            var buf: [200]u8 = undefined;
-            const d = std.fmt.bufPrint(&buf, "Grok live · {s} · {s} (auto off)", .{ s.modelName(), s.project() }) catch "Grok live";
-            model.setDetail(d);
-        } else {
-            model.setDetail("No live Grok session (auto off).");
-        }
-        return;
+    var scratch: presence.Scratch = .{};
+    const decision = presence.decide(
+        model.presence_mode,
+        model.auto_presence,
+        model.presence_paused,
+        model.ready,
+        session,
+        &scratch,
+    );
+
+    switch (decision.action) {
+        .detail_only => {},
+        .set => {
+            if (decision.activity) |act| g_discord.setActivity(act);
+        },
+        .clear => g_discord.setActivity(null),
     }
-
-    // Don't override a manual test presence until the user clears it or Grok takes over.
-    if (model.presence_source == 2 and session == null) {
-        model.setDetail("Manual test presence active; no live Grok session.");
-        return;
-    }
-
-    if (session) |s| {
-        var state_buf: [64]u8 = undefined;
-        const state = if (s.total_tokens > 0) blk: {
-            var tok_buf: [32]u8 = undefined;
-            const tok = grok_session.formatTokens(s.total_tokens, &tok_buf);
-            break :blk std.fmt.bufPrint(&state_buf, "{s} tokens", .{tok}) catch "Grok session";
-        } else "Grok session";
-
-        var details_buf: [128]u8 = undefined;
-        const details = std.fmt.bufPrint(&details_buf, "Working on: {s}", .{s.project()}) catch "Working on: Grok";
-
-        g_discord.setActivity(.{
-            .type = 0,
-            .name = s.modelName(),
-            .details = details,
-            .state = state,
-            .large_image = logoForAgent("grok"),
-            .large_text = "Grok",
-            .small_image = "",
-            .small_text = "",
-            .start_ms = if (s.start_epoch_ms > 0) s.start_epoch_ms else 0,
-            .button_label = "What is Grok",
-            .button_url = "https://grok.com",
-        });
-        model.presence_set = true;
-        model.presence_source = 1;
-
-        var detail_buf: [200]u8 = undefined;
-        const d = std.fmt.bufPrint(&detail_buf, "Auto · {s} · {s}", .{ s.modelName(), s.project() }) catch "Auto presence";
-        model.setDetail(d);
-    } else if (model.presence_source == 1 or model.presence_set) {
-        // Live session gone — clear auto presence.
-        g_discord.setActivity(null);
-        model.presence_set = false;
-        model.presence_source = 0;
-        model.setDetail("No live Grok session — presence cleared.");
-    } else {
-        model.setDetail("Waiting for a live Grok CLI session…");
-    }
+    model.presence_mode = decision.mode;
+    model.setDetail(decision.detail);
 }
 
 fn boot(model: *Model, fx: *Effects) void {
@@ -578,21 +493,20 @@ fn boot(model: *Model, fx: *Effects) void {
     model.applyGrok(null);
     model.setUsageStatus("Loading usage…");
     fx.startTimer(.{
-        .key = poll_timer_key,
+        .key = EffectKeys.poll_timer,
         .interval_ms = 2000,
         .mode = .repeating,
         .on_fire = Effects.timerMsg(.poll),
     });
-    // Weekly credits poll (matches macOS GrokUsage cadence of ~5 min).
     fx.startTimer(.{
-        .key = usage_timer_key,
+        .key = EffectKeys.usage_timer,
         .interval_ms = 300_000,
         .mode = .repeating,
         .on_fire = Effects.timerMsg(.usage_tick),
     });
     g_discord.connect(discord_client_id);
     model.applyDiscordSnapshot(g_discord.snapshot());
-    syncPresence(model, fx);
+    syncPresence(model);
     g_usage_allow_refresh = true;
     requestBilling(model, fx);
 }
@@ -620,8 +534,6 @@ pub fn main(init: std.process.Init) !void {
         .update_fx = update,
         .init_fx = boot,
         .on_command = onCommand,
-        // System tray (Windows notification area / macOS status item).
-        // icon_path is the app icon; title is the text fallback if the icon fails.
         .status_item = .{
             .title = "AC",
             .icon_path = "assets/icon.png",
@@ -655,5 +567,7 @@ test {
     _ = @import("discord_ipc.zig");
     _ = @import("grok_session.zig");
     _ = @import("grok_usage.zig");
+    _ = @import("json_lite.zig");
+    _ = @import("presence.zig");
     _ = @import("tests.zig");
 }

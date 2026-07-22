@@ -67,8 +67,12 @@ native build
 
 | File | Role |
 |---|---|
-| `src/main.zig` | Model / Msg / update, Discord + Grok poll loop |
+| `src/main.zig` | Model / Msg / update dispatch |
+| `src/presence.zig` | Presence mode + session→Activity policy |
 | `src/discord_ipc.zig` | Windows named-pipe Discord RPC client |
 | `src/grok_session.zig` | Live Grok session scan (`active_sessions.json`) |
+| `src/grok_usage.zig` | Auth + billing parse / header budget |
+| `src/json_lite.zig` | Shared JSON scrapers |
+| `src/win32_fs.zig` | Shared Win32 file / env helpers |
 | `src/app.native` | Status UI |
 | `app.zon` | App manifest |

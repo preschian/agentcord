@@ -5,10 +5,15 @@
 //!   using OIDC tokens from `~/.grok/auth.json` (`key` + `refresh_token`).
 
 const std = @import("std");
+const win32_fs = @import("win32_fs.zig");
+const json_lite = @import("json_lite.zig");
 const grok_session = @import("grok_session.zig");
 
 pub const billing_url = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 pub const token_auth_header = "xai-grok-cli";
+
+/// Matches `native_sdk.max_effect_fetch_header_bytes` (name+value sum).
+pub const max_fetch_header_bytes: usize = 1024;
 
 pub const Auth = struct {
     access: [2048]u8 = undefined,
@@ -71,21 +76,31 @@ pub const Snapshot = struct {
     authenticated: bool = false,
 };
 
+/// Apply a token refresh JSON body onto Auth. Returns false if access_token missing.
+pub fn applyRefreshResponse(auth: *Auth, body: []const u8) bool {
+    const access = json_lite.extractString(body, "access_token") orelse return false;
+    if (access.len == 0) return false;
+    auth.setAccess(access);
+    if (json_lite.extractString(body, "refresh_token")) |new_refresh| {
+        if (new_refresh.len > 0) auth.setRefresh(new_refresh);
+    }
+    return true;
+}
+
 /// Load the first OIDC credential entry from `~/.grok/auth.json`.
 /// Access token lives in the `key` field (Grok CLI convention).
 pub fn loadAuth(out: *Auth) bool {
     var home_buf: [260]u8 = undefined;
-    const home = grok_session.userProfile(&home_buf) orelse return false;
+    const home = win32_fs.userProfile(&home_buf) orelse return false;
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}\\.grok\\auth.json", .{home}) catch return false;
     var file_buf: [16 * 1024]u8 = undefined;
-    const json = grok_session.readFile(path, &file_buf) orelse return false;
+    const json = win32_fs.readFile(path, &file_buf) orelse return false;
 
-    // auth.json is a map of account-key → credential object. Walk objects.
     var search: usize = 0;
-    while (nextObject(json, &search)) |obj| {
-        const access = grok_session.extractString(obj, "key");
-        const refresh = grok_session.extractString(obj, "refresh_token");
+    while (json_lite.nextObject(json, &search)) |obj| {
+        const access = json_lite.extractString(obj, "key");
+        const refresh = json_lite.extractString(obj, "refresh_token");
         const has_access = access != null and access.?.len > 0;
         const has_refresh = refresh != null and refresh.?.len > 0;
         if (!has_access and !has_refresh) continue;
@@ -93,15 +108,15 @@ pub fn loadAuth(out: *Auth) bool {
         out.* = .{};
         if (access) |a| out.setAccess(a);
         if (refresh) |r| Auth.setField(&out.refresh, &out.refresh_len, r);
-        if (grok_session.extractString(obj, "oidc_client_id")) |c| {
+        if (json_lite.extractString(obj, "oidc_client_id")) |c| {
             Auth.setField(&out.client_id, &out.client_id_len, c);
         }
-        if (grok_session.extractString(obj, "oidc_issuer")) |iss| {
+        if (json_lite.extractString(obj, "oidc_issuer")) |iss| {
             Auth.setField(&out.issuer, &out.issuer_len, iss);
         } else {
             Auth.setField(&out.issuer, &out.issuer_len, "https://auth.x.ai");
         }
-        if (grok_session.extractString(obj, "user_id")) |u| {
+        if (json_lite.extractString(obj, "user_id")) |u| {
             Auth.setField(&out.user_id, &out.user_id_len, u);
         }
         return true;
@@ -111,19 +126,69 @@ pub fn loadAuth(out: *Auth) bool {
 
 pub fn tokenUrl(auth: *const Auth, buf: []u8) ?[]const u8 {
     const issuer = if (auth.issuer_len > 0) auth.issuerSlice() else "https://auth.x.ai";
-    // Trim trailing slash.
     var base = issuer;
     while (base.len > 0 and base[base.len - 1] == '/') base = base[0 .. base.len - 1];
     return std.fmt.bufPrint(buf, "{s}/oauth2/token", .{base}) catch null;
 }
 
+/// application/x-www-form-urlencoded body with percent-encoded values (macOS parity).
 pub fn refreshBody(auth: *const Auth, buf: []u8) ?[]const u8 {
-    // application/x-www-form-urlencoded
+    var refresh_enc: [1536]u8 = undefined;
+    var client_enc: [192]u8 = undefined;
+    const refresh = json_lite.percentEncode(auth.refreshSlice(), &refresh_enc) orelse return null;
+    const client_id = json_lite.percentEncode(auth.clientIdSlice(), &client_enc) orelse return null;
     return std.fmt.bufPrint(
         buf,
         "grant_type=refresh_token&refresh_token={s}&client_id={s}",
-        .{ auth.refreshSlice(), auth.clientIdSlice() },
+        .{ refresh, client_id },
     ) catch null;
+}
+
+fn headerPairBytes(name: []const u8, value: []const u8) usize {
+    return name.len + value.len;
+}
+
+/// Build billing GET headers under the SDK 1 KiB name+value budget.
+/// Drops optional `x-userid` when needed; returns null if still over budget.
+pub fn buildBillingHeaders(
+    auth: *const Auth,
+    bearer_buf: []u8,
+    headers_buf: []std.http.Header,
+) ?[]std.http.Header {
+    if (headers_buf.len < 3) return null;
+    const bearer = std.fmt.bufPrint(bearer_buf, "Bearer {s}", .{auth.accessSlice()}) catch return null;
+
+    const accept_name = "Accept";
+    const accept_val = "application/json";
+    const auth_name = "Authorization";
+    const xai_name = "X-XAI-Token-Auth";
+    const userid_name = "x-userid";
+
+    var used: usize = 0;
+    used += headerPairBytes(auth_name, bearer);
+    used += headerPairBytes(accept_name, accept_val);
+    used += headerPairBytes(xai_name, token_auth_header);
+
+    var count: usize = 0;
+    headers_buf[count] = .{ .name = auth_name, .value = bearer };
+    count += 1;
+    headers_buf[count] = .{ .name = accept_name, .value = accept_val };
+    count += 1;
+    headers_buf[count] = .{ .name = xai_name, .value = token_auth_header };
+    count += 1;
+
+    if (auth.user_id_len > 0 and count < headers_buf.len) {
+        const uid = auth.userIdSlice();
+        const extra = headerPairBytes(userid_name, uid);
+        if (used + extra <= max_fetch_header_bytes) {
+            headers_buf[count] = .{ .name = userid_name, .value = uid };
+            count += 1;
+            used += extra;
+        }
+    }
+
+    if (used > max_fetch_header_bytes) return null;
+    return headers_buf[0..count];
 }
 
 /// Parse billing JSON into a Snapshot. Returns false when unusable.
@@ -132,24 +197,21 @@ pub fn parseBilling(body: []const u8, out: *Snapshot) bool {
     out.resets_at_ms = 0;
     out.on_demand_percent = -1;
 
-    // Prefer nested config.creditUsagePercent, fall back to top-level.
     var percent: ?f64 = null;
-    if (extractNumber(body, "creditUsagePercent")) |p| percent = p;
+    if (json_lite.extractNumber(body, "creditUsagePercent")) |p| percent = p;
 
-    // Period end: currentPeriod.end or billingPeriodEnd.
     var end_iso: ?[]const u8 = null;
     if (std.mem.indexOf(u8, body, "\"currentPeriod\"")) |at| {
         const slice = body[at..@min(body.len, at + 400)];
-        end_iso = grok_session.extractString(slice, "end");
+        end_iso = json_lite.extractString(slice, "end");
     }
     if (end_iso == null) {
-        end_iso = grok_session.extractString(body, "billingPeriodEnd");
+        end_iso = json_lite.extractString(body, "billingPeriodEnd");
     }
     if (end_iso) |iso| {
         out.resets_at_ms = grok_session.parseIsoToEpochMs(iso) orelse 0;
     }
 
-    // Unified-billing accounts may omit percent but still report a period → 0%.
     if (percent == null and out.resets_at_ms > 0) percent = 0;
     if (percent) |p| {
         if (!std.math.isFinite(p)) return false;
@@ -161,10 +223,9 @@ pub fn parseBilling(body: []const u8, out: *Snapshot) bool {
         return false;
     }
 
-    // On-demand when cap > 0.
-    if (extractNumber(body, "onDemandCap")) |cap| {
+    if (json_lite.extractNumber(body, "onDemandCap")) |cap| {
         if (cap > 0) {
-            const used = extractNumber(body, "onDemandUsed") orelse 0;
+            const used = json_lite.extractNumber(body, "onDemandUsed") orelse 0;
             var od: i64 = @intFromFloat(@round(used / cap * 100.0));
             if (od < 0) od = 0;
             if (od > 100) od = 100;
@@ -208,59 +269,6 @@ pub fn formatWeeklyLine(snap: Snapshot, now_ms: i64, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{d}%", .{snap.weekly_percent}) catch "—";
 }
 
-fn extractNumber(json: []const u8, key: []const u8) ?f64 {
-    var pattern_buf: [96]u8 = undefined;
-    const pattern = std.fmt.bufPrint(&pattern_buf, "\"{s}\"", .{key}) catch return null;
-    const key_at = std.mem.indexOf(u8, json, pattern) orelse return null;
-    var i = key_at + pattern.len;
-    while (i < json.len and (json[i] == ' ' or json[i] == '\t' or json[i] == '\n' or json[i] == '\r')) : (i += 1) {}
-    if (i >= json.len or json[i] != ':') return null;
-    i += 1;
-    while (i < json.len and (json[i] == ' ' or json[i] == '\t' or json[i] == '\n' or json[i] == '\r')) : (i += 1) {}
-    const start = i;
-    if (i < json.len and (json[i] == '-' or json[i] == '+')) i += 1;
-    while (i < json.len and ((json[i] >= '0' and json[i] <= '9') or json[i] == '.' or json[i] == 'e' or json[i] == 'E' or json[i] == '+' or json[i] == '-')) : (i += 1) {}
-    if (i == start) return null;
-    return std.fmt.parseFloat(f64, json[start..i]) catch null;
-}
-
-fn nextObject(json: []const u8, from: *usize) ?[]const u8 {
-    var i = from.*;
-    while (i < json.len and json[i] != '{') : (i += 1) {}
-    if (i >= json.len) return null;
-    const start = i;
-    var depth: i32 = 0;
-    var in_string = false;
-    var escape = false;
-    while (i < json.len) : (i += 1) {
-        const c = json[i];
-        if (in_string) {
-            if (escape) {
-                escape = false;
-            } else if (c == '\\') {
-                escape = true;
-            } else if (c == '"') {
-                in_string = false;
-            }
-            continue;
-        }
-        switch (c) {
-            '"' => in_string = true,
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if (depth == 0) {
-                    const end = i + 1;
-                    from.* = end;
-                    return json[start..end];
-                }
-            },
-            else => {},
-        }
-    }
-    return null;
-}
-
 test "parseBilling weekly percent and period end" {
     const body =
         \\{"config":{"creditUsagePercent":42.4,"currentPeriod":{"type":"week","start":"2026-07-15T00:00:00Z","end":"2026-07-22T00:00:00Z"}}}
@@ -274,7 +282,6 @@ test "parseBilling weekly percent and period end" {
 test "formatReset duration" {
     var buf: [32]u8 = undefined;
     const now: i64 = 1_700_000_000_000;
-    // 2 days + 3 hours
     const reset = now + (2 * 24 * 60 + 3 * 60) * 60_000;
     try std.testing.expectEqualStrings("2d 3h", formatReset(reset, now, &buf).?);
     try std.testing.expectEqualStrings("now", formatReset(now - 1000, now, &buf).?);
@@ -284,4 +291,30 @@ test "formatWeeklyLine" {
     var buf: [64]u8 = undefined;
     const snap = Snapshot{ .weekly_percent = 42, .resets_at_ms = 0 };
     try std.testing.expectEqualStrings("42%", formatWeeklyLine(snap, 0, &buf));
+}
+
+test "refreshBody percent-encodes special chars" {
+    var auth: Auth = .{};
+    auth.setRefresh("abc+/=&xyz");
+    Auth.setField(&auth.client_id, &auth.client_id_len, "client/id");
+    var buf: [512]u8 = undefined;
+    const body = refreshBody(&auth, &buf).?;
+    try std.testing.expect(std.mem.indexOf(u8, body, "abc%2B%2F%3D%26xyz") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "client%2Fid") != null);
+}
+
+test "buildBillingHeaders drops userid when over budget" {
+    var auth: Auth = .{};
+    // ~950-byte token → core headers near the cap; userid must be dropped.
+    @memset(auth.access[0..950], 'a');
+    auth.access_len = 950;
+    Auth.setField(&auth.user_id, &auth.user_id_len, "user-with-a-fairly-long-id-value");
+
+    var bearer_buf: [16 + 2048]u8 = undefined;
+    var headers_buf: [4]std.http.Header = undefined;
+    const headers = buildBillingHeaders(&auth, &bearer_buf, &headers_buf).?;
+    try std.testing.expect(headers.len == 3);
+    var total: usize = 0;
+    for (headers) |h| total += h.name.len + h.value.len;
+    try std.testing.expect(total <= max_fetch_header_bytes);
 }

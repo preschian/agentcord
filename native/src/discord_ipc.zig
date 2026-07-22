@@ -6,10 +6,15 @@
 //!
 //! Implements the subset AgentCord needs: handshake, READY, SET_ACTIVITY,
 //! ping/pong, reconnect with backoff, and clear-on-stop.
+//!
+//! All pipe writes go through `write_mutex` so UI and worker never interleave
+//! frames (mirrors windows/DiscordIpc.cs `_writeLock`).
 
 const std = @import("std");
 const builtin = @import("builtin");
 const windows = std.os.windows;
+const win32_fs = @import("win32_fs.zig");
+const json_lite = @import("json_lite.zig");
 
 pub const Opcode = enum(u32) {
     handshake = 0,
@@ -48,41 +53,9 @@ pub const Activity = struct {
     small_image: []const u8 = "",
     small_text: []const u8 = "",
     start_ms: i64 = 0, // 0 = omit timestamps
-    button_label: []const u8 = "What is Claude Code",
-    button_url: []const u8 = "https://www.anthropic.com",
+    button_label: []const u8 = "AgentCord",
+    button_url: []const u8 = "https://github.com/preschian/agentcord",
 };
-
-const INVALID_HANDLE = windows.INVALID_HANDLE_VALUE;
-const GENERIC_READ: windows.DWORD = 0x80000000;
-const GENERIC_WRITE: windows.DWORD = 0x40000000;
-const OPEN_EXISTING: windows.DWORD = 3;
-const FILE_ATTRIBUTE_NORMAL: windows.DWORD = 0x80;
-
-extern "kernel32" fn CreateFileW(
-    lpFileName: [*:0]const u16,
-    dwDesiredAccess: windows.DWORD,
-    dwShareMode: windows.DWORD,
-    lpSecurityAttributes: ?*anyopaque,
-    dwCreationDisposition: windows.DWORD,
-    dwFlagsAndAttributes: windows.DWORD,
-    hTemplateFile: ?windows.HANDLE,
-) callconv(.winapi) windows.HANDLE;
-
-extern "kernel32" fn ReadFile(
-    hFile: windows.HANDLE,
-    lpBuffer: [*]u8,
-    nNumberOfBytesToRead: windows.DWORD,
-    lpNumberOfBytesRead: ?*windows.DWORD,
-    lpOverlapped: ?*anyopaque,
-) callconv(.winapi) windows.BOOL;
-
-extern "kernel32" fn WriteFile(
-    hFile: windows.HANDLE,
-    lpBuffer: [*]const u8,
-    nNumberOfBytesToWrite: windows.DWORD,
-    lpNumberOfBytesWritten: ?*windows.DWORD,
-    lpOverlapped: ?*anyopaque,
-) callconv(.winapi) windows.BOOL;
 
 extern "kernel32" fn PeekNamedPipe(
     hNamedPipe: windows.HANDLE,
@@ -93,12 +66,12 @@ extern "kernel32" fn PeekNamedPipe(
     lpBytesLeftThisMessage: ?*windows.DWORD,
 ) callconv(.winapi) windows.BOOL;
 
-extern "kernel32" fn Sleep(dwMilliseconds: windows.DWORD) callconv(.winapi) void;
-
 pub const Client = struct {
     /// Zig 0.16: blocking mutex lives on `std.Io`; this spin-style lock is enough
     /// for short critical sections between the UI thread and the IPC worker.
     mutex: std.atomic.Mutex = .unlocked,
+    /// Serializes all named-pipe writes (PONG + SET_ACTIVITY + handshake).
+    write_mutex: std.atomic.Mutex = .unlocked,
     should_run: bool = false,
     ready: bool = false,
     state: ConnState = .disconnected,
@@ -123,13 +96,25 @@ pub const Client = struct {
     }
 
     fn lock(self: *Client) void {
-        while (!self.mutex.tryLock()) {
-            if (builtin.os.tag == .windows) Sleep(1) else std.atomic.spinLoopHint();
-        }
+        spinLock(&self.mutex);
     }
 
     fn unlock(self: *Client) void {
         self.mutex.unlock();
+    }
+
+    fn lockWrite(self: *Client) void {
+        spinLock(&self.write_mutex);
+    }
+
+    fn unlockWrite(self: *Client) void {
+        self.write_mutex.unlock();
+    }
+
+    fn spinLock(m: *std.atomic.Mutex) void {
+        while (!m.tryLock()) {
+            if (builtin.os.tag == .windows) win32_fs.Sleep(1) else std.atomic.spinLoopHint();
+        }
     }
 
     /// Begin connecting with the given Discord Application ID.
@@ -165,15 +150,16 @@ pub const Client = struct {
         };
     }
 
-    /// Stop reconnecting and clear presence (best-effort).
+    /// Stop reconnecting and request a clear via the worker (never WriteFile here).
     pub fn disconnect(self: *Client) void {
         self.lock();
         self.should_run = false;
-        if (self.ready) {
-            if (self.pipe) |pipe| {
-                self.sendActivityUnlocked(pipe, null) catch {};
-            }
-        }
+        // Queue clear for the worker while the pipe is still open; do not write
+        // from the UI thread (would race PONGs / SET_ACTIVITY).
+        self.has_activity = false;
+        self.activity_json_len = 0;
+        self.clear_requested = true;
+        self.activity_dirty = true;
         self.unlock();
 
         if (self.thread) |t| {
@@ -317,7 +303,7 @@ pub const Client = struct {
             const running = self.should_run;
             self.unlock();
             if (!running) return false;
-            Sleep(100);
+            win32_fs.Sleep(100);
             waited += 100;
         }
         return true;
@@ -349,16 +335,22 @@ pub const Client = struct {
             const is_ready = self.ready;
             self.unlock();
 
-            if (!running) return;
+            // On stop: best-effort clear before leaving the pipe (UI never writes).
+            if (!running) {
+                if (is_ready and (clear or !has)) {
+                    self.sendActivity(pipe, null) catch {};
+                }
+                return;
+            }
 
             if (dirty and is_ready) {
                 if (has) {
-                    self.sendActivityUnlocked(pipe, act_copy[0..act_len]) catch {
+                    self.sendActivity(pipe, act_copy[0..act_len]) catch {
                         self.setError("SET_ACTIVITY write failed");
                         return;
                     };
                 } else if (clear) {
-                    self.sendActivityUnlocked(pipe, null) catch {
+                    self.sendActivity(pipe, null) catch {
                         self.setError("clear activity write failed");
                         return;
                     };
@@ -371,7 +363,7 @@ pub const Client = struct {
             }
 
             if (avail < 8) {
-                Sleep(50);
+                win32_fs.Sleep(50);
                 continue;
             }
 
@@ -387,57 +379,59 @@ pub const Client = struct {
                 self.readExact(pipe, payload) catch return;
             }
 
-            switch (@as(Opcode, @enumFromInt(opcode))) {
-                .frame => self.handleFrame(pipe, payload),
-                .ping => {
+            // Non-exhaustive: unknown opcodes must not panic the worker.
+            switch (opcode) {
+                @intFromEnum(Opcode.frame) => self.handleFrame(pipe, payload),
+                @intFromEnum(Opcode.ping) => {
                     self.writeFrame(pipe, .pong, payload) catch return;
                 },
-                .close => return,
-                .handshake, .pong => {},
+                @intFromEnum(Opcode.close) => return,
+                @intFromEnum(Opcode.handshake), @intFromEnum(Opcode.pong) => {},
+                else => {},
             }
         }
     }
 
     fn handleFrame(self: *Client, pipe: windows.HANDLE, payload: []const u8) void {
-        if (std.mem.indexOf(u8, payload, "\"evt\":\"READY\"") != null or
-            std.mem.indexOf(u8, payload, "\"evt\": \"READY\"") != null)
-        {
-            self.lock();
-            self.ready = true;
-            self.clearErrorLocked();
-            const has = self.has_activity;
-            var act_copy: [2048]u8 = undefined;
-            const act_len = self.activity_json_len;
-            if (has and act_len > 0) {
-                @memcpy(act_copy[0..act_len], self.activity_json[0..act_len]);
-            }
-            self.activity_dirty = false;
-            self.unlock();
+        if (json_lite.extractString(payload, "evt")) |evt| {
+            if (std.mem.eql(u8, evt, "READY")) {
+                self.lock();
+                self.ready = true;
+                self.clearErrorLocked();
+                const has = self.has_activity;
+                var act_copy: [2048]u8 = undefined;
+                const act_len = self.activity_json_len;
+                if (has and act_len > 0) {
+                    @memcpy(act_copy[0..act_len], self.activity_json[0..act_len]);
+                }
+                self.activity_dirty = false;
+                self.unlock();
 
-            if (has) {
-                self.sendActivityUnlocked(pipe, act_copy[0..act_len]) catch {};
+                if (has) {
+                    self.sendActivity(pipe, act_copy[0..act_len]) catch {};
+                }
+                return;
             }
-            return;
-        }
-
-        if (std.mem.indexOf(u8, payload, "\"evt\":\"ERROR\"") != null or
-            std.mem.indexOf(u8, payload, "\"evt\": \"ERROR\"") != null)
-        {
-            self.setError("Discord reported an ERROR event");
+            if (std.mem.eql(u8, evt, "ERROR")) {
+                self.setError("Discord reported an ERROR event");
+            }
         }
     }
 
-    fn sendActivityUnlocked(self: *Client, pipe: windows.HANDLE, activity_json: ?[]const u8) !void {
+    fn sendActivity(self: *Client, pipe: windows.HANDLE, activity_json: ?[]const u8) !void {
         var buf: [4096]u8 = undefined;
         var w = std.Io.Writer.fixed(&buf);
 
+        self.lock();
         const nonce = self.nonce;
         self.nonce +%= 1;
+        const pid = self.pid;
+        self.unlock();
 
         try w.writeAll("{\"cmd\":\"SET_ACTIVITY\",\"nonce\":\"");
         try w.print("{d}", .{nonce});
         try w.writeAll("\",\"args\":{\"pid\":");
-        try w.print("{d}", .{self.pid});
+        try w.print("{d}", .{pid});
         try w.writeAll(",\"activity\":");
         if (activity_json) |json| {
             try w.writeAll(json);
@@ -450,7 +444,9 @@ pub const Client = struct {
     }
 
     fn writeFrame(self: *Client, pipe: windows.HANDLE, opcode: Opcode, payload: []const u8) !void {
-        _ = self;
+        self.lockWrite();
+        defer self.unlockWrite();
+
         var header: [8]u8 = undefined;
         std.mem.writeInt(u32, header[0..4], @intFromEnum(opcode), .little);
         std.mem.writeInt(u32, header[4..8], @intCast(payload.len), .little);
@@ -464,7 +460,7 @@ pub const Client = struct {
         var filled: usize = 0;
         while (filled < buf.len) {
             var n: windows.DWORD = 0;
-            if (!ReadFile(pipe, buf[filled..].ptr, @intCast(buf.len - filled), &n, null).toBool()) {
+            if (!win32_fs.ReadFile(pipe, buf[filled..].ptr, @intCast(buf.len - filled), &n, null).toBool()) {
                 return error.ReadFailed;
             }
             if (n == 0) return error.PipeClosed;
@@ -487,7 +483,7 @@ fn writeAll(pipe: windows.HANDLE, buf: []const u8) !void {
     var sent: usize = 0;
     while (sent < buf.len) {
         var n: windows.DWORD = 0;
-        if (!WriteFile(pipe, buf[sent..].ptr, @intCast(buf.len - sent), &n, null).toBool()) {
+        if (!win32_fs.WriteFile(pipe, buf[sent..].ptr, @intCast(buf.len - sent), &n, null).toBool()) {
             return error.WriteFailed;
         }
         if (n == 0) return error.WriteFailed;
@@ -505,16 +501,16 @@ fn openFirstPipe() ?windows.HANDLE {
         const wide_len = std.unicode.utf8ToUtf16Le(wide[0..64], path) catch continue;
         wide[wide_len] = 0;
 
-        const handle = CreateFileW(
+        const handle = win32_fs.CreateFileW(
             wide[0..wide_len :0].ptr,
-            GENERIC_READ | GENERIC_WRITE,
+            win32_fs.GENERIC_READ | win32_fs.GENERIC_WRITE,
             0,
             null,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            win32_fs.OPEN_EXISTING,
+            win32_fs.FILE_ATTRIBUTE_NORMAL,
             null,
         );
-        if (handle != INVALID_HANDLE) return handle;
+        if (handle != win32_fs.INVALID_HANDLE) return handle;
     }
     return null;
 }

@@ -47,12 +47,10 @@ pub const LiveSessions = struct {
 /// Scratch buffers for detail/activity strings owned by the caller for one apply.
 pub const Scratch = struct {
     detail: [200]u8 = undefined,
-    state: [64]u8 = undefined,
     details: [128]u8 = undefined,
-    tokens: [32]u8 = undefined,
 };
 
-const Winner = enum { none, codex, grok, cursor };
+pub const Winner = enum { none, codex, grok, cursor };
 
 pub fn activityManualTest(now_ms: i64) discord_ipc.Activity {
     return .{
@@ -67,18 +65,13 @@ pub fn activityManualTest(now_ms: i64) discord_ipc.Activity {
 }
 
 pub fn activityFromGrok(s: grok_session.SessionInfo, scratch: *Scratch) discord_ipc.Activity {
-    const state: []const u8 = if (s.total_tokens > 0) blk: {
-        const tok = grok_session.formatTokens(s.total_tokens, &scratch.tokens);
-        break :blk std.fmt.bufPrint(&scratch.state, "{s} tokens", .{tok}) catch "Grok session";
-    } else "Grok session";
-
     const details = std.fmt.bufPrint(&scratch.details, "Working on: {s}", .{s.project()}) catch "Working on: Grok";
 
     return .{
         .type = 0,
         .name = s.modelName(),
         .details = details,
-        .state = state,
+        .state = "Grok session",
         .large_image = "logo-grok",
         .large_text = "Grok",
         .start_ms = if (s.start_epoch_ms > 0) s.start_epoch_ms else 0,
@@ -86,16 +79,12 @@ pub fn activityFromGrok(s: grok_session.SessionInfo, scratch: *Scratch) discord_
 }
 
 pub fn activityFromCodex(s: codex_session.SessionInfo, scratch: *Scratch) discord_ipc.Activity {
-    const state: []const u8 = if (s.total_tokens > 0) blk: {
-        const tokens = grok_session.formatTokens(s.total_tokens, &scratch.tokens);
-        break :blk std.fmt.bufPrint(&scratch.state, "{s} tokens", .{tokens}) catch "Codex session";
-    } else "Codex session";
     const details = std.fmt.bufPrint(&scratch.details, "Working on: {s}", .{s.project()}) catch "Working on: Codex";
     return .{
         .type = 0,
         .name = s.modelName(),
         .details = details,
-        .state = state,
+        .state = "Codex session",
         .large_image = "logo-codex",
         .large_text = "Codex",
         .start_ms = if (s.start_epoch_ms > 0) s.start_epoch_ms else 0,
@@ -117,7 +106,7 @@ pub fn activityFromCursor(s: cursor_session.SessionInfo, scratch: *Scratch) disc
     };
 }
 
-fn pickWinner(sessions: LiveSessions) Winner {
+pub fn pickWinner(sessions: LiveSessions) Winner {
     const codex_ms: i64 = if (sessions.codex) |s| activityMs(s.activity_ms, s.start_epoch_ms) else 0;
     const grok_ms: i64 = if (sessions.grok) |s| activityMs(s.activity_ms, s.start_epoch_ms) else 0;
     const cursor_ms: i64 = if (sessions.cursor) |s| activityMs(s.activity_ms, s.start_epoch_ms) else 0;
@@ -271,6 +260,22 @@ test "decide sets grok activity when ready" {
     try std.testing.expect(d.action == .set);
     try std.testing.expect(d.mode == .grok_auto);
     try std.testing.expectEqualStrings("logo-grok", d.activity.?.large_image);
+}
+
+test "presence never exposes session token counts" {
+    var scratch: Scratch = .{};
+
+    var codex: codex_session.SessionInfo = .{};
+    codex.total_tokens = 203_600;
+    const codex_activity = activityFromCodex(codex, &scratch);
+    try std.testing.expectEqualStrings("Codex session", codex_activity.state);
+    try std.testing.expect(std.mem.indexOf(u8, codex_activity.state, "token") == null);
+
+    var grok: grok_session.SessionInfo = .{};
+    grok.total_tokens = 81_200;
+    const grok_activity = activityFromGrok(grok, &scratch);
+    try std.testing.expectEqualStrings("Grok session", grok_activity.state);
+    try std.testing.expect(std.mem.indexOf(u8, grok_activity.state, "token") == null);
 }
 
 test "decide prefers newer cursor over grok" {

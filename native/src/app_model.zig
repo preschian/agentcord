@@ -38,12 +38,13 @@ pub const Model = struct {
         "conn_state",           "ready",                 "auto_presence",
         "presence_paused",      "presence_mode",         "selected_agent",
         "status_line",          "status_len",            "detail_line",
-        "detail_len",           "error_line",            "grok_active",
+        "detail_len",           "error_line",            "error_len",
+        "error_text",           "grok_active",
         "cursor_active",        "cursor_installed",      "grok_linked",
         "session_title_line",   "session_title_len",     "elapsed_line",
         "elapsed_len",          "project_line",          "project_len",
         "meta_line",            "meta_len",              "broadcast_line",
-        "broadcast_len",        "connect_subtitle_line", "connect_subtitle_len",
+        "broadcast_len",
         "status_pill_line",     "status_pill_len",
         "usage_weekly_line",     "usage_weekly_len",
         "usage_ondemand_line",  "usage_status_line",     "usage_status_len",
@@ -52,9 +53,18 @@ pub const Model = struct {
         "cursor_ondemand_line", "cursor_ondemand_len",   "cursor_status_line",
         "cursor_status_len",    "cursor_plan_line",      "cursor_plan_len",
         "codex_active",         "codex_primary_line",    "codex_primary_len",
-        "codex_secondary_line", "codex_usage_status_line", "codex_usage_status_len",
+        "codex_primary_label_line", "codex_primary_label_len",
+        "codex_secondary_line", "codex_secondary_label_line", "codex_secondary_label_len",
+        "codex_usage_status_line", "codex_usage_status_len",
         "codex_plan_line",      "codex_plan_len",
-        "presence_set",         "status_text",           "detail_text",
+        "presence_set",         "status_text",           "presence_enabled",
+        "active_session_agent",
+        "codex_logo_image",    "cursor_logo_image",     "grok_logo_image",
+        "unified_usage",        "codex_enabled",         "cursor_enabled",
+        "grok_enabled",         "codex_installed",       "cursor_api_frac",
+        "cursor_ondemand_frac", "agent_is_grok",          "agent_is_codex",
+        "agent_is_cursor",      "agent_name",             "show_agent_switcher",
+        "cursor_api_text",      "cursor_ondemand_text",  "codex_plan_text",
         "conn_label",           "presence_label",        "grok_status_label",
         "cursor_plan_text",
         "enabled_agent_count",  "linked_agent_count",
@@ -68,7 +78,15 @@ pub const Model = struct {
     presence_paused: bool = false,
     presence_mode: presence.Mode = .cleared,
     selected_agent: AgentKind = .codex,
+    /// The newest live session, projected as the single Discord activity.
+    active_session_agent: ?AgentKind = null,
     unified_usage: bool = false,
+
+    /// Runtime image IDs. A zero value keeps the initial-based avatar fallback.
+    app_icon_image: u64 = 0,
+    codex_logo_image: u64 = 0,
+    cursor_logo_image: u64 = 0,
+    grok_logo_image: u64 = 0,
 
     codex_enabled: bool = true,
     cursor_enabled: bool = true,
@@ -80,14 +98,13 @@ pub const Model = struct {
     error_line: [160]u8 = .{0} ** 160,
     error_len: usize = 0,
 
-    // --- selected-agent session card ---
+    // --- unified active session ---
     codex_active: bool = false,
     codex_installed: bool = false,
     grok_active: bool = false,
     cursor_active: bool = false,
     cursor_installed: bool = false,
     grok_linked: bool = false,
-    show_connect_card: bool = false,
 
     session_title_line: [32]u8 = .{0} ** 32,
     session_title_len: usize = 0,
@@ -99,8 +116,6 @@ pub const Model = struct {
     meta_len: usize = 0,
     broadcast_line: [80]u8 = .{0} ** 80,
     broadcast_len: usize = 0,
-    connect_subtitle_line: [120]u8 = .{0} ** 120,
-    connect_subtitle_len: usize = 0,
     status_pill_line: [32]u8 = .{0} ** 32,
     status_pill_len: usize = 0,
 
@@ -136,9 +151,13 @@ pub const Model = struct {
     codex_usage_has_data: bool = false,
     codex_primary_line: [80]u8 = .{0} ** 80,
     codex_primary_len: usize = 0,
+    codex_primary_label_line: [40]u8 = .{0} ** 40,
+    codex_primary_label_len: usize = 0,
     codex_primary_frac: f32 = 0,
     codex_secondary_line: [80]u8 = .{0} ** 80,
     codex_secondary_len: usize = 0,
+    codex_secondary_label_line: [40]u8 = .{0} ** 40,
+    codex_secondary_label_len: usize = 0,
     codex_secondary_frac: f32 = 0,
     codex_usage_status_line: [96]u8 = .{0} ** 96,
     codex_usage_status_len: usize = 0,
@@ -165,8 +184,31 @@ pub const Model = struct {
     pub fn agent_name(model: *const Model) []const u8 {
         return model.selected_agent.displayName();
     }
-    pub fn agent_initial(model: *const Model) []const u8 {
-        return model.selected_agent.displayName()[0..1];
+    pub fn active_agent_name(model: *const Model) []const u8 {
+        if (model.active_session_agent) |agent| return agent.displayName();
+        return "No active session";
+    }
+    pub fn active_agent_initial(model: *const Model) []const u8 {
+        if (model.active_session_agent) |agent| return agent.displayName()[0..1];
+        return "-";
+    }
+    pub fn active_agent_image(model: *const Model) u64 {
+        const agent = model.active_session_agent orelse return 0;
+        return model.providerLogoImage(agent);
+    }
+    pub fn providerLogoImage(model: *const Model, agent: AgentKind) u64 {
+        return switch (agent) {
+            .codex => model.codex_logo_image,
+            .cursor => model.cursor_logo_image,
+            .grok => model.grok_logo_image,
+        };
+    }
+    pub fn setProviderLogoImage(model: *Model, agent: AgentKind, image_id: u64) void {
+        switch (agent) {
+            .codex => model.codex_logo_image = image_id,
+            .cursor => model.cursor_logo_image = image_id,
+            .grok => model.grok_logo_image = image_id,
+        }
     }
 
     pub fn enabled_agent_count(model: *const Model) u8 {
@@ -179,13 +221,6 @@ pub const Model = struct {
     pub fn show_agent_switcher(model: *const Model) bool {
         return model.enabled_agent_count() > 1;
     }
-    pub fn agent_linked(model: *const Model, agent: AgentKind) bool {
-        return switch (agent) {
-            .codex => model.codex_installed,
-            .cursor => model.cursor_installed,
-            .grok => model.grok_linked,
-        };
-    }
     pub fn linked_agent_count(model: *const Model) u8 {
         var count: u8 = 0;
         if (model.codex_installed and model.codex_enabled) count += 1;
@@ -193,21 +228,8 @@ pub const Model = struct {
         if (model.grok_linked and model.grok_enabled) count += 1;
         return count;
     }
-    pub fn has_connected_agents(model: *const Model) bool {
-        return model.linked_agent_count() > 0;
-    }
-    pub fn selected_agent_active(model: *const Model) bool {
-        return switch (model.selected_agent) {
-            .codex => model.codex_active,
-            .cursor => model.cursor_active,
-            .grok => model.grok_active,
-        };
-    }
     pub fn status_text(model: *const Model) []const u8 {
         return model.status_line[0..model.status_len];
-    }
-    pub fn detail_text(model: *const Model) []const u8 {
-        return model.detail_line[0..model.detail_len];
     }
     pub fn error_text(model: *const Model) []const u8 {
         return model.error_line[0..model.error_len];
@@ -223,15 +245,6 @@ pub const Model = struct {
     }
     pub fn meta_text(model: *const Model) []const u8 {
         return model.meta_line[0..model.meta_len];
-    }
-    pub fn broadcast_text(model: *const Model) []const u8 {
-        return model.broadcast_line[0..model.broadcast_len];
-    }
-    pub fn connect_subtitle(model: *const Model) []const u8 {
-        return model.connect_subtitle_line[0..model.connect_subtitle_len];
-    }
-    pub fn status_pill_text(model: *const Model) []const u8 {
-        return model.status_pill_line[0..model.status_pill_len];
     }
     pub fn usage_weekly_text(model: *const Model) []const u8 {
         return model.usage_weekly_line[0..model.usage_weekly_len];
@@ -263,8 +276,14 @@ pub const Model = struct {
     pub fn codex_primary_text(model: *const Model) []const u8 {
         return model.codex_primary_line[0..model.codex_primary_len];
     }
+    pub fn codex_primary_label_text(model: *const Model) []const u8 {
+        return model.codex_primary_label_line[0..model.codex_primary_label_len];
+    }
     pub fn codex_secondary_text(model: *const Model) []const u8 {
         return model.codex_secondary_line[0..model.codex_secondary_len];
+    }
+    pub fn codex_secondary_label_text(model: *const Model) []const u8 {
+        return model.codex_secondary_label_line[0..model.codex_secondary_label_len];
     }
     pub fn codex_usage_status_text(model: *const Model) []const u8 {
         return model.codex_usage_status_line[0..model.codex_usage_status_len];
@@ -363,57 +382,37 @@ pub const Model = struct {
         model.cursor_installed = cursor_installed;
         model.grok_linked = grok_linked;
 
-        const linked = switch (model.selected_agent) {
-            .codex => model.codex_installed,
-            .grok => model.grok_linked,
-            .cursor => model.cursor_installed,
-        };
-        model.show_connect_card = !linked;
-
-        const sub: []const u8 = switch (model.selected_agent) {
-            .codex => "Install Codex CLI and sign in to track usage, sessions and Discord status here.",
-            .grok => "Sign in with grok login to track usage, sessions and status here.",
-            .cursor => "Install Cursor desktop and sign in to track sessions and usage here.",
-        };
-        setBuf(&model.connect_subtitle_line, &model.connect_subtitle_len, sub);
-
-        const active = switch (model.selected_agent) {
-            .codex => codex != null,
-            .grok => grok != null,
-            .cursor => cursor != null,
+        const winner = presence.pickWinner(.{
+            .codex = codex,
+            .grok = grok,
+            .cursor = cursor,
+        });
+        model.active_session_agent = switch (winner) {
+            .codex => .codex,
+            .grok => .grok,
+            .cursor => .cursor,
+            .none => null,
         };
         setBuf(
             &model.session_title_line,
             &model.session_title_len,
-            if (active) "ACTIVE SESSION" else "LAST SESSION",
+            if (model.active_session_agent != null) "ACTIVE SESSION" else "WAITING FOR SESSION",
         );
 
         var elapsed_buf: [16]u8 = undefined;
-        if (active) {
-            switch (model.selected_agent) {
+        if (model.active_session_agent) |active_agent| {
+            switch (active_agent) {
                 .codex => {
                     const s = codex.?;
                     setBuf(&model.project_line, &model.project_len, s.project());
                     setBuf(&model.elapsed_line, &model.elapsed_len, formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf));
-                    var meta_buf: [96]u8 = undefined;
-                    var tok_buf: [32]u8 = undefined;
-                    const meta = if (s.total_tokens > 0) blk: {
-                        const tok = grok_session.formatTokens(s.total_tokens, &tok_buf);
-                        break :blk std.fmt.bufPrint(&meta_buf, "{s}  ·  {s} tokens", .{ s.modelName(), tok }) catch s.modelName();
-                    } else s.modelName();
-                    setBuf(&model.meta_line, &model.meta_len, meta);
+                    setBuf(&model.meta_line, &model.meta_len, s.modelName());
                 },
                 .grok => {
                     const s = grok.?;
                     setBuf(&model.project_line, &model.project_len, s.project());
                     setBuf(&model.elapsed_line, &model.elapsed_len, formatElapsed(s.start_epoch_ms, now_ms, &elapsed_buf));
-                    var meta_buf: [96]u8 = undefined;
-                    var tok_buf: [32]u8 = undefined;
-                    const meta = if (s.total_tokens > 0) blk: {
-                        const tok = grok_session.formatTokens(s.total_tokens, &tok_buf);
-                        break :blk std.fmt.bufPrint(&meta_buf, "{s}  ·  {s} tokens", .{ s.modelName(), tok }) catch s.modelName();
-                    } else s.modelName();
-                    setBuf(&model.meta_line, &model.meta_len, meta);
+                    setBuf(&model.meta_line, &model.meta_len, s.modelName());
                 },
                 .cursor => {
                     const s = cursor.?;
@@ -538,13 +537,24 @@ pub const Model = struct {
         var line_buf: [80]u8 = undefined;
         const primary = codex_usage.formatWindowLine(snap.primary, now_ms, &line_buf);
         setBuf(&model.codex_primary_line, &model.codex_primary_len, primary);
+        setBuf(
+            &model.codex_primary_label_line,
+            &model.codex_primary_label_len,
+            if (snap.primaryLabel().len > 0) snap.primaryLabel() else "Rate limit",
+        );
         model.codex_primary_frac = codex_usage.windowFrac(snap.primary);
         if (snap.secondary.percent >= 0) {
             const secondary = codex_usage.formatWindowLine(snap.secondary, now_ms, &line_buf);
             setBuf(&model.codex_secondary_line, &model.codex_secondary_len, secondary);
+            setBuf(
+                &model.codex_secondary_label_line,
+                &model.codex_secondary_label_len,
+                if (snap.secondaryLabel().len > 0) snap.secondaryLabel() else "Weekly limit",
+            );
             model.codex_secondary_frac = codex_usage.windowFrac(snap.secondary);
         } else {
             model.codex_secondary_len = 0;
+            model.codex_secondary_label_len = 0;
             model.codex_secondary_frac = 0;
         }
         setBuf(&model.codex_usage_status_line, &model.codex_usage_status_len, "Rate limits from Codex app-server");
@@ -558,8 +568,10 @@ pub const Model = struct {
     pub fn clearCodexUsage(model: *Model) void {
         model.codex_usage_has_data = false;
         model.codex_primary_len = 0;
+        model.codex_primary_label_len = 0;
         model.codex_primary_frac = 0;
         model.codex_secondary_len = 0;
+        model.codex_secondary_label_len = 0;
         model.codex_secondary_frac = 0;
         model.codex_plan_len = 0;
     }

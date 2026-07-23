@@ -3,6 +3,8 @@ const std = @import("std");
 const main = @import("main.zig");
 const presence = @import("presence.zig");
 const discord_ipc = @import("discord_ipc.zig");
+const codex_session = @import("codex_session.zig");
+const grok_session = @import("grok_session.zig");
 
 test "initial model is disconnected" {
     const model = main.initialModel();
@@ -56,4 +58,24 @@ test "agent selection helpers" {
     model.selected_agent = .cursor;
     try std.testing.expect(model.agent_is_cursor());
     try std.testing.expectEqualStrings("Cursor", model.agent_name());
+}
+
+test "active session card never displays token counts" {
+    var model = main.initialModel();
+
+    var codex: codex_session.SessionInfo = .{};
+    codex_session.SessionInfo.setField(&codex.model, &codex.model_len, "GPT-5.6 terra");
+    codex.total_tokens = 203_600;
+    codex.activity_ms = 2_000;
+    model.applySessions(codex, null, null, 3_000, .codex, true, false, false);
+    try std.testing.expectEqualStrings("GPT-5.6 terra", model.meta_text());
+    try std.testing.expect(std.mem.indexOf(u8, model.meta_text(), "token") == null);
+
+    var grok: grok_session.SessionInfo = .{};
+    grok_session.SessionInfo.setField(&grok.model, &grok.model_len, "Grok 4.5");
+    grok.total_tokens = 81_200;
+    grok.activity_ms = 4_000;
+    model.applySessions(null, grok, null, 5_000, .grok, false, true, false);
+    try std.testing.expectEqualStrings("Grok 4.5", model.meta_text());
+    try std.testing.expect(std.mem.indexOf(u8, model.meta_text(), "token") == null);
 }

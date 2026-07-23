@@ -1,236 +1,129 @@
-<!-- AgentCord popover: status, session, usage — mirrors the macOS menu-bar layout. -->
-<column gap="0" background="background" grow="1">
-  <scroll grow="1">
-    <column gap="12" padding="14">
+<!-- Portrait overview: a compact active session followed by three provider rows. -->
+<column background="background" grow="1" padding="16" gap="10">
 
-      <!-- Header: brand + connection pill -->
-      <row gap="10" cross="center" window-drag="true">
-        <card width="28" height="28" radius="md" background="accent" padding="0">
-          <column grow="1" main="center" cross="center">
-            <icon name="circle-dot" width="14" height="14" foreground="accent_text" />
-          </column>
-        </card>
-        <text grow="1">agentcord</text>
-        <badge>{status_pill_text}</badge>
-      </row>
+  <row height="32" gap="8" cross="center" window-drag="true">
+    <image image="{app_icon_image}" width="28" height="28" label="AgentCord" />
+    <text grow="1">agentcord</text>
+    <button size="sm" variant="ghost" icon="refresh-cw" label="Refresh usage" on-press="refresh_usage" />
+    <button size="sm" variant="ghost" icon="x" on-press="quit">Quit</button>
+  </row>
 
-      <!-- Agent switcher -->
-      <if test="{show_agent_switcher}">
-        <tabs gap="2" label="Enabled agents" background="surface_subtle" radius="md" padding="2">
-          <if test="{codex_enabled}">
-            <button size="sm" selected="{agent_is_codex}" on-press="select_codex">Codex</button>
-          </if>
-          <if test="{cursor_enabled}">
-            <button size="sm" selected="{agent_is_cursor}" on-press="select_cursor">Cursor</button>
-          </if>
-          <if test="{grok_enabled}">
-            <button size="sm" selected="{agent_is_grok}" on-press="select_grok">Grok</button>
-          </if>
-        </tabs>
-      </if>
+  <!-- Unified Discord presence: intentionally compact, never a dashboard hero. -->
+  <card height="96" padding="12" background="accent" radius="xl">
+    <row grow="1" gap="10" cross="center">
+      <avatar size="lg" image="{active_agent_image}" label="{active_agent_name}">{active_agent_initial}</avatar>
+      <column grow="1" gap="2">
+        <text foreground="accent_text">{session_title}</text>
+        <text foreground="accent_text" wrap="true">{project_text}</text>
+        <text foreground="accent_text" wrap="true">{active_agent_name} - {meta_text}</text>
+      </column>
+      <text foreground="accent_text">{elapsed_text}</text>
+    </row>
+  </card>
 
-      <!-- Connect empty state -->
-      <if test="{show_connect_card}">
-        <card padding="20" background="surface" radius="lg">
-          <column gap="12" cross="center">
-            <avatar size="lg" label="{agent_name}">{agent_initial}</avatar>
-            <column gap="4" cross="center">
-              <text>Connect {agent_name}</text>
-              <text foreground="text_muted" wrap="true" text-alignment="center">{connect_subtitle}</text>
+  <!-- Provider rows: every usage source stays visible in the portrait frame. -->
+  <column gap="8">
+
+    <card height="84" padding="10" background="surface" radius="xl">
+      <column grow="1" gap="6">
+        <row cross="center">
+          <text grow="1">Codex</text>
+          <text foreground="text_muted">Usage</text>
+        </row>
+        <separator />
+        <column grow="1" gap="4">
+          <if test="{codex_usage_has_data}">
+            <column gap="4">
+              <row cross="center">
+                <text grow="1">{codex_primary_label_text}</text>
+                <text foreground="text_muted">{codex_primary_text}</text>
+              </row>
+              <progress value="{codex_primary_frac}" label="Codex rate limit" />
             </column>
-            <button variant="primary" size="sm" on-press="open_connect_help">Connect {agent_name}</button>
-          </column>
-        </card>
-      </if>
-
-      <else>
-        <!-- Active / last session -->
-        <card padding="12" background="surface" radius="lg">
-          <column gap="10">
-            <row cross="center" gap="8">
-              <text grow="1" foreground="text_muted">{session_title}</text>
-              <badge>{elapsed_text}</badge>
-            </row>
-
-            <row gap="8" cross="center">
-              <icon name="folder" width="14" height="14" foreground="text_muted" />
-              <text grow="1">{project_text}</text>
-            </row>
-
-            <text foreground="text_muted" wrap="true">{meta_text}</text>
-
-            <separator />
-
-            <row gap="6" cross="center">
-              <icon name="circle-dot" width="10" height="10" foreground="text_muted" />
-              <text grow="1" foreground="text_muted" wrap="true">{broadcast_text}</text>
-            </row>
-          </column>
-        </card>
-
-        <!-- Usage limits -->
-        <card padding="12" background="surface" radius="lg">
-          <column gap="10">
-            <row cross="center" gap="6">
-              <text grow="1" foreground="text_muted">USAGE</text>
-              <if test="{agent_is_codex}">
-                <if test="{codex_usage_has_data}">
-                  <text foreground="text_muted">{codex_plan_text}</text>
-                </if>
-              </if>
-              <if test="{agent_is_cursor}">
-                <if test="{cursor_usage_has_data}">
-                  <text foreground="text_muted">{cursor_plan_text}</text>
-                </if>
-              </if>
-              <if test="{show_agent_switcher}">
-                <if test="{unified_usage}">
-                  <button size="sm" variant="ghost" on-press="toggle_unified_usage">Selected</button>
-                </if>
-                <else>
-                  <button size="sm" variant="ghost" on-press="toggle_unified_usage">All</button>
-                </else>
-              </if>
-              <button size="sm" variant="ghost" icon="refresh-cw" label="Refresh usage" on-press="refresh_usage" />
-            </row>
-
-            <if test="{unified_usage}">
-              <column gap="12">
-                <if test="{codex_installed}">
-                  <column gap="5">
-                    <row cross="center">
-                      <text grow="1">Codex</text>
-                      <text foreground="text_muted">{codex_primary_text}</text>
-                    </row>
-                    <progress value="{codex_primary_frac}" label="Codex usage" />
-                  </column>
-                </if>
-                <if test="{grok_linked}">
-                  <column gap="5">
-                    <row cross="center">
-                      <text grow="1">Grok</text>
-                      <text foreground="text_muted">{usage_weekly_text}</text>
-                    </row>
-                    <progress value="{usage_weekly_frac}" label="Grok usage" />
-                  </column>
-                </if>
-                <if test="{cursor_installed}">
-                  <column gap="5">
-                    <row cross="center">
-                      <text grow="1">Cursor</text>
-                      <text foreground="text_muted">{cursor_included_text}</text>
-                    </row>
-                    <progress value="{cursor_included_frac}" label="Cursor usage" />
-                  </column>
-                </if>
+            <if test="{codex_secondary_len > 0}">
+              <column gap="4">
+                <row cross="center">
+                  <text grow="1">{codex_secondary_label_text}</text>
+                  <text foreground="text_muted">{codex_secondary_text}</text>
+                </row>
+                <progress value="{codex_secondary_frac}" label="Codex secondary rate limit" />
               </column>
             </if>
+          </if>
+          <else>
+            <text foreground="text_muted" wrap="true">{codex_usage_status_text}</text>
+          </else>
+        </column>
+      </column>
+    </card>
 
-            <else>
-              <if test="{agent_is_codex}">
-                <column gap="10">
-                  <text foreground="text_muted" wrap="true">{codex_usage_status_text}</text>
-                  <if test="{codex_usage_has_data}">
-                    <column gap="5">
-                      <row cross="center">
-                        <text grow="1">{codex_plan_text}</text>
-                        <text foreground="text_muted">{codex_primary_text}</text>
-                      </row>
-                      <progress value="{codex_primary_frac}" label="Codex primary rate limit" />
-                    </column>
-                    <if test="{codex_secondary_len > 0}">
-                      <column gap="5">
-                        <row cross="center">
-                          <text grow="1">Weekly limit</text>
-                          <text foreground="text_muted">{codex_secondary_text}</text>
-                        </row>
-                        <progress value="{codex_secondary_frac}" label="Codex secondary rate limit" />
-                      </column>
-                    </if>
-                  </if>
-                </column>
-              </if>
-
-              <else>
-                <if test="{agent_is_grok}">
-                  <column gap="10">
-                    <text foreground="text_muted" wrap="true">{usage_status_text}</text>
-                    <if test="{usage_has_data}">
-                      <column gap="5">
-                        <row cross="center">
-                          <text grow="1">Weekly credits</text>
-                          <text foreground="text_muted">{usage_weekly_text}</text>
-                        </row>
-                        <progress value="{usage_weekly_frac}" label="Weekly credits" />
-                      </column>
-                      <if test="{usage_ondemand_len > 0}">
-                        <column gap="5">
-                          <row cross="center">
-                            <text grow="1">On-demand</text>
-                            <text foreground="text_muted">{usage_ondemand_text}</text>
-                          </row>
-                          <progress value="{usage_ondemand_frac}" label="On-demand usage" />
-                        </column>
-                      </if>
-                    </if>
-                  </column>
-                </if>
-
-                <else>
-                  <column gap="10">
-                    <text foreground="text_muted" wrap="true">{cursor_status_text}</text>
-                    <if test="{cursor_usage_has_data}">
-                      <column gap="5">
-                        <row cross="center">
-                          <text grow="1">Included usage</text>
-                          <text foreground="text_muted">{cursor_included_text}</text>
-                        </row>
-                        <progress value="{cursor_included_frac}" label="Included usage" />
-                      </column>
-                      <if test="{cursor_auto_len > 0}">
-                        <column gap="5">
-                          <row cross="center">
-                            <text grow="1">Auto + Composer</text>
-                            <text foreground="text_muted">{cursor_auto_text}</text>
-                          </row>
-                          <progress value="{cursor_auto_frac}" label="Auto + Composer usage" />
-                        </column>
-                      </if>
-                      <if test="{cursor_api_len > 0}">
-                        <column gap="5">
-                          <row cross="center">
-                            <text grow="1">API models</text>
-                            <text foreground="text_muted">{cursor_api_text}</text>
-                          </row>
-                          <progress value="{cursor_api_frac}" label="API models usage" />
-                        </column>
-                      </if>
-                      <if test="{cursor_ondemand_len > 0}">
-                        <column gap="5">
-                          <row cross="center">
-                            <text grow="1">On-demand</text>
-                            <text foreground="text_muted">{cursor_ondemand_text}</text>
-                          </row>
-                          <progress value="{cursor_ondemand_frac}" label="On-demand usage" />
-                        </column>
-                      </if>
-                    </if>
-                  </column>
-                </else>
-              </else>
-            </else>
-
-            <if test="{error_len > 0}">
-              <text foreground="destructive" wrap="true">{error_text}</text>
+    <card height="108" padding="10" background="surface" radius="xl">
+      <column grow="1" gap="6">
+        <row cross="center">
+          <text grow="1">Cursor</text>
+          <text foreground="text_muted">Usage</text>
+        </row>
+        <separator />
+        <column grow="1" gap="4">
+          <if test="{cursor_usage_has_data}">
+            <column gap="4">
+              <row cross="center">
+                <text grow="1">Included</text>
+                <text foreground="text_muted">{cursor_included_text}</text>
+              </row>
+              <progress value="{cursor_included_frac}" label="Cursor included usage" />
+            </column>
+            <if test="{cursor_auto_len > 0}">
+              <column gap="4">
+                <row cross="center">
+                  <text grow="1">Auto</text>
+                  <text foreground="text_muted">{cursor_auto_text}</text>
+                </row>
+                <progress value="{cursor_auto_frac}" label="Cursor Auto usage" />
+              </column>
             </if>
-          </column>
-        </card>
-      </else>
+          </if>
+          <else>
+            <text foreground="text_muted" wrap="true">{cursor_status_text}</text>
+          </else>
+        </column>
+      </column>
+    </card>
 
-      <separator />
+    <card height="84" padding="10" background="surface" radius="xl">
+      <column grow="1" gap="6">
+        <row cross="center">
+          <text grow="1">Grok</text>
+          <text foreground="text_muted">Usage</text>
+        </row>
+        <separator />
+        <column grow="1" gap="4">
+          <if test="{usage_has_data}">
+            <column gap="4">
+              <row cross="center">
+                <text grow="1">Weekly credits</text>
+                <text foreground="text_muted">{usage_weekly_text}</text>
+              </row>
+              <progress value="{usage_weekly_frac}" label="Grok weekly credits" />
+            </column>
+            <if test="{usage_ondemand_len > 0}">
+              <column gap="4">
+                <row cross="center">
+                  <text grow="1">On-demand</text>
+                  <text foreground="text_muted">{usage_ondemand_text}</text>
+                </row>
+                <progress value="{usage_ondemand_frac}" label="Grok on-demand usage" />
+              </column>
+            </if>
+          </if>
+          <else>
+            <text foreground="text_muted" wrap="true">{usage_status_text}</text>
+          </else>
+        </column>
+      </column>
+    </card>
 
-      <button variant="ghost" grow="1" on-press="quit">Quit AgentCord</button>
+  </column>
 
-    </column>
-  </scroll>
+  <spacer grow="1" />
 </column>

@@ -9,6 +9,7 @@ pub const GENERIC_READ: windows.DWORD = 0x80000000;
 pub const GENERIC_WRITE: windows.DWORD = 0x40000000;
 pub const FILE_SHARE_READ: windows.DWORD = 0x00000001;
 pub const FILE_SHARE_WRITE: windows.DWORD = 0x00000002;
+pub const CREATE_ALWAYS: windows.DWORD = 2;
 pub const OPEN_EXISTING: windows.DWORD = 3;
 pub const FILE_ATTRIBUTE_NORMAL: windows.DWORD = 0x80;
 
@@ -96,6 +97,27 @@ pub extern "kernel32" fn GetSystemTimeAsFileTime(
     lpSystemTimeAsFileTime: *FILETIME,
 ) callconv(.winapi) void;
 
+pub extern "user32" fn FindWindowW(
+    lpClassName: ?[*:0]const u16,
+    lpWindowName: ?[*:0]const u16,
+) callconv(.winapi) ?windows.HWND;
+
+pub extern "user32" fn LoadImageW(
+    hInstance: ?windows.HINSTANCE,
+    name: [*:0]const u16,
+    image_type: windows.UINT,
+    width: c_int,
+    height: c_int,
+    load_flags: windows.UINT,
+) callconv(.winapi) ?windows.HANDLE;
+
+pub extern "user32" fn SendMessageW(
+    hWnd: windows.HWND,
+    message: windows.UINT,
+    wParam: usize,
+    lParam: windows.LPARAM,
+) callconv(.winapi) windows.LPARAM;
+
 pub extern "kernel32" fn CreatePipe(
     hReadPipe: *windows.HANDLE,
     hWritePipe: *windows.HANDLE,
@@ -146,11 +168,33 @@ pub extern "kernel32" fn SearchPathW(
     lpFilePart: ?*?[*:0]u16,
 ) callconv(.winapi) windows.DWORD;
 
+pub extern "kernel32" fn PeekNamedPipe(
+    hNamedPipe: windows.HANDLE,
+    lpBuffer: ?[*]u8,
+    nBufferSize: windows.DWORD,
+    lpBytesRead: ?*windows.DWORD,
+    lpTotalBytesAvail: ?*windows.DWORD,
+    lpBytesLeftThisMessage: ?*windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+pub extern "kernel32" fn GetFileSizeEx(
+    hFile: windows.HANDLE,
+    lpFileSize: *i64,
+) callconv(.winapi) windows.BOOL;
+
+pub extern "kernel32" fn SetFilePointerEx(
+    hFile: windows.HANDLE,
+    liDistanceToMove: i64,
+    lpNewFilePointer: ?*i64,
+    dwMoveMethod: windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
 const HANDLE_FLAG_INHERIT: windows.DWORD = 0x00000001;
 const CREATE_NO_WINDOW: windows.DWORD = 0x08000000;
 const STARTF_USESTDHANDLES: windows.DWORD = 0x00000100;
 const WAIT_OBJECT_0: windows.DWORD = 0;
 const WAIT_TIMEOUT: windows.DWORD = 0x00000102;
+const FILE_BEGIN: windows.DWORD = 0;
 
 const SECURITY_ATTRIBUTES = extern struct {
     nLength: windows.DWORD,
@@ -202,8 +246,29 @@ pub fn searchPath(name: []const u8, out: []u8) ?[]const u8 {
 /// Run `argv[0..]` (argv[0] = exe path or name), capture stdout into `out` (truncated).
 /// Returns stdout slice on exit code 0; null on spawn/timeout/nonzero exit.
 pub fn runCapture(argv: []const []const u8, out: []u8, timeout_ms: u32) ?[]const u8 {
-    if (builtin.os.tag != .windows) return null;
-    if (argv.len == 0 or out.len == 0) return null;
+    return runCaptureInner(argv, null, out, timeout_ms, true);
+}
+
+/// Run a short-lived command with stdin, capturing stdout.
+/// Used for local protocol clients such as `codex app-server`; credentials stay
+/// with the tool process and never enter AgentCord's model or cache.
+pub fn runCaptureWithInput(
+    argv: []const []const u8,
+    input: []const u8,
+    out: []u8,
+    timeout_ms: u32,
+) ?[]const u8 {
+    return runCaptureInner(argv, input, out, timeout_ms, false);
+}
+
+fn runCaptureInner(
+    argv: []const []const u8,
+    input: ?[]const u8,
+    out: []u8,
+    timeout_ms: u32,
+    trim_trailing: bool,
+) ?[]const u8 {
+    if (builtin.os.tag != .windows or argv.len == 0 or out.len == 0) return null;
 
     var cmdline_utf8: [4096]u8 = undefined;
     var cmdline_len: usize = 0;
@@ -225,21 +290,45 @@ pub fn runCapture(argv: []const []const u8, out: []u8, timeout_ms: u32) ?[]const
         .lpSecurityDescriptor = null,
         .bInheritHandle = windows.BOOL.TRUE,
     };
-    var read_pipe: windows.HANDLE = undefined;
-    var write_pipe: windows.HANDLE = undefined;
-    if (!CreatePipe(&read_pipe, &write_pipe, &sa, 0).toBool()) return null;
-    // Parent keeps read; child inherits write. Clear inherit on read end.
-    _ = SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+    var stdin_read: ?windows.HANDLE = null;
+    var stdin_write: ?windows.HANDLE = null;
+    if (input != null) {
+        var r: windows.HANDLE = undefined;
+        var w: windows.HANDLE = undefined;
+        if (!CreatePipe(&r, &w, &sa, 0).toBool()) return null;
+        if (!SetHandleInformation(w, HANDLE_FLAG_INHERIT, 0).toBool()) {
+            windows.CloseHandle(r);
+            windows.CloseHandle(w);
+            return null;
+        }
+        stdin_read = r;
+        stdin_write = w;
+    }
+
+    var stdout_read: windows.HANDLE = undefined;
+    var stdout_write: windows.HANDLE = undefined;
+    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0).toBool()) {
+        if (stdin_read) |h| windows.CloseHandle(h);
+        if (stdin_write) |h| windows.CloseHandle(h);
+        return null;
+    }
+    if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0).toBool()) {
+        windows.CloseHandle(stdout_read);
+        windows.CloseHandle(stdout_write);
+        if (stdin_read) |h| windows.CloseHandle(h);
+        if (stdin_write) |h| windows.CloseHandle(h);
+        return null;
+    }
 
     var si = STARTUPINFOW{
         .cb = @sizeOf(STARTUPINFOW),
         .dwFlags = STARTF_USESTDHANDLES,
-        .hStdInput = null,
-        .hStdOutput = write_pipe,
-        .hStdError = write_pipe,
+        .hStdInput = stdin_read,
+        .hStdOutput = stdout_write,
+        .hStdError = stdout_write,
     };
     var pi: PROCESS_INFORMATION = undefined;
-    const ok = CreateProcessW(
+    const started = CreateProcessW(
         null,
         cmdline_wide[0..wide_len :0].ptr,
         null,
@@ -251,40 +340,89 @@ pub fn runCapture(argv: []const []const u8, out: []u8, timeout_ms: u32) ?[]const
         &si,
         &pi,
     );
-    windows.CloseHandle(write_pipe);
-    if (!ok.toBool()) {
-        windows.CloseHandle(read_pipe);
+    if (stdin_read) |h| windows.CloseHandle(h);
+    windows.CloseHandle(stdout_write);
+    if (!started.toBool()) {
+        if (stdin_write) |h| windows.CloseHandle(h);
+        windows.CloseHandle(stdout_read);
         return null;
     }
     defer {
         windows.CloseHandle(pi.hThread);
         windows.CloseHandle(pi.hProcess);
-        windows.CloseHandle(read_pipe);
+        windows.CloseHandle(stdout_read);
     }
 
-    var total: usize = 0;
-    while (total < out.len) {
-        var n: windows.DWORD = 0;
-        if (!ReadFile(read_pipe, out[total..].ptr, @intCast(out.len - total), &n, null).toBool()) break;
-        if (n == 0) break;
-        total += n;
+    if (stdin_write) |write_h| {
+        const payload = input.?;
+        var written: windows.DWORD = 0;
+        if (payload.len > 0 and !WriteFile(write_h, payload.ptr, @intCast(payload.len), &written, null).toBool()) {
+            windows.CloseHandle(write_h);
+            _ = TerminateProcess(pi.hProcess, 1);
+            return null;
+        }
+        windows.CloseHandle(write_h); // EOF for the child.
     }
 
-    const wait = WaitForSingleObject(pi.hProcess, timeout_ms);
-    if (wait == WAIT_TIMEOUT) {
-        _ = TerminateProcess(pi.hProcess, 1);
-        return null;
-    }
-    if (wait != WAIT_OBJECT_0) return null;
+    const total = readPipeWithTimeout(stdout_read, pi.hProcess, out, timeout_ms) orelse return null;
     var code: windows.DWORD = 1;
     _ = GetExitCodeProcess(pi.hProcess, &code);
     if (code != 0 or total == 0) return null;
-    // Trim trailing whitespace / newlines from sqlite3 output.
-    while (total > 0 and (out[total - 1] == '\n' or out[total - 1] == '\r' or out[total - 1] == ' ' or out[total - 1] == '\t')) {
-        total -= 1;
+
+    var end = total;
+    if (trim_trailing) {
+        while (end > 0 and (out[end - 1] == '\n' or out[end - 1] == '\r' or out[end - 1] == ' ' or out[end - 1] == '\t')) {
+            end -= 1;
+        }
+        if (end == 0) return null;
     }
-    if (total == 0) return null;
-    return out[0..total];
+    return out[0..end];
+}
+
+/// Drain stdout without blocking forever: PeekNamedPipe + short waits, bounded by timeout_ms.
+fn readPipeWithTimeout(
+    read_pipe: windows.HANDLE,
+    process: windows.HANDLE,
+    out: []u8,
+    timeout_ms: u32,
+) ?usize {
+    const started_ms = nowEpochMs();
+    var total: usize = 0;
+    var process_done = false;
+    while (total < out.len) {
+        var avail: windows.DWORD = 0;
+        if (!PeekNamedPipe(read_pipe, null, 0, null, &avail, null).toBool()) break;
+        if (avail > 0) {
+            const want: windows.DWORD = @intCast(@min(@as(usize, avail), out.len - total));
+            var n: windows.DWORD = 0;
+            if (!ReadFile(read_pipe, out[total..].ptr, want, &n, null).toBool()) break;
+            if (n == 0) break;
+            total += n;
+            continue;
+        }
+        if (process_done) break;
+
+        const elapsed = nowEpochMs() - started_ms;
+        if (elapsed < 0 or elapsed >= timeout_ms) {
+            _ = TerminateProcess(process, 1);
+            return null;
+        }
+        const remain_ms: windows.DWORD = @intCast(@min(@as(u32, 50), timeout_ms - @as(u32, @intCast(elapsed))));
+        const wait = WaitForSingleObject(process, remain_ms);
+        if (wait == WAIT_OBJECT_0) {
+            process_done = true;
+            continue; // one more peek/drain pass after exit
+        }
+        if (wait != WAIT_TIMEOUT) return null;
+    }
+    if (!process_done) {
+        const wait = WaitForSingleObject(process, 0);
+        if (wait != WAIT_OBJECT_0) {
+            _ = TerminateProcess(process, 1);
+            return null;
+        }
+    }
+    return total;
 }
 
 fn quoteArg(arg: []const u8, buf: []u8) ?[]const u8 {
@@ -343,9 +481,20 @@ pub fn fileMtimeMs(path: []const u8) ?i64 {
 
 fn fileTimeToEpochMs(ft: FILETIME) i64 {
     const ticks: u64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
-    const epoch_diff: u64 = 11_644_473_600_000_000_000;
+    const epoch_diff: u64 = 116_444_736_000_000_000;
     if (ticks < epoch_diff) return 0;
     return @intCast((ticks - epoch_diff) / 10_000);
+}
+
+test "converts Windows file time to Unix milliseconds" {
+    const epoch_diff: u64 = 116_444_736_000_000_000;
+    const expected_ms: u64 = 1_700_000_000_000;
+    const ticks = epoch_diff + expected_ms * 10_000;
+    const ft = FILETIME{
+        .dwLowDateTime = @truncate(ticks),
+        .dwHighDateTime = @truncate(ticks >> 32),
+    };
+    try std.testing.expectEqual(@as(i64, @intCast(expected_ms)), fileTimeToEpochMs(ft));
 }
 
 /// Current UTC wall clock as Unix epoch milliseconds (Zig 0.16: no std.time.milliTimestamp).
@@ -354,6 +503,28 @@ pub fn nowEpochMs() i64 {
     var ft: FILETIME = undefined;
     GetSystemTimeAsFileTime(&ft);
     return fileTimeToEpochMs(ft);
+}
+
+/// Apply the app's .ico to an already-created Win32 window. Native SDK's
+/// Windows tray loader also consumes this same .ico path.
+pub fn setWindowIcon(title: []const u8, icon_path: []const u8) bool {
+    if (builtin.os.tag != .windows) return false;
+    var title_wide: [260]u16 = undefined;
+    const title_w = pathToWide(title, &title_wide) orelse return false;
+    const hwnd = FindWindowW(null, title_w.ptr) orelse return false;
+    var path_wide: [520]u16 = undefined;
+    const icon_w = pathToWide(icon_path, &path_wide) orelse return false;
+    const image_icon: windows.UINT = 1;
+    const load_from_file: windows.UINT = 0x0010;
+    const large = LoadImageW(null, icon_w.ptr, image_icon, 32, 32, load_from_file);
+    const small = LoadImageW(null, icon_w.ptr, image_icon, 16, 16, load_from_file);
+    if (large) |icon| {
+        _ = SendMessageW(hwnd, 0x0080, 1, @intCast(@intFromPtr(icon)));
+    }
+    if (small) |icon| {
+        _ = SendMessageW(hwnd, 0x0080, 0, @intCast(@intFromPtr(icon)));
+    }
+    return large != null or small != null;
 }
 
 pub const DirEntryKind = enum { file, directory };
@@ -420,6 +591,34 @@ pub fn appData(buf: []u8) ?[]const u8 {
 }
 
 pub fn readFile(path: []const u8, buf: []u8) ?[]const u8 {
+    return readFileFrom(path, buf, 0);
+}
+
+/// Read up to `buf.len` bytes from the end of `path` (true tail when the file is larger).
+pub fn readFileTail(path: []const u8, buf: []u8) ?[]const u8 {
+    if (builtin.os.tag != .windows or buf.len == 0) return null;
+    var wide: [520]u16 = undefined;
+    const wide_len = std.unicode.utf8ToUtf16Le(wide[0 .. wide.len - 1], path) catch return null;
+    wide[wide_len] = 0;
+    const handle = CreateFileW(
+        wide[0..wide_len :0].ptr,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        null,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        null,
+    );
+    if (handle == INVALID_HANDLE) return null;
+    defer windows.CloseHandle(handle);
+
+    var size: i64 = 0;
+    if (!GetFileSizeEx(handle, &size).toBool() or size <= 0) return null;
+    const offset: i64 = if (size > buf.len) size - @as(i64, @intCast(buf.len)) else 0;
+    return readHandleFrom(handle, buf, offset);
+}
+
+fn readFileFrom(path: []const u8, buf: []u8, offset: i64) ?[]const u8 {
     if (builtin.os.tag != .windows) return null;
     var wide: [520]u16 = undefined;
     const wide_len = std.unicode.utf8ToUtf16Le(wide[0 .. wide.len - 1], path) catch return null;
@@ -436,7 +635,13 @@ pub fn readFile(path: []const u8, buf: []u8) ?[]const u8 {
     );
     if (handle == INVALID_HANDLE) return null;
     defer windows.CloseHandle(handle);
+    return readHandleFrom(handle, buf, offset);
+}
 
+fn readHandleFrom(handle: windows.HANDLE, buf: []u8, offset: i64) ?[]const u8 {
+    if (offset > 0) {
+        if (!SetFilePointerEx(handle, offset, null, FILE_BEGIN).toBool()) return null;
+    }
     var total: usize = 0;
     while (total < buf.len) {
         var n: windows.DWORD = 0;
@@ -446,6 +651,30 @@ pub fn readFile(path: []const u8, buf: []u8) ?[]const u8 {
     }
     if (total == 0) return null;
     return buf[0..total];
+}
+
+/// Replace a small local data file. Intended for non-sensitive application
+/// state such as usage snapshots; callers should never pass credentials.
+pub fn writeFile(path: []const u8, data: []const u8) bool {
+    if (builtin.os.tag != .windows or data.len == 0) return false;
+    var wide: [520]u16 = undefined;
+    const wide_len = std.unicode.utf8ToUtf16Le(wide[0 .. wide.len - 1], path) catch return false;
+    wide[wide_len] = 0;
+    const handle = CreateFileW(
+        wide[0..wide_len :0].ptr,
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        null,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        null,
+    );
+    if (handle == INVALID_HANDLE) return false;
+    defer windows.CloseHandle(handle);
+
+    var written: windows.DWORD = 0;
+    if (!WriteFile(handle, data.ptr, @intCast(data.len), &written, null).toBool()) return false;
+    return written == data.len;
 }
 
 /// Copy `value` into `buf`, clamping to capacity. Writes length into `len`.

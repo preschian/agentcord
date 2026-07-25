@@ -111,14 +111,25 @@ public sealed class PresenceController : IDisposable
             Timestamps = new Timestamps { Start = info.StartEpochMs },
             Assets = new Assets
             {
-                LargeImage = NonEmpty(_settings.LargeImageKey),
+                // The Windows port only detects Claude Code sessions.
+                LargeImage = "logo-claude",
                 LargeText = "agentcord",
                 SmallImage = NonEmpty(_settings.SmallImageKey),
                 SmallText = "Active session",
             },
-            Buttons = [new PresenceButton { Label = "What is Claude Code", Url = "https://www.anthropic.com" }],
+            Buttons =
+            [
+                new PresenceButton { Label = "What is Claude Code", Url = "https://www.anthropic.com" },
+                RepoButton,
+            ],
         };
     }
+
+    private static PresenceButton RepoButton => new()
+    {
+        Label = "AgentCord on GitHub",
+        Url = "https://github.com/preschian/agentcord",
+    };
 
     private static string? NonEmpty(string s) => s.Length == 0 ? null : s;
 

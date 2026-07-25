@@ -185,7 +185,7 @@ final class PresenceController: ObservableObject {
         }
 
         let assets = Assets(
-            large_image: settings.largeImageKey.isEmpty ? nil : settings.largeImageKey,
+            large_image: Self.logoAsset(for: info.agent),
             large_text: "agentcord",
             small_image: settings.smallImageKey.isEmpty ? nil : settings.smallImageKey,
             small_text: "Active \(info.agent.displayName) session"
@@ -201,9 +201,24 @@ final class PresenceController: ObservableObject {
             state: state,
             timestamps: Timestamps(start: info.startEpochMs, end: nil),
             assets: assets,
-            buttons: [Self.presenceButton(for: info.agent)]
+            buttons: [Self.presenceButton(for: info.agent), Self.repoButton]
         )
     }
+
+    /// Discord art-asset key for the large image, one per agent.
+    private static func logoAsset(for agent: AgentKind) -> String {
+        switch agent {
+        case .codex: return "logo-chatgpt"
+        case .claude: return "logo-claude"
+        case .cursor: return "logo-cursor"
+        case .grok: return "logo-grok"
+        }
+    }
+
+    private static let repoButton = PresenceButton(
+        label: "AgentCord on GitHub",
+        url: "https://github.com/preschian/agentcord"
+    )
 
     private static func presenceButton(for agent: AgentKind) -> PresenceButton {
         switch agent {

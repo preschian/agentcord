@@ -24,7 +24,6 @@ final class SettingsStore: ObservableObject {
         static let unifiedUsage = "unifiedUsage"
         static let doNotDisturb = "doNotDisturb"
         static let preventSleep = "preventSleep"
-        static let largeImageKey = "largeImageKey"
         static let smallImageKey = "smallImageKey"
         static let activityType = "activityType"
         static let idleWindowSeconds = "idleWindowSeconds"
@@ -53,7 +52,6 @@ final class SettingsStore: ObservableObject {
     @Published var unifiedUsage: Bool { didSet { defaults.set(unifiedUsage, forKey: Key.unifiedUsage) } }
     @Published var doNotDisturb: Bool { didSet { defaults.set(doNotDisturb, forKey: Key.doNotDisturb) } }
     @Published var preventSleep: Bool { didSet { defaults.set(preventSleep, forKey: Key.preventSleep) } }
-    @Published var largeImageKey: String { didSet { defaults.set(largeImageKey, forKey: Key.largeImageKey) } }
     @Published var smallImageKey: String { didSet { defaults.set(smallImageKey, forKey: Key.smallImageKey) } }
     @Published var activityType: Int { didSet { defaults.set(activityType, forKey: Key.activityType) } }
     @Published var idleWindowSeconds: Double { didSet { defaults.set(idleWindowSeconds, forKey: Key.idleWindowSeconds) } }
@@ -80,7 +78,6 @@ final class SettingsStore: ObservableObject {
             Key.unifiedUsage: false,
             Key.doNotDisturb: false,
             Key.preventSleep: false,
-            Key.largeImageKey: "claude-color",
             Key.smallImageKey: "discord-presence-icon",
             Key.activityType: 0,
             Key.idleWindowSeconds: 300.0,
@@ -102,7 +99,6 @@ final class SettingsStore: ObservableObject {
         unifiedUsage = defaults.bool(forKey: Key.unifiedUsage)
         doNotDisturb = defaults.bool(forKey: Key.doNotDisturb)
         preventSleep = defaults.bool(forKey: Key.preventSleep)
-        largeImageKey = defaults.string(forKey: Key.largeImageKey) ?? "claude-color"
         smallImageKey = defaults.string(forKey: Key.smallImageKey) ?? "discord-presence-icon"
         activityType = defaults.integer(forKey: Key.activityType)
         idleWindowSeconds = defaults.double(forKey: Key.idleWindowSeconds)

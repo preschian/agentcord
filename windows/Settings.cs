@@ -20,7 +20,6 @@ public sealed class Settings
     [JsonPropertyName("show_model")] public bool ShowModel { get; set; } = true;
     [JsonPropertyName("show_tokens")] public bool ShowTokens { get; set; } = true;
     [JsonPropertyName("show_project")] public bool ShowProject { get; set; } = true;
-    [JsonPropertyName("large_image_key")] public string LargeImageKey { get; set; } = "claude-color";
     [JsonPropertyName("small_image_key")] public string SmallImageKey { get; set; } = "discord-presence-icon";
 
     /// <summary>Discord activity type: 0 Playing, 2 Listening, 3 Watching, 5 Competing.</summary>

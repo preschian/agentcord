@@ -39,7 +39,7 @@ You do this once, by hand, in Discord's developer portal.
 
 1. Create an application at https://discord.com/developers/applications. A personal app needs no Team.
 2. Copy the **Application ID**. This is the Client ID the app asks for.
-3. Under **Rich Presence > Art Assets**, upload your images and note their asset keys. The app defaults to `claude` for the large image and `coding` for the small one. Those keys are what `large_image` and `small_image` reference, so either name your uploads to match or change the keys in Settings.
+3. Under **Rich Presence > Art Assets**, upload your images and note their asset keys. The large image is picked from the detected agent, so upload one per agent named `logo-chatgpt`, `logo-claude`, `logo-cursor`, and `logo-grok`. The small image is still configurable in Settings and defaults to `discord-presence-icon`.
 4. Make sure the Discord desktop client is running.
 
 ## Using the app

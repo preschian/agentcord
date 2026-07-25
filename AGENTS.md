@@ -37,5 +37,3 @@ open "$(xcodebuild -project macos/AgentCord.xcodeproj -scheme AgentCord -configu
 ```
 
 The app is a menu bar utility (sparkles icon) — it has no Dock icon or window, so check the menu bar to confirm it relaunched.
-
-@RTK.md

@@ -387,10 +387,10 @@ public partial class PopoverWindow : Window
             }
         }
 
-        _usageRows[0].Update("Current session", usage?.FiveHour, resetAsDate: false);
-        _usageRows[1].Update("All models", usage?.Weekly, resetAsDate: true);
+        _usageRows[0].Update("Current session", usage?.FiveHour);
+        _usageRows[1].Update("All models", usage?.Weekly);
         for (var i = 0; i < (usage?.ModelWeekly.Count ?? 0); i++)
-            _usageRows[2 + i].Update(usage!.ModelWeekly[i].ModelName, usage.ModelWeekly[i].Window, resetAsDate: true);
+            _usageRows[2 + i].Update(usage!.ModelWeekly[i].ModelName, usage.ModelWeekly[i].Window);
     }
 
     private void RenderStatusDetails(StatusInfo? status)
@@ -582,7 +582,7 @@ public partial class PopoverWindow : Window
             Root.Children.Add(track);
         }
 
-        public void Update(string label, UsageWindow? window, bool resetAsDate)
+        public void Update(string label, UsageWindow? window)
         {
             _label.Text = label;
             if (window is null)
@@ -591,9 +591,12 @@ public partial class PopoverWindow : Window
             }
             else
             {
-                var reset = window.ResetsAtMs is long ms
-                    ? $" · resets {(resetAsDate ? Format.ResetDate(ms) : Format.ResetTime(ms))}"
-                    : "";
+                var reset = "";
+                if (window.ResetsAtMs is long ms)
+                {
+                    var left = Format.ResetIn(ms);
+                    reset = left == "now" ? " · resets now" : $" · resets in {left}";
+                }
                 _value.Text = $"{window.Percent}%{reset}";
             }
 

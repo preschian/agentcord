@@ -22,30 +22,20 @@ pub const AgentKind = enum {
             .grok => "Grok",
         };
     }
-
-    pub fn providerName(self: AgentKind) []const u8 {
-        return switch (self) {
-            .codex => "OpenAI",
-            .cursor => "Cursor",
-            .grok => "xAI",
-        };
-    }
 };
 
 pub const Model = struct {
     /// Internal / helper state not bound directly in markup (accessors are).
     pub const view_unbound = .{
         "conn_state",           "ready",                 "auto_presence",
-        "presence_paused",      "presence_mode",         "selected_agent",
+        "presence_paused",      "presence_mode",
         "status_line",          "status_len",            "detail_line",
         "detail_len",           "error_line",            "error_len",
         "error_text",           "grok_active",
         "cursor_active",        "cursor_installed",      "grok_linked",
         "session_title_line",   "session_title_len",     "elapsed_line",
         "elapsed_len",          "project_line",          "project_len",
-        "meta_line",            "meta_len",              "broadcast_line",
-        "broadcast_len",
-        "status_pill_line",     "status_pill_len",
+        "meta_line",            "meta_len",
         "usage_weekly_line",     "usage_weekly_len",
         "usage_ondemand_line",  "usage_status_line",     "usage_status_len",
         "cursor_included_line", "cursor_included_len",   "cursor_auto_line",
@@ -60,27 +50,23 @@ pub const Model = struct {
         "presence_set",         "status_text",           "presence_enabled",
         "active_session_agent",
         "codex_logo_image",    "cursor_logo_image",     "grok_logo_image",
-        "unified_usage",        "codex_enabled",         "cursor_enabled",
-        "grok_enabled",         "codex_installed",       "cursor_api_frac",
-        "cursor_ondemand_frac", "agent_is_grok",          "agent_is_codex",
-        "agent_is_cursor",      "agent_name",             "show_agent_switcher",
+        "codex_installed",       "cursor_api_frac",
+        "cursor_ondemand_frac",
         "cursor_api_text",      "cursor_ondemand_text",  "codex_plan_text",
         "conn_label",           "presence_label",        "grok_status_label",
-        "cursor_plan_text",
-        "enabled_agent_count",  "linked_agent_count",
+        "cursor_plan_text",     "presence_toggle_label",
+        "codex_usage_stale",    "cursor_usage_stale",    "usage_stale",
     };
 
     conn_state: discord_ipc.ConnState = .disconnected,
     ready: bool = false,
-    /// Auto-push session activity to Discord (macOS "Enable presence").
+    /// Auto-push session activity to Discord.
     auto_presence: bool = true,
-    /// After Disconnect, skip Discord writes until Connect.
+    /// After presence is toggled off, skip Discord writes until re-enabled.
     presence_paused: bool = false,
     presence_mode: presence.Mode = .cleared,
-    selected_agent: AgentKind = .codex,
     /// The newest live session, projected as the single Discord activity.
     active_session_agent: ?AgentKind = null,
-    unified_usage: bool = false,
 
     /// Runtime image IDs. A zero value keeps the initial-based avatar fallback.
     app_icon_image: u64 = 0,
@@ -88,9 +74,6 @@ pub const Model = struct {
     cursor_logo_image: u64 = 0,
     grok_logo_image: u64 = 0,
 
-    codex_enabled: bool = true,
-    cursor_enabled: bool = true,
-    grok_enabled: bool = true,
     status_line: [160]u8 = .{0} ** 160,
     status_len: usize = 0,
     detail_line: [200]u8 = .{0} ** 200,
@@ -114,13 +97,10 @@ pub const Model = struct {
     project_len: usize = 0,
     meta_line: [96]u8 = .{0} ** 96,
     meta_len: usize = 0,
-    broadcast_line: [80]u8 = .{0} ** 80,
-    broadcast_len: usize = 0,
-    status_pill_line: [32]u8 = .{0} ** 32,
-    status_pill_len: usize = 0,
 
     /// Weekly credits from billing API.
     usage_has_data: bool = false,
+    usage_stale: bool = false,
     usage_weekly_line: [80]u8 = .{0} ** 80,
     usage_weekly_len: usize = 0,
     usage_ondemand_line: [80]u8 = .{0} ** 80,
@@ -131,6 +111,7 @@ pub const Model = struct {
     usage_ondemand_frac: f32 = 0,
 
     cursor_usage_has_data: bool = false,
+    cursor_usage_stale: bool = false,
     cursor_included_line: [80]u8 = .{0} ** 80,
     cursor_included_len: usize = 0,
     cursor_included_frac: f32 = 0,
@@ -149,6 +130,7 @@ pub const Model = struct {
     cursor_plan_len: usize = 0,
 
     codex_usage_has_data: bool = false,
+    codex_usage_stale: bool = false,
     codex_primary_line: [80]u8 = .{0} ** 80,
     codex_primary_len: usize = 0,
     codex_primary_label_line: [40]u8 = .{0} ** 40,
@@ -172,18 +154,10 @@ pub const Model = struct {
         return model.auto_presence and !model.presence_paused;
     }
 
-    pub fn agent_is_grok(model: *const Model) bool {
-        return model.selected_agent == .grok;
+    pub fn presence_toggle_label(model: *const Model) []const u8 {
+        return if (model.presence_enabled()) "Presence on" else "Presence off";
     }
-    pub fn agent_is_codex(model: *const Model) bool {
-        return model.selected_agent == .codex;
-    }
-    pub fn agent_is_cursor(model: *const Model) bool {
-        return model.selected_agent == .cursor;
-    }
-    pub fn agent_name(model: *const Model) []const u8 {
-        return model.selected_agent.displayName();
-    }
+
     pub fn active_agent_name(model: *const Model) []const u8 {
         if (model.active_session_agent) |agent| return agent.displayName();
         return "No active session";
@@ -211,23 +185,6 @@ pub const Model = struct {
         }
     }
 
-    pub fn enabled_agent_count(model: *const Model) u8 {
-        var count: u8 = 0;
-        if (model.codex_enabled) count += 1;
-        if (model.cursor_enabled) count += 1;
-        if (model.grok_enabled) count += 1;
-        return count;
-    }
-    pub fn show_agent_switcher(model: *const Model) bool {
-        return model.enabled_agent_count() > 1;
-    }
-    pub fn linked_agent_count(model: *const Model) u8 {
-        var count: u8 = 0;
-        if (model.codex_installed and model.codex_enabled) count += 1;
-        if (model.cursor_installed and model.cursor_enabled) count += 1;
-        if (model.grok_linked and model.grok_enabled) count += 1;
-        return count;
-    }
     pub fn status_text(model: *const Model) []const u8 {
         return model.status_line[0..model.status_len];
     }
@@ -333,23 +290,6 @@ pub const Model = struct {
             model.error_len = 0;
         }
         model.setStatus(model.conn_label());
-        model.refreshChrome();
-    }
-
-    pub fn refreshChrome(model: *Model) void {
-        const enabled = model.enabled_agent_count();
-        const linked = model.linked_agent_count();
-        if (enabled > 1) {
-            var connected_buf: [32]u8 = undefined;
-            const text = std.fmt.bufPrint(&connected_buf, "{d} of {d} connected", .{ linked, enabled }) catch "Connected";
-            setBuf(&model.status_pill_line, &model.status_pill_len, text);
-        } else if (!model.auto_presence or model.presence_paused) {
-            setBuf(&model.status_pill_line, &model.status_pill_len, "Off");
-        } else if (model.conn_state == .connected and model.ready) {
-            setBuf(&model.status_pill_line, &model.status_pill_len, "Connected");
-        } else {
-            setBuf(&model.status_pill_line, &model.status_pill_len, "Connecting");
-        }
     }
 
     fn formatElapsed(start_ms: i64, now_ms: i64, buf: []u8) []const u8 {
@@ -370,7 +310,6 @@ pub const Model = struct {
         grok: ?grok_session.SessionInfo,
         cursor: ?cursor_session.SessionInfo,
         now_ms: i64,
-        sharing_agent: ?AgentKind,
         codex_installed: bool,
         grok_linked: bool,
         cursor_installed: bool,
@@ -426,30 +365,11 @@ pub const Model = struct {
             setBuf(&model.elapsed_line, &model.elapsed_len, "—");
             setBuf(&model.meta_line, &model.meta_len, "Waiting for a session");
         }
-
-        if (!model.auto_presence or model.presence_paused) {
-            setBuf(&model.broadcast_line, &model.broadcast_len, "Presence is off");
-        } else if (sharing_agent) |agent| {
-            if (agent == model.selected_agent) {
-                setBuf(&model.broadcast_line, &model.broadcast_len, "Sharing to Discord as your status");
-            } else {
-                var bbuf: [80]u8 = undefined;
-                const line = std.fmt.bufPrint(
-                    &bbuf,
-                    "Active — Discord is sharing {s}",
-                    .{agent.displayName()},
-                ) catch "Sharing another agent";
-                setBuf(&model.broadcast_line, &model.broadcast_len, line);
-            }
-        } else {
-            setBuf(&model.broadcast_line, &model.broadcast_len, "Waiting for a session");
-        }
-
-        model.refreshChrome();
     }
 
     pub fn applyUsage(model: *Model, snap: grok_usage.Snapshot, now_ms: i64) void {
         model.usage_has_data = snap.weekly_percent >= 0;
+        model.usage_stale = false;
         var weekly_buf: [80]u8 = undefined;
         const weekly = grok_usage.formatWeeklyLine(snap, now_ms, &weekly_buf);
         setBuf(&model.usage_weekly_line, &model.usage_weekly_len, weekly);
@@ -472,10 +392,12 @@ pub const Model = struct {
 
     pub fn setUsageStatus(model: *Model, text: []const u8) void {
         setBuf(&model.usage_status_line, &model.usage_status_len, text);
+        model.usage_stale = model.usage_has_data;
     }
 
     pub fn applyCursorUsage(model: *Model, snap: cursor_usage.Snapshot, now_ms: i64) void {
         model.cursor_usage_has_data = snap.hasData();
+        model.cursor_usage_stale = false;
         var line_buf: [80]u8 = undefined;
 
         const included = cursor_usage.formatWindowLine(snap.included, now_ms, &line_buf);
@@ -517,10 +439,12 @@ pub const Model = struct {
 
     pub fn setCursorUsageStatus(model: *Model, text: []const u8) void {
         setBuf(&model.cursor_status_line, &model.cursor_status_len, text);
+        model.cursor_usage_stale = model.cursor_usage_has_data;
     }
 
     pub fn clearCursorUsage(model: *Model) void {
         model.cursor_usage_has_data = false;
+        model.cursor_usage_stale = false;
         model.cursor_included_len = 0;
         model.cursor_included_frac = 0;
         model.cursor_auto_len = 0;
@@ -534,6 +458,7 @@ pub const Model = struct {
 
     pub fn applyCodexUsage(model: *Model, snap: codex_usage.Snapshot, now_ms: i64) void {
         model.codex_usage_has_data = snap.hasData();
+        model.codex_usage_stale = false;
         var line_buf: [80]u8 = undefined;
         const primary = codex_usage.formatWindowLine(snap.primary, now_ms, &line_buf);
         setBuf(&model.codex_primary_line, &model.codex_primary_len, primary);
@@ -563,10 +488,12 @@ pub const Model = struct {
 
     pub fn setCodexUsageStatus(model: *Model, text: []const u8) void {
         setBuf(&model.codex_usage_status_line, &model.codex_usage_status_len, text);
+        model.codex_usage_stale = model.codex_usage_has_data;
     }
 
     pub fn clearCodexUsage(model: *Model) void {
         model.codex_usage_has_data = false;
+        model.codex_usage_stale = false;
         model.codex_primary_len = 0;
         model.codex_primary_label_len = 0;
         model.codex_primary_frac = 0;
@@ -574,32 +501,5 @@ pub const Model = struct {
         model.codex_secondary_label_len = 0;
         model.codex_secondary_frac = 0;
         model.codex_plan_len = 0;
-    }
-
-    pub fn toggleAgent(model: *Model, agent: AgentKind) void {
-        switch (agent) {
-            .codex => model.codex_enabled = !model.codex_enabled,
-            .cursor => model.cursor_enabled = !model.cursor_enabled,
-            .grok => model.grok_enabled = !model.grok_enabled,
-        }
-        if (!model.isAgentEnabled(model.selected_agent)) {
-            model.selected_agent = model.firstEnabledAgent();
-        }
-        model.refreshChrome();
-    }
-
-    pub fn isAgentEnabled(model: *const Model, agent: AgentKind) bool {
-        return switch (agent) {
-            .codex => model.codex_enabled,
-            .cursor => model.cursor_enabled,
-            .grok => model.grok_enabled,
-        };
-    }
-
-    fn firstEnabledAgent(model: *const Model) AgentKind {
-        if (model.codex_enabled) return .codex;
-        if (model.cursor_enabled) return .cursor;
-        if (model.grok_enabled) return .grok;
-        return .codex;
     }
 };

@@ -119,39 +119,63 @@ fn readEpoch(text: []const u8, key: []const u8) i64 {
 }
 
 pub fn serialize(data: *const Data, buf: []u8) ?[]const u8 {
-    const codex = data.codex orelse codex_usage.Snapshot{};
-    const cursor = data.cursor orelse cursor_usage.Snapshot{};
-    const grok = data.grok orelse grok_usage.Snapshot{};
-    return std.fmt.bufPrint(
-        buf,
-        "{{\"version\":1," ++
-            "\"codex_primary_percent\":{d},\"codex_primary_reset_ms\":{d},\"codex_primary_label\":\"{s}\"," ++
-            "\"codex_secondary_percent\":{d},\"codex_secondary_reset_ms\":{d},\"codex_secondary_label\":\"{s}\"," ++
-            "\"cursor_included_percent\":{d},\"cursor_included_reset_ms\":{d}," ++
-            "\"cursor_auto_percent\":{d},\"cursor_auto_reset_ms\":{d}," ++
-            "\"cursor_api_percent\":{d},\"cursor_api_reset_ms\":{d}," ++
-            "\"cursor_ondemand_percent\":{d},\"cursor_ondemand_reset_ms\":{d}," ++
-            "\"grok_weekly_percent\":{d},\"grok_weekly_reset_ms\":{d},\"grok_ondemand_percent\":{d}}}",
-        .{
-            codex.primary.percent,
-            codex.primary.resets_at_ms,
-            codex.primaryLabel(),
-            codex.secondary.percent,
-            codex.secondary.resets_at_ms,
-            codex.secondaryLabel(),
-            cursor.included.percent,
-            cursor.included.resets_at_ms,
-            cursor.auto.percent,
-            cursor.auto.resets_at_ms,
-            cursor.api.percent,
-            cursor.api.resets_at_ms,
-            cursor.on_demand.percent,
-            cursor.on_demand.resets_at_ms,
-            grok.weekly_percent,
-            grok.resets_at_ms,
-            grok.on_demand_percent,
-        },
-    ) catch null;
+    var len: usize = 0;
+    if (!append(buf, &len, "{\"version\":1")) return null;
+    if (data.codex) |codex| {
+        if (!appendFmt(
+            buf,
+            &len,
+            ",\"codex_primary_percent\":{d},\"codex_primary_reset_ms\":{d},\"codex_primary_label\":\"{s}\",\"codex_secondary_percent\":{d},\"codex_secondary_reset_ms\":{d},\"codex_secondary_label\":\"{s}\"",
+            .{
+                codex.primary.percent,
+                codex.primary.resets_at_ms,
+                codex.primaryLabel(),
+                codex.secondary.percent,
+                codex.secondary.resets_at_ms,
+                codex.secondaryLabel(),
+            },
+        )) return null;
+    }
+    if (data.cursor) |cursor| {
+        if (!appendFmt(
+            buf,
+            &len,
+            ",\"cursor_included_percent\":{d},\"cursor_included_reset_ms\":{d},\"cursor_auto_percent\":{d},\"cursor_auto_reset_ms\":{d},\"cursor_api_percent\":{d},\"cursor_api_reset_ms\":{d},\"cursor_ondemand_percent\":{d},\"cursor_ondemand_reset_ms\":{d}",
+            .{
+                cursor.included.percent,
+                cursor.included.resets_at_ms,
+                cursor.auto.percent,
+                cursor.auto.resets_at_ms,
+                cursor.api.percent,
+                cursor.api.resets_at_ms,
+                cursor.on_demand.percent,
+                cursor.on_demand.resets_at_ms,
+            },
+        )) return null;
+    }
+    if (data.grok) |grok| {
+        if (!appendFmt(
+            buf,
+            &len,
+            ",\"grok_weekly_percent\":{d},\"grok_weekly_reset_ms\":{d},\"grok_ondemand_percent\":{d}",
+            .{ grok.weekly_percent, grok.resets_at_ms, grok.on_demand_percent },
+        )) return null;
+    }
+    if (!append(buf, &len, "}")) return null;
+    return buf[0..len];
+}
+
+fn append(buf: []u8, len: *usize, text: []const u8) bool {
+    if (len.* + text.len > buf.len) return false;
+    @memcpy(buf[len.* ..][0..text.len], text);
+    len.* += text.len;
+    return true;
+}
+
+fn appendFmt(buf: []u8, len: *usize, comptime fmt: []const u8, args: anytype) bool {
+    const wrote = std.fmt.bufPrint(buf[len.*..], fmt, args) catch return false;
+    len.* += wrote.len;
+    return true;
 }
 
 test "round trips credential-free provider usage" {
@@ -175,4 +199,19 @@ test "round trips credential-free provider usage" {
     try std.testing.expectEqualStrings("Weekly limit", restored.codex.?.primaryLabel());
     try std.testing.expectEqual(@as(i64, 65), restored.cursor.?.auto.percent);
     try std.testing.expectEqual(@as(i64, 42), restored.grok.?.weekly_percent);
+}
+
+test "serialize omits absent providers" {
+    var data: Data = .{};
+    data.grok = .{ .weekly_percent = 10, .resets_at_ms = 1_785_000_000_000 };
+    var buffer: [2048]u8 = undefined;
+    const text = serialize(&data, &buffer).?;
+    try std.testing.expect(std.mem.indexOf(u8, text, "codex_primary_percent") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "cursor_included_percent") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "grok_weekly_percent") != null);
+    var restored: Data = .{};
+    try std.testing.expect(parse(text, &restored));
+    try std.testing.expect(restored.codex == null);
+    try std.testing.expect(restored.cursor == null);
+    try std.testing.expectEqual(@as(i64, 10), restored.grok.?.weekly_percent);
 }

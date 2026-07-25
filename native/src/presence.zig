@@ -239,7 +239,7 @@ pub fn decide(
     return .{
         .action = .detail_only,
         .mode = .cleared,
-        .detail = "Waiting for a live Grok or Cursor session…",
+        .detail = "Waiting for a live Codex, Cursor, or Grok session…",
     };
 }
 

@@ -1,6 +1,7 @@
-//! AgentCord native-sdk prototype — Discord Rich Presence + Grok/Cursor sessions.
+//! AgentCord native-sdk prototype — Discord Rich Presence + Codex/Cursor/Grok sessions.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 const discord_ipc = @import("discord_ipc.zig");
@@ -24,6 +25,7 @@ const geometry = native_sdk.geometry;
 const canvas_label = "main-canvas";
 const window_width: f32 = 405;
 const window_height: f32 = 720;
+const window_title = "AgentCord";
 
 /// Baked-in Application ID from the production AgentCord app (not a secret).
 const discord_client_id = "1517099756063686677";
@@ -34,7 +36,7 @@ const shell_views = [_]native_sdk.ShellView{
 };
 const shell_windows = [_]native_sdk.ShellWindow{.{
     .label = "main",
-    .title = "AgentCord",
+    .title = window_title,
     .width = window_width,
     .height = window_height,
     .restore_state = false,
@@ -54,12 +56,11 @@ const EffectKeys = struct {
 
 const ProviderLogoId = struct {
     const app: u64 = 99;
-    const codex: u64 = 100;
-    const cursor: u64 = 101;
-    const grok: u64 = 102;
 };
 
 const UsagePhase = enum { idle, fetching, refreshing };
+
+const CodexFetchPending = enum { none, ok, fail };
 
 pub const AgentKind = app_model.AgentKind;
 pub const Model = app_model.Model;
@@ -75,6 +76,13 @@ var g_poll_n: u32 = 0;
 var g_cached_cursor: ?cursor_session.SessionInfo = null;
 /// Last successful provider snapshots. Persisted without any credentials.
 var g_usage_cache: usage_cache.Data = .{};
+var g_usage_cache_dirty: bool = false;
+
+/// Background Codex usage fetch (process spawn must not block the UI thread).
+var g_codex_mutex: std.atomic.Mutex = .unlocked;
+var g_codex_running: bool = false;
+var g_codex_pending: CodexFetchPending = .none;
+var g_codex_snap: codex_usage.Snapshot = .{};
 
 const main_window_label = "main";
 
@@ -88,15 +96,8 @@ const tray_menu_items = [_]native_sdk.TrayMenuItem{
 // ------------------------------------------------------------------ model
 
 pub const Msg = union(enum) {
-    connect,
-    disconnect,
-    set_test_presence,
-    clear_presence,
     refresh_usage,
-    toggle_unified_usage,
-    select_codex,
-    select_grok,
-    select_cursor,
+    toggle_presence,
     /// Tray / menu: un-hide + activate the main window.
     show_window,
     /// Tray / menu: graceful app quit (clears presence via main's defer).
@@ -110,8 +111,7 @@ pub const Msg = union(enum) {
     provider_logo_loaded: native_sdk.EffectImageResult,
 
     pub const view_unbound = .{
-        "connect", "disconnect", "set_test_presence", "clear_presence", "refresh_usage",
-        "toggle_unified_usage", "select_codex", "select_grok", "select_cursor",
+        "refresh_usage", "toggle_presence",
         "poll", "usage_tick", "usage_fetched", "usage_refreshed", "cursor_usage_fetched", "cursor_legacy_fetched", "provider_logo_loaded", "show_window", "quit",
     };
 };
@@ -119,75 +119,56 @@ pub const Msg = union(enum) {
 
 pub const Effects = native_sdk.Effects(Msg);
 
+fn spinLock(m: *std.atomic.Mutex) void {
+    while (!m.tryLock()) {
+        if (builtin.os.tag == .windows) win32_fs.Sleep(1) else std.atomic.spinLoopHint();
+    }
+}
+
 pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     switch (msg) {
-        .connect => {
-            model.presence_paused = false;
-            model.auto_presence = true;
-            model.setDetail("Connecting with AgentCord Application ID…");
-            model.error_len = 0;
-            g_discord.connect(discord_client_id);
-            model.applyDiscordSnapshot(g_discord.snapshot());
-            syncPresence(model, fx.wallMs());
-        },
-        .disconnect => {
-            model.presence_paused = true;
-            g_discord.setActivity(null);
-            g_discord.disconnect();
-            model.presence_mode = .cleared;
-            model.setDetail("Disconnected — presence paused until Connect.");
-            model.applyDiscordSnapshot(g_discord.snapshot());
-            refreshUi(model, fx.wallMs());
-        },
-        .set_test_presence => {
-            g_discord.setActivity(presence.activityManualTest(fx.wallMs()));
-            model.presence_mode = .manual_test;
-            model.presence_paused = false;
-            model.auto_presence = true;
-            model.setDetail("SET_ACTIVITY: manual test presence");
-            model.applyDiscordSnapshot(g_discord.snapshot());
-        },
-        .clear_presence => {
-            g_discord.setActivity(null);
-            model.presence_mode = .cleared;
-            model.setDetail("Cleared presence (activity: null).");
-            model.applyDiscordSnapshot(g_discord.snapshot());
-            refreshUi(model, fx.wallMs());
-        },
         .refresh_usage => {
             g_usage_allow_refresh = true;
-            requestCodexUsage(model, fx);
+            requestCodexUsage(model);
             requestBilling(model, fx);
             requestCursorUsage(model, fx);
         },
-        .toggle_unified_usage => model.unified_usage = !model.unified_usage,
-        .select_codex => { model.selected_agent = .codex; refreshUi(model, fx.wallMs()); },
-        .select_grok => {
-            model.selected_agent = .grok;
-            refreshUi(model, fx.wallMs());
-        },
-        .select_cursor => {
-            model.selected_agent = .cursor;
-            refreshUi(model, fx.wallMs());
+        .toggle_presence => {
+            if (model.presence_enabled()) {
+                model.auto_presence = false;
+                model.presence_paused = true;
+                g_discord.setActivity(null);
+                model.presence_mode = .cleared;
+                model.setDetail("Presence off — Discord status cleared.");
+            } else {
+                model.auto_presence = true;
+                model.presence_paused = false;
+                model.setDetail("Presence on — waiting for a live session.");
+                syncPresence(model, fx.wallMs());
+            }
+            model.applyDiscordSnapshot(g_discord.snapshot());
         },
         .show_window => {
             fx.showWindow(main_window_label);
             model.setDetail("Window shown from tray.");
         },
         .quit => {
+            flushUsageCache();
             g_discord.setActivity(null);
             g_discord.disconnect();
             fx.quitApp();
         },
         .poll => |timer| {
             if (timer.outcome != .fired) return;
+            applyPendingCodexUsage(model, fx.wallMs());
+            flushUsageCache();
             model.applyDiscordSnapshot(g_discord.snapshot());
             syncPresence(model, fx.wallMs());
         },
         .usage_tick => |timer| {
             if (timer.outcome != .fired) return;
             g_usage_allow_refresh = true;
-            requestCodexUsage(model, fx);
+            requestCodexUsage(model);
             requestBilling(model, fx);
             requestCursorUsage(model, fx);
         },
@@ -197,13 +178,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .cursor_legacy_fetched => |response| handleCursorLegacyResponse(model, fx, response),
         .provider_logo_loaded => |result| {
             if (result.outcome != .loaded) return;
-            switch (result.id) {
-                ProviderLogoId.app => model.app_icon_image = result.id,
-                ProviderLogoId.codex => model.setProviderLogoImage(.codex, result.id),
-                ProviderLogoId.cursor => model.setProviderLogoImage(.cursor, result.id),
-                ProviderLogoId.grok => model.setProviderLogoImage(.grok, result.id),
-                else => {},
-            }
+            if (result.id == ProviderLogoId.app) model.app_icon_image = result.id;
         },
     }
 }
@@ -236,6 +211,8 @@ fn requestBilling(model: *Model, fx: *Effects) void {
 
     g_usage_phase = .fetching;
     model.setUsageStatus("Fetching usage…");
+    // Fetching is not a stale-cache condition.
+    model.usage_stale = false;
     fx.fetch(.{
         .key = EffectKeys.usage_billing,
         .method = .GET,
@@ -247,28 +224,59 @@ fn requestBilling(model: *Model, fx: *Effects) void {
 }
 
 /// Codex exposes rate limits through its own local app-server JSONL protocol.
-/// The protocol owns its credentials, so this app only receives the limits.
-fn requestCodexUsage(model: *Model, fx: *Effects) void {
-    _ = fx;
+/// Spawning that process is done on a worker thread so the UI stays responsive.
+fn requestCodexUsage(model: *Model) void {
+    spinLock(&g_codex_mutex);
+    const busy = g_codex_running;
+    if (!busy) g_codex_running = true;
+    g_codex_mutex.unlock();
+    if (busy) return;
+
+    model.setCodexUsageStatus("Fetching Codex usage…");
+    model.codex_usage_stale = false;
+    _ = std.Thread.spawn(.{}, codexUsageWorker, .{}) catch {
+        spinLock(&g_codex_mutex);
+        g_codex_running = false;
+        g_codex_pending = .fail;
+        g_codex_mutex.unlock();
+        model.setCodexUsageStatus("Could not start Codex usage fetch");
+    };
+}
+
+fn codexUsageWorker() void {
     var response: [64 * 1024]u8 = undefined;
     var snap: codex_usage.Snapshot = .{};
+    var ok = false;
     if (codex_usage.fetch(&response)) |text| {
-        if (codex_usage.parseResponse(text, &snap)) {
-            applyCodexSnapshot(model, snap, win32_fs.nowEpochMs());
-            return;
+        if (codex_usage.parseResponse(text, &snap)) ok = true;
+    }
+    if (!ok) {
+        // Codex CLI on Windows can close app-server stdout without a reply.
+        // Its authenticated usage endpoint remains available as a safe fallback.
+        if (codex_usage.fetchWhamUsage(&response)) |text| {
+            if (codex_usage.parseWhamUsage(text, &snap)) ok = true;
         }
     }
 
-    // Codex CLI on Windows can close app-server stdout without a reply.
-    // Its authenticated usage endpoint remains available as a safe fallback.
-    if (codex_usage.fetchWhamUsage(&response)) |text| {
-        if (codex_usage.parseWhamUsage(text, &snap)) {
-            applyCodexSnapshot(model, snap, win32_fs.nowEpochMs());
-            return;
-        }
-    }
+    spinLock(&g_codex_mutex);
+    g_codex_snap = snap;
+    g_codex_pending = if (ok) .ok else .fail;
+    g_codex_running = false;
+    g_codex_mutex.unlock();
+}
 
-    if (!model.codex_usage_has_data) model.setCodexUsageStatus("Could not fetch Codex usage");
+fn applyPendingCodexUsage(model: *Model, now_ms: i64) void {
+    spinLock(&g_codex_mutex);
+    const pending = g_codex_pending;
+    const snap = g_codex_snap;
+    g_codex_pending = .none;
+    g_codex_mutex.unlock();
+
+    switch (pending) {
+        .none => {},
+        .ok => applyCodexSnapshot(model, snap, now_ms),
+        .fail => model.setCodexUsageStatus("Could not fetch Codex usage"),
+    }
 }
 
 fn requestTokenRefresh(model: *Model, fx: *Effects) void {
@@ -290,6 +298,7 @@ fn requestTokenRefresh(model: *Model, fx: *Effects) void {
     g_usage_phase = .refreshing;
     g_usage_allow_refresh = false;
     model.setUsageStatus("Refreshing sign-in…");
+    model.usage_stale = false;
     fx.fetch(.{
         .key = EffectKeys.usage_refresh,
         .method = .POST,
@@ -371,6 +380,7 @@ fn fireCursorPeriod(model: *Model, fx: *Effects) void {
 
     g_cursor.phase = .period;
     model.setCursorUsageStatus("Fetching Cursor usage…");
+    model.cursor_usage_stale = false;
     fx.fetch(.{
         .key = EffectKeys.cursor_period,
         .method = .POST,
@@ -392,6 +402,7 @@ fn fireCursorLegacy(model: *Model, fx: *Effects) void {
     };
     g_cursor.phase = .legacy;
     model.setCursorUsageStatus("Fetching Cursor usage (legacy)…");
+    model.cursor_usage_stale = false;
     fx.fetch(.{
         .key = EffectKeys.cursor_legacy,
         .method = .GET,
@@ -470,7 +481,9 @@ fn handleCursorLegacyResponse(model: *Model, fx: *Effects, response: native_sdk.
     finishCursorSnap(model, fx, &snap);
 }
 
-fn linkedFlags(codex: ?codex_session.SessionInfo, grok: ?grok_session.SessionInfo) struct { codex: bool, grok: bool, cursor: bool } {
+const LinkedFlags = struct { codex: bool, grok: bool, cursor: bool };
+
+fn linkedFlags(codex: ?codex_session.SessionInfo, grok: ?grok_session.SessionInfo) LinkedFlags {
     return .{
         .codex = codex_session.isInstalled() or codex != null,
         .grok = g_auth.hasAccess() or g_auth.hasRefresh() or grok != null,
@@ -478,35 +491,36 @@ fn linkedFlags(codex: ?codex_session.SessionInfo, grok: ?grok_session.SessionInf
     };
 }
 
-fn scanCursorThrottled(force: bool) ?cursor_session.SessionInfo {
-    if (force or g_poll_n % 3 == 0) {
+fn scanCursorThrottled() ?cursor_session.SessionInfo {
+    if (g_cached_cursor == null or g_poll_n % 3 == 0) {
         g_cached_cursor = cursor_session.scan();
     }
     return g_cached_cursor;
 }
 
-fn refreshUi(model: *Model, now_ms: i64) void {
+const LiveScan = struct {
+    codex: ?codex_session.SessionInfo,
+    grok: ?grok_session.SessionInfo,
+    cursor: ?cursor_session.SessionInfo,
+    linked: LinkedFlags,
+};
+
+fn scanLive() LiveScan {
     _ = grok_usage.loadAuth(&g_auth);
     const codex = codex_session.scan();
     const grok = grok_session.scan();
-    const cursor = scanCursorThrottled(model.selected_agent == .cursor);
-    const sharing: ?AgentKind = switch (model.presence_mode) {
-        .codex_auto => .codex,
-        .grok_auto => .grok,
-        .cursor_auto => .cursor,
-        else => null,
+    const cursor = scanCursorThrottled();
+    return .{
+        .codex = codex,
+        .grok = grok,
+        .cursor = cursor,
+        .linked = linkedFlags(codex, grok),
     };
-    const linked = linkedFlags(codex, grok);
-    model.applySessions(codex, grok, cursor, now_ms, sharing, linked.codex, linked.grok, linked.cursor);
 }
 
 fn syncPresence(model: *Model, now_ms: i64) void {
-    _ = grok_usage.loadAuth(&g_auth);
     g_poll_n +%= 1;
-    const codex = codex_session.scan();
-    const grok = grok_session.scan();
-    const cursor = scanCursorThrottled(false);
-    const linked = linkedFlags(codex, grok);
+    const live = scanLive();
 
     var scratch: presence.Scratch = .{};
     const decision = presence.decide(
@@ -514,7 +528,7 @@ fn syncPresence(model: *Model, now_ms: i64) void {
         model.auto_presence,
         model.presence_paused,
         model.ready,
-        .{ .codex = codex, .grok = grok, .cursor = cursor },
+        .{ .codex = live.codex, .grok = live.grok, .cursor = live.cursor },
         &scratch,
     );
 
@@ -527,32 +541,38 @@ fn syncPresence(model: *Model, now_ms: i64) void {
     }
     model.presence_mode = decision.mode;
     model.setDetail(decision.detail);
-
-    const sharing: ?AgentKind = switch (decision.mode) {
-        .codex_auto => .codex,
-        .grok_auto => .grok,
-        .cursor_auto => .cursor,
-        else => null,
-    };
-    model.applySessions(codex, grok, cursor, now_ms, sharing, linked.codex, linked.grok, linked.cursor);
+    model.applySessions(
+        live.codex,
+        live.grok,
+        live.cursor,
+        now_ms,
+        live.linked.codex,
+        live.linked.grok,
+        live.linked.cursor,
+    );
 }
 
 fn applyCodexSnapshot(model: *Model, snap: codex_usage.Snapshot, now_ms: i64) void {
     model.applyCodexUsage(snap, now_ms);
     g_usage_cache.codex = snap;
-    _ = usage_cache.save(&g_usage_cache);
+    g_usage_cache_dirty = true;
 }
 
 fn applyCursorSnapshot(model: *Model, snap: cursor_usage.Snapshot, now_ms: i64) void {
     model.applyCursorUsage(snap, now_ms);
     g_usage_cache.cursor = snap;
-    _ = usage_cache.save(&g_usage_cache);
+    g_usage_cache_dirty = true;
 }
 
 fn applyGrokSnapshot(model: *Model, snap: grok_usage.Snapshot, now_ms: i64) void {
     model.applyUsage(snap, now_ms);
     g_usage_cache.grok = snap;
-    _ = usage_cache.save(&g_usage_cache);
+    g_usage_cache_dirty = true;
+}
+
+fn flushUsageCache() void {
+    if (!g_usage_cache_dirty) return;
+    if (usage_cache.save(&g_usage_cache)) g_usage_cache_dirty = false;
 }
 
 fn restoreUsageCache(model: *Model, now_ms: i64) void {
@@ -560,14 +580,17 @@ fn restoreUsageCache(model: *Model, now_ms: i64) void {
     if (g_usage_cache.codex) |snap| {
         model.applyCodexUsage(snap, now_ms);
         model.setCodexUsageStatus("Showing cached Codex usage");
+        model.codex_usage_stale = true;
     }
     if (g_usage_cache.cursor) |snap| {
         model.applyCursorUsage(snap, now_ms);
         model.setCursorUsageStatus("Showing cached Cursor usage");
+        model.cursor_usage_stale = true;
     }
     if (g_usage_cache.grok) |snap| {
         model.applyUsage(snap, now_ms);
         model.setUsageStatus("Showing cached Grok usage");
+        model.usage_stale = true;
     }
 }
 
@@ -575,11 +598,13 @@ fn boot(model: *Model, fx: *Effects) void {
     model.setStatus("Disconnected");
     model.setDetail("Starting…");
     model.setUsageStatus("Loading usage…");
+    model.usage_stale = false;
     model.setCursorUsageStatus("Loading Cursor usage…");
+    model.cursor_usage_stale = false;
     model.setCodexUsageStatus("Loading Codex usage...");
+    model.codex_usage_stale = false;
     restoreUsageCache(model, fx.wallMs());
-    model.refreshChrome();
-    _ = win32_fs.setWindowIcon("AgentCord", "assets/icon.ico");
+    _ = win32_fs.setWindowIcon(window_title, "assets/icon.ico");
     loadProviderLogos(fx);
     fx.startTimer(.{
         .key = EffectKeys.poll_timer,
@@ -597,32 +622,16 @@ fn boot(model: *Model, fx: *Effects) void {
     model.applyDiscordSnapshot(g_discord.snapshot());
     syncPresence(model, fx.wallMs());
     g_usage_allow_refresh = true;
-    requestCodexUsage(model, fx);
+    requestCodexUsage(model);
     requestBilling(model, fx);
     requestCursorUsage(model, fx);
 }
 
-/// Optional local branding assets supplied by the user. The avatar initials
-/// remain the portable fallback when these files are not present.
+/// App icon from shipped assets. Provider avatars use initials when no image is set.
 fn loadProviderLogos(fx: *Effects) void {
     fx.loadImage(.{
         .id = ProviderLogoId.app,
         .path = "assets/icon-ui.png",
-        .on_result = Effects.imageMsg(.provider_logo_loaded),
-    });
-    var home_buf: [260]u8 = undefined;
-    const home = win32_fs.userProfile(&home_buf) orelse return;
-    loadProviderLogo(fx, ProviderLogoId.codex, home, "chatgpt.png");
-    loadProviderLogo(fx, ProviderLogoId.cursor, home, "cursor.jpeg");
-    loadProviderLogo(fx, ProviderLogoId.grok, home, "grok.jpeg");
-}
-
-fn loadProviderLogo(fx: *Effects, image_id: u64, home: []const u8, file_name: []const u8) void {
-    var path_buf: [360]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}\\Downloads\\{s}", .{ home, file_name }) catch return;
-    fx.loadImage(.{
-        .id = image_id,
-        .path = path,
         .on_result = Effects.imageMsg(.provider_logo_loaded),
     });
 }
@@ -659,6 +668,7 @@ pub fn main(init: std.process.Init) !void {
         .markup = .{ .source = app_markup, .watch_path = "src/app.native", .io = init.io },
     });
     defer {
+        flushUsageCache();
         g_discord.disconnect();
         app_state.destroy();
     }
@@ -666,7 +676,7 @@ pub fn main(init: std.process.Init) !void {
 
     try runner.runWithOptions(app_state.app(), .{
         .app_name = "agentcord-native",
-        .window_title = "AgentCord",
+        .window_title = window_title,
         .bundle_id = "dev.agentcord.native",
         .icon_path = "assets/icon.ico",
         .default_frame = geometry.RectF.init(0, 0, window_width, window_height),

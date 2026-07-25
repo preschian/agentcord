@@ -9,7 +9,7 @@ const builtin = @import("builtin");
 const win32_fs = @import("win32_fs.zig");
 const json_lite = @import("json_lite.zig");
 
-pub const default_active_window_ms: i64 = 5 * 60 * 1000;
+pub const default_active_window_ms: i64 = 60_000;
 
 pub const SessionInfo = struct {
     project_name: [96]u8 = .{0} ** 96,
@@ -96,8 +96,10 @@ fn applyTranscript(path: []const u8, info: *SessionInfo) void {
     // The tail contains the freshest context and token-count event.  A bounded
     // read also prevents a long coding history from stalling the UI thread.
     var bytes: [256 * 1024]u8 = undefined;
-    const text = win32_fs.readFile(path, &bytes) orelse return;
-    var lines = std.mem.splitScalar(u8, text, '\n');
+    const text = win32_fs.readFileTail(path, &bytes) orelse return;
+    // If we started mid-line, skip the partial first line.
+    const body = if (std.mem.indexOfScalar(u8, text, '\n')) |nl| text[nl + 1 ..] else text;
+    var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |line| {
         if (json_lite.extractString(line, "cwd")) |cwd_raw| {
             var cwd_buf: [260]u8 = undefined;

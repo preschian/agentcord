@@ -138,13 +138,24 @@ pub fn parseResponse(text: []const u8, out: *Snapshot) bool {
     out.* = .{};
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
-        // The rate-limits reply has id 2. Other JSONL replies (initialize and
-        // account/read) may also include superficially similar fields.
-        if (std.mem.indexOf(u8, line, "\"id\":2") == null) continue;
+        // Rate-limits reply uses id 2. Match a complete JSON number (not id 20…).
+        if (!jsonIdEquals(line, 2)) continue;
         if (std.mem.indexOf(u8, line, "\"rateLimits\"") == null) continue;
         return parseRateLimits(line, out);
     }
     return false;
+}
+
+fn jsonIdEquals(line: []const u8, want: i64) bool {
+    const key = "\"id\":";
+    const at = std.mem.indexOf(u8, line, key) orelse return false;
+    var i = at + key.len;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    const start = i;
+    if (start >= line.len or line[start] < '0' or line[start] > '9') return false;
+    while (i < line.len and line[i] >= '0' and line[i] <= '9') i += 1;
+    const value = std.fmt.parseInt(i64, line[start..i], 10) catch return false;
+    return value == want;
 }
 
 /// Parse ChatGPT's `wham/usage` response (snake_case) into the same snapshot
@@ -237,6 +248,16 @@ test "parses app-server primary and secondary limits" {
     try std.testing.expectEqualStrings("5-hour session", snap.primaryLabel());
     try std.testing.expectEqualStrings("Weekly limit", snap.secondaryLabel());
     try std.testing.expectEqualStrings("pro", snap.planName());
+}
+
+test "rate-limit id match does not accept id 20" {
+    const reply =
+        \\{"id":20,"result":{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300,"resetsAt":1785000000}}}}
+        \\{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":42,"windowDurationMins":300,"resetsAt":1785000000},"planType":"pro"}}}
+    ;
+    var snap: Snapshot = .{};
+    try std.testing.expect(parseResponse(reply, &snap));
+    try std.testing.expectEqual(@as(i64, 42), snap.primary.percent);
 }
 
 test "parses Codex wham usage fallback" {

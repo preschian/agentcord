@@ -4,6 +4,7 @@
   <row height="32" gap="8" cross="center" window-drag="true">
     <image image="{app_icon_image}" width="28" height="28" label="AgentCord" />
     <text grow="1">agentcord</text>
+    <button size="sm" variant="ghost" label="{presence_toggle_label}" on-press="toggle_presence" />
     <button size="sm" variant="ghost" icon="refresh-cw" label="Refresh usage" on-press="refresh_usage" />
     <button size="sm" variant="ghost" icon="x" on-press="quit">Quit</button>
   </row>
@@ -24,7 +25,7 @@
   <!-- Provider rows: every usage source stays visible in the portrait frame. -->
   <column gap="8">
 
-    <card height="84" padding="10" background="surface" radius="xl">
+    <card height="96" padding="10" background="surface" radius="xl">
       <column grow="1" gap="6">
         <row cross="center">
           <text grow="1">Codex</text>
@@ -49,6 +50,9 @@
                 <progress value="{codex_secondary_frac}" label="Codex secondary rate limit" />
               </column>
             </if>
+            <if test="{codex_usage_stale}">
+              <text foreground="text_muted" wrap="true">{codex_usage_status_text}</text>
+            </if>
           </if>
           <else>
             <text foreground="text_muted" wrap="true">{codex_usage_status_text}</text>
@@ -57,7 +61,7 @@
       </column>
     </card>
 
-    <card height="108" padding="10" background="surface" radius="xl">
+    <card height="120" padding="10" background="surface" radius="xl">
       <column grow="1" gap="6">
         <row cross="center">
           <text grow="1">Cursor</text>
@@ -82,6 +86,9 @@
                 <progress value="{cursor_auto_frac}" label="Cursor Auto usage" />
               </column>
             </if>
+            <if test="{cursor_usage_stale}">
+              <text foreground="text_muted" wrap="true">{cursor_status_text}</text>
+            </if>
           </if>
           <else>
             <text foreground="text_muted" wrap="true">{cursor_status_text}</text>
@@ -90,7 +97,7 @@
       </column>
     </card>
 
-    <card height="84" padding="10" background="surface" radius="xl">
+    <card height="96" padding="10" background="surface" radius="xl">
       <column grow="1" gap="6">
         <row cross="center">
           <text grow="1">Grok</text>
@@ -114,6 +121,9 @@
                 </row>
                 <progress value="{usage_ondemand_frac}" label="Grok on-demand usage" />
               </column>
+            </if>
+            <if test="{usage_stale}">
+              <text foreground="text_muted" wrap="true">{usage_status_text}</text>
             </if>
           </if>
           <else>

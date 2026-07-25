@@ -12,7 +12,7 @@ test "initial model is disconnected" {
     try std.testing.expect(!model.ready);
     try std.testing.expect(!model.presence_set());
     try std.testing.expect(model.auto_presence);
-    try std.testing.expect(model.selected_agent == .codex);
+    try std.testing.expect(model.presence_enabled());
 }
 
 test "conn_label tracks conn_state" {
@@ -43,21 +43,26 @@ test "presence_label tracks mode" {
 test "presence_enabled respects pause and auto" {
     var model = main.initialModel();
     try std.testing.expect(model.presence_enabled());
+    try std.testing.expectEqualStrings("Presence on", model.presence_toggle_label());
     model.presence_paused = true;
     try std.testing.expect(!model.presence_enabled());
+    try std.testing.expectEqualStrings("Presence off", model.presence_toggle_label());
     model.presence_paused = false;
     model.auto_presence = false;
     try std.testing.expect(!model.presence_enabled());
 }
 
-test "agent selection helpers" {
+test "usage status marks cached bars stale on failure" {
     var model = main.initialModel();
-    try std.testing.expect(model.agent_is_codex());
-    try std.testing.expect(!model.agent_is_cursor());
-    try std.testing.expectEqualStrings("Codex", model.agent_name());
-    model.selected_agent = .cursor;
-    try std.testing.expect(model.agent_is_cursor());
-    try std.testing.expectEqualStrings("Cursor", model.agent_name());
+    model.codex_usage_has_data = true;
+    model.setCodexUsageStatus("Could not fetch Codex usage");
+    try std.testing.expect(model.codex_usage_stale);
+    model.cursor_usage_has_data = true;
+    model.setCursorUsageStatus("Cursor auth expired — sign in again in Cursor");
+    try std.testing.expect(model.cursor_usage_stale);
+    model.usage_has_data = true;
+    model.setUsageStatus("Not signed in — run grok login");
+    try std.testing.expect(model.usage_stale);
 }
 
 test "active session card never displays token counts" {
@@ -67,7 +72,7 @@ test "active session card never displays token counts" {
     codex_session.SessionInfo.setField(&codex.model, &codex.model_len, "GPT-5.6 terra");
     codex.total_tokens = 203_600;
     codex.activity_ms = 2_000;
-    model.applySessions(codex, null, null, 3_000, .codex, true, false, false);
+    model.applySessions(codex, null, null, 3_000, true, false, false);
     try std.testing.expectEqualStrings("GPT-5.6 terra", model.meta_text());
     try std.testing.expect(std.mem.indexOf(u8, model.meta_text(), "token") == null);
 
@@ -75,7 +80,7 @@ test "active session card never displays token counts" {
     grok_session.SessionInfo.setField(&grok.model, &grok.model_len, "Grok 4.5");
     grok.total_tokens = 81_200;
     grok.activity_ms = 4_000;
-    model.applySessions(null, grok, null, 5_000, .grok, false, true, false);
+    model.applySessions(null, grok, null, 5_000, false, true, false);
     try std.testing.expectEqualStrings("Grok 4.5", model.meta_text());
     try std.testing.expect(std.mem.indexOf(u8, model.meta_text(), "token") == null);
 }

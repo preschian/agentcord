@@ -1,7 +1,5 @@
 // Shared display formatting, mirroring the strings the macOS popover shows.
 
-using System.Globalization;
-
 namespace AgentCord;
 
 public static class Format
@@ -27,20 +25,19 @@ public static class Format
         return h > 0 ? $"{h}:{m:00}:{s:00}" : $"{m}:{s:00}";
     }
 
-    /// <summary>Reset moment as a clock time, e.g. "12.29 pm"; "now" once due.</summary>
-    public static string ResetTime(long resetsAtMs)
+    /// <summary>Time left until a reset: "6d 22h" / "2h 17m" / "45m" /
+    /// "&lt;1m" / "now" once due. Mirrors the macOS countdown.</summary>
+    public static string ResetIn(long resetsAtMs)
     {
-        if (resetsAtMs <= NowMs()) return "now";
-        var local = DateTimeOffset.FromUnixTimeMilliseconds(resetsAtMs).ToLocalTime();
-        return local.ToString("h.mm tt", CultureInfo.InvariantCulture).ToLowerInvariant();
-    }
-
-    /// <summary>Reset moment as a calendar date, e.g. "Jun 29"; "now" once due.</summary>
-    public static string ResetDate(long resetsAtMs)
-    {
-        if (resetsAtMs <= NowMs()) return "now";
-        var local = DateTimeOffset.FromUnixTimeMilliseconds(resetsAtMs).ToLocalTime();
-        return local.ToString("MMM d", CultureInfo.InvariantCulture);
+        var remaining = resetsAtMs - NowMs();
+        var totalMinutes = remaining / 60000;
+        if (totalMinutes <= 0) return remaining > 0 ? "<1m" : "now";
+        var days = totalMinutes / (24 * 60);
+        var hours = totalMinutes / 60 % 24;
+        var minutes = totalMinutes % 60;
+        if (days > 0) return $"{days}d {hours}h";
+        if (hours > 0) return $"{hours}h {minutes}m";
+        return $"{minutes}m";
     }
 
     /// <summary>Compact "since" duration: "45s", "22m", "1h 12m", "3d".</summary>

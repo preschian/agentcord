@@ -26,9 +26,9 @@ fix(windows): handle missing Discord IPC socket
 docs: clarify one-time Discord setup
 ```
 
-## Relaunch the app after every change
+## Relaunch the app after every change (macOS)
 
-After every code change, rebuild and relaunch the app so the change is actually running:
+After every change under `macos/`, rebuild and relaunch the app so the change is actually running. Other trees build differently — `windows/` (dotnet), `web/` (bun), `native/` (zig); see each directory's `README.md`.
 
 ```sh
 pkill -x AgentCord || true

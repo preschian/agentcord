@@ -63,17 +63,22 @@ Two debug flags: `--popover` opens the popover at startup, and
 ## Build a standalone exe
 
 The release build (see [`.github/workflows/release.yml`](../.github/workflows/release.yml))
-is a self-contained single file, so users can double-click it without installing
-the .NET runtime:
+is a framework-dependent single file — a few MB, and it needs the [.NET 8
+Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) on the target
+machine (`winget install Microsoft.DotNet.DesktopRuntime.8`):
 
 ```sh
-dotnet publish -c Release -r win-x64 --self-contained true \
-  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+dotnet publish -c Release -r win-x64 --self-contained false \
+  -p:PublishSingleFile=true
 ```
 
-The exe lands in `bin/Release/net8.0-windows/win-x64/publish/` (~150 MB, since
-it bundles the WPF/WinForms runtime). Drop `--self-contained true` for a tiny
-exe that instead requires the .NET 8 Desktop Runtime on the target machine.
+The exe lands in `bin/Release/net8.0-windows/win-x64/publish/`.
+
+Add `--self-contained true -p:IncludeNativeLibrariesForSelfExtract=true` to get
+an exe that runs with no runtime installed, at ~150 MB. WPF and WinForms support
+neither trimming nor NativeAOT, so bundling the runtime is all-or-nothing;
+`-p:EnableCompressionInSingleFile=true` brings that down to roughly 60-70 MB but
+no further.
 
 ## Notes on the port
 

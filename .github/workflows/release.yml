@@ -26,11 +26,13 @@ jobs:
 
       - name: Publish agentcord.exe
         working-directory: windows
-        # Self-contained single file so users can run it without installing the
-        # .NET runtime. Renamed to lowercase to keep the release download URL
-        # (releases/latest/download/agentcord.exe) stable.
+        # Framework-dependent single file: a couple of MB instead of ~150 MB,
+        # in exchange for requiring the .NET 8 Desktop Runtime on the target
+        # machine. WPF cannot be trimmed or NativeAOT-compiled, so bundling the
+        # runtime is all-or-nothing. Renamed to lowercase to keep the release
+        # download URL (releases/latest/download/agentcord.exe) stable.
         run: |
-          dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+          dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
           Rename-Item publish/AgentCord.exe agentcord.exe
 
       - uses: actions/upload-artifact@v7

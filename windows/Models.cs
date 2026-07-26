@@ -1,6 +1,6 @@
 // Wire-format models for the Discord Rich Presence IPC protocol, plus the
-// value types describing a detected Claude Code session and the user's
-// subscription usage. Port of AgentCord/Models.swift.
+// value types describing detected coding-agent sessions and subscription
+// usage. Port of AgentCord/Models.swift.
 
 using System.Text.Json.Serialization;
 
@@ -49,9 +49,24 @@ public sealed class PresenceButton
     [JsonPropertyName("url")] public required string Url { get; set; }
 }
 
-// --- Claude Code session
+// --- Coding-agent sessions
 
-/// <summary>A snapshot of the currently active Claude Code session.</summary>
+public enum AgentKind
+{
+    Claude,
+    Codex,
+}
+
+public static class AgentKindExtensions
+{
+    public static string DisplayName(this AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => "Codex",
+        _ => "Claude",
+    };
+}
+
+/// <summary>A snapshot of a currently active coding-agent session.</summary>
 public sealed record SessionInfo
 {
     public required string ProjectName { get; init; }
@@ -59,6 +74,7 @@ public sealed record SessionInfo
     public long StartEpochMs { get; init; }
     public long TotalTokens { get; init; }
     public long LastModifiedMs { get; init; }
+    public AgentKind Agent { get; init; } = AgentKind.Claude;
 }
 
 // --- Claude subscription usage
@@ -89,6 +105,26 @@ public sealed record UsageInfo
     public required UsageWindow Weekly { get; init; }
     /// <summary>Per-model weekly limits, in API order. Empty when the plan has none.</summary>
     public IReadOnlyList<ModelUsageWindow> ModelWeekly { get; init; } = [];
+}
+
+// --- Codex / ChatGPT subscription usage
+
+public sealed record NamedUsageWindow
+{
+    public required string Id { get; init; }
+    public required string Label { get; init; }
+    public required UsageWindow Window { get; init; }
+}
+
+/// <summary>Codex rate limits reported by its local app-server.</summary>
+public sealed record CodexUsageInfo
+{
+    public required UsageWindow Primary { get; init; }
+    public required string PrimaryLabel { get; init; }
+    public UsageWindow? Secondary { get; init; }
+    public string? SecondaryLabel { get; init; }
+    public string? PlanType { get; init; }
+    public IReadOnlyList<NamedUsageWindow> AdditionalWindows { get; init; } = [];
 }
 
 // --- Anthropic status page

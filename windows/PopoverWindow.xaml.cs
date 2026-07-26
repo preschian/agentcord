@@ -22,6 +22,7 @@ public partial class PopoverWindow : Window
     private readonly Settings _settings;
     private readonly PresenceController _controller;
     private readonly ClaudeUsage _usage;
+    private readonly CodexUsage _codexUsage;
     private readonly AnthropicStatus _status;
     private readonly SleepGuard _sleepGuard;
     private readonly Action _quit;
@@ -60,12 +61,13 @@ public partial class PopoverWindow : Window
     private static readonly Color Discord = Rgb(0x58, 0x65, 0xF2);
 
     public PopoverWindow(
-        Settings settings, PresenceController controller, ClaudeUsage usage,
+        Settings settings, PresenceController controller, ClaudeUsage usage, CodexUsage codexUsage,
         AnthropicStatus status, SleepGuard sleepGuard, Action quit)
     {
         _settings = settings;
         _controller = controller;
         _usage = usage;
+        _codexUsage = codexUsage;
         _status = status;
         _sleepGuard = sleepGuard;
         _quit = quit;
@@ -90,6 +92,7 @@ public partial class PopoverWindow : Window
         // Pull fresh usage numbers and Anthropic status as the popover opens
         // (throttled internally) so they're current.
         _usage.Refresh();
+        _codexUsage.Refresh();
         _status.Refresh();
         ShowMainScreen();
         UpdateUi();
@@ -239,6 +242,34 @@ public partial class PopoverWindow : Window
     private void OnShowTokensSwitch(object sender, RoutedEventArgs e) =>
         SaveDisplayToggle(v => _settings.ShowTokens = v, ShowTokensSwitch);
 
+    private void OnSelectClaude(object sender, RoutedEventArgs e) =>
+        SelectAgent(AgentKind.Claude);
+
+    private void OnSelectCodex(object sender, RoutedEventArgs e) =>
+        SelectAgent(AgentKind.Codex);
+
+    private void SelectAgent(AgentKind agent)
+    {
+        _settings.SelectedAgent = agent;
+        _settings.Save();
+        _expandStatus = false;
+        StatusExpanded.Visibility = Visibility.Collapsed;
+        UpdateUi();
+    }
+
+    private void OnClaudeAgentSwitch(object sender, RoutedEventArgs e) =>
+        SaveAgentToggle(AgentKind.Claude, ClaudeAgentSwitch);
+
+    private void OnCodexAgentSwitch(object sender, RoutedEventArgs e) =>
+        SaveAgentToggle(AgentKind.Codex, CodexAgentSwitch);
+
+    private void SaveAgentToggle(AgentKind agent, ToggleButton toggle)
+    {
+        _settings.SetAgentEnabled(agent, toggle.IsChecked == true);
+        _settings.Save();
+        UpdateUi();
+    }
+
     private void SaveDisplayToggle(Action<bool> apply, ToggleButton toggle)
     {
         apply(toggle.IsChecked == true);
@@ -295,10 +326,19 @@ public partial class PopoverWindow : Window
 
     private void UpdateUi()
     {
-        var session = _controller.CurrentSession;
+        var selectedAgent = _settings.SelectedAgent;
+        var session = _controller.SessionFor(selectedAgent);
         var hasSession = session is not null;
         var presenceOn = _settings.PresenceEnabled;
-        var active = hasSession && presenceOn;
+        var selectedEnabled = _settings.IsAgentEnabled(selectedAgent);
+        var sharing = hasSession && presenceOn && _controller.CurrentSession?.Agent == selectedAgent;
+
+        ClaudeAgentButton.Background = Brush(selectedAgent == AgentKind.Claude
+            ? WithAlpha(Blue, 0x1F) : Colors.Transparent);
+        CodexAgentButton.Background = Brush(selectedAgent == AgentKind.Codex
+            ? WithAlpha(Rgb(0x10, 0xA3, 0x7F), 0x24) : Colors.Transparent);
+        ClaudeAgentText.FontWeight = selectedAgent == AgentKind.Claude ? FontWeights.SemiBold : FontWeights.Normal;
+        CodexAgentText.FontWeight = selectedAgent == AgentKind.Codex ? FontWeights.SemiBold : FontWeights.Normal;
 
         // Connection pill.
         if (!presenceOn)
@@ -309,15 +349,15 @@ public partial class PopoverWindow : Window
             SetPill(StatusPill, StatusPillDot, StatusPillText, Yellow, YellowText, "Connecting");
 
         // Active session card.
-        SessionDot.Fill = Brush(active ? Green : WithAlpha(Track, 0xB3));
+        SessionDot.Fill = Brush(hasSession ? Green : WithAlpha(Track, 0xB3));
         ElapsedText.Text = session is null ? "—" : Format.Clock(Format.NowMs() - session.StartEpochMs);
-        ElapsedText.Foreground = Brush(active ? TextColor : WithAlpha(Secondary, 0x73));
+        ElapsedText.Foreground = Brush(hasSession ? TextColor : WithAlpha(Secondary, 0x73));
 
         var showProject = hasSession && _settings.ShowProject;
         ProjectText.Text = session is null ? "No active session"
             : _settings.ShowProject ? session.ProjectName : "Project hidden";
         ProjectText.FontStyle = showProject ? FontStyles.Normal : FontStyles.Italic;
-        ProjectText.Foreground = Brush(active && showProject ? TextColor : WithAlpha(Secondary, 0x73));
+        ProjectText.Foreground = Brush(hasSession && showProject ? TextColor : WithAlpha(Secondary, 0x73));
 
         var bits = new List<string>();
         if (session is not null)
@@ -329,19 +369,22 @@ public partial class PopoverWindow : Window
         MetaText.Text = bits.Count > 0 ? string.Join("  ·  ", bits)
             : session is null ? "Waiting for a session" : "Model & tokens hidden";
         MetaText.FontStyle = bits.Count > 0 ? FontStyles.Normal : FontStyles.Italic;
-        MetaText.Foreground = Brush(WithAlpha(Secondary, active && bits.Count > 0 ? (byte)0xB3 : (byte)0x66));
+        MetaText.Foreground = Brush(WithAlpha(Secondary, hasSession && bits.Count > 0 ? (byte)0xB3 : (byte)0x66));
 
-        BroadcastDot.Fill = Brush(active ? Discord : WithAlpha(Track, 0x99));
+        BroadcastDot.Fill = Brush(sharing ? Discord : WithAlpha(Track, 0x99));
         BroadcastText.Text = !presenceOn ? "Presence is off"
-            : hasSession ? "Sharing to Discord as your status" : "Waiting for a session";
+            : !selectedEnabled ? $"{selectedAgent.DisplayName()} is disabled"
+            : sharing ? "Sharing to Discord as your status"
+            : hasSession ? "A newer agent session is sharing" : "Waiting for a session";
 
         // Usage card.
-        RenderUsage(_usage.Current);
+        RenderUsage(selectedAgent);
         ErrorText.Text = _controller.LastError ?? "";
         ErrorText.Visibility = _controller.LastError is null ? Visibility.Collapsed : Visibility.Visible;
 
-        // Claude status card: hidden entirely until the first successful fetch.
-        var status = _status.Current;
+        // Anthropic status only belongs to the Claude tab. Do not show it as
+        // though it represented OpenAI when Codex is selected.
+        var status = selectedAgent == AgentKind.Claude ? _status.Current : null;
         StatusCard.Visibility = status is null ? Visibility.Collapsed : Visibility.Visible;
         if (status is not null)
         {
@@ -351,7 +394,8 @@ public partial class PopoverWindow : Window
             if (_expandStatus) StatusFooterText.Text = StatusFooter(status);
         }
 
-        SettingsSummary.Text = presenceOn ? "Presence on" : "Presence off";
+        var enabledAgents = new[] { _settings.AgentClaudeEnabled, _settings.AgentCodexEnabled }.Count(v => v);
+        SettingsSummary.Text = enabledAgents == 1 ? "1 agent on" : $"{enabledAgents} agents on";
 
         // Settings screen.
         PresenceSwitch.IsChecked = presenceOn;
@@ -360,6 +404,8 @@ public partial class PopoverWindow : Window
         ShowProjectSwitch.IsChecked = _settings.ShowProject;
         ShowModelSwitch.IsChecked = _settings.ShowModel;
         ShowTokensSwitch.IsChecked = _settings.ShowTokens;
+        ClaudeAgentSwitch.IsChecked = _settings.AgentClaudeEnabled;
+        CodexAgentSwitch.IsChecked = _settings.AgentCodexEnabled;
 
         var displayCount = new[] { _settings.ShowProject, _settings.ShowModel, _settings.ShowTokens }.Count(v => v);
         DisplaySummary.Text = $"{displayCount} on";
@@ -372,9 +418,37 @@ public partial class PopoverWindow : Window
         ActivitySummary.Text = $"{ActivityLabel.Text} · {idleMinutes} min";
     }
 
-    private void RenderUsage(UsageInfo? usage)
+    private void RenderUsage(AgentKind agent)
     {
-        var wanted = 2 + (usage?.ModelWeekly.Count ?? 0);
+        if (agent == AgentKind.Codex)
+        {
+            var usage = _codexUsage.Current;
+            var rows = new List<(string Label, UsageWindow? Window)>
+            {
+                (usage?.PrimaryLabel ?? "Primary limit", usage?.Primary),
+            };
+            if (usage?.Secondary is not null)
+                rows.Add((usage.SecondaryLabel ?? "Secondary limit", usage.Secondary));
+            if (usage is not null)
+                rows.AddRange(usage.AdditionalWindows.Select(item => (item.Label, (UsageWindow?)item.Window)));
+            RenderUsageRows(rows);
+            return;
+        }
+
+        var claude = _usage.Current;
+        var claudeRows = new List<(string Label, UsageWindow? Window)>
+        {
+            ("Current session", claude?.FiveHour),
+            ("All models", claude?.Weekly),
+        };
+        if (claude is not null)
+            claudeRows.AddRange(claude.ModelWeekly.Select(item => (item.ModelName, (UsageWindow?)item.Window)));
+        RenderUsageRows(claudeRows);
+    }
+
+    private void RenderUsageRows(IReadOnlyList<(string Label, UsageWindow? Window)> rows)
+    {
+        var wanted = rows.Count;
         if (_usageRows.Count != wanted)
         {
             _usageRows.Clear();
@@ -387,10 +461,8 @@ public partial class PopoverWindow : Window
             }
         }
 
-        _usageRows[0].Update("Current session", usage?.FiveHour);
-        _usageRows[1].Update("All models", usage?.Weekly);
-        for (var i = 0; i < (usage?.ModelWeekly.Count ?? 0); i++)
-            _usageRows[2 + i].Update(usage!.ModelWeekly[i].ModelName, usage.ModelWeekly[i].Window);
+        for (var i = 0; i < rows.Count; i++)
+            _usageRows[i].Update(rows[i].Label, rows[i].Window);
     }
 
     private void RenderStatusDetails(StatusInfo? status)

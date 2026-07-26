@@ -210,6 +210,7 @@ public sealed class ClaudeSession
             StartEpochMs = nowMs - elapsedMs,
             TotalTokens = totalTokensToday,
             LastModifiedMs = new DateTimeOffset(newestMtime).ToUnixTimeMilliseconds(),
+            Agent = AgentKind.Claude,
         };
     }
 

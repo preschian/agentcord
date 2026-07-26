@@ -140,6 +140,30 @@
                      VerticalAlignment="Center" Margin="9,0,0,0"/>
         </DockPanel>
 
+        <!-- Agent switcher -->
+        <Border Style="{StaticResource CardSoft}" Margin="0,0,0,11" Padding="3">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition/>
+              <ColumnDefinition/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="ClaudeAgentButton" Grid.Column="0" Style="{StaticResource PlainRow}"
+                    Click="OnSelectClaude">
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="8,5">
+                <Ellipse Width="6" Height="6" Fill="#FFD97757" VerticalAlignment="Center"/>
+                <TextBlock x:Name="ClaudeAgentText" Text="Claude" FontSize="12" Margin="5,0,0,0"/>
+              </StackPanel>
+            </Button>
+            <Button x:Name="CodexAgentButton" Grid.Column="1" Style="{StaticResource PlainRow}"
+                    Click="OnSelectCodex">
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="8,5">
+                <Ellipse Width="6" Height="6" Fill="#FF10A37F" VerticalAlignment="Center"/>
+                <TextBlock x:Name="CodexAgentText" Text="Codex" FontSize="12" Margin="5,0,0,0"/>
+              </StackPanel>
+            </Button>
+          </Grid>
+        </Border>
+
         <!-- Active session card -->
         <Border Style="{StaticResource Card}" Margin="0,0,0,11">
           <StackPanel>
@@ -278,6 +302,31 @@
             <TextBlock Text="Prevent sleep" FontSize="13" VerticalAlignment="Center"/>
           </DockPanel>
         </StackPanel>
+
+        <!-- Enabled coding agents -->
+        <Border Style="{StaticResource CardSoft}" Margin="0,0,0,7" Padding="11,5">
+          <StackPanel>
+            <TextBlock Text="AGENTS" FontSize="10.5" FontWeight="SemiBold"
+                       Foreground="{StaticResource SecMid}" Margin="0,1,0,4"/>
+            <DockPanel Margin="0,5">
+              <ToggleButton x:Name="ClaudeAgentSwitch" DockPanel.Dock="Right"
+                            Style="{StaticResource Switch}" Click="OnClaudeAgentSwitch"/>
+              <StackPanel Orientation="Horizontal">
+                <Ellipse Width="6" Height="6" Fill="#FFD97757" VerticalAlignment="Center"/>
+                <TextBlock Text="Claude" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
+              </StackPanel>
+            </DockPanel>
+            <Rectangle Height="1" Fill="#0D000000"/>
+            <DockPanel Margin="0,5">
+              <ToggleButton x:Name="CodexAgentSwitch" DockPanel.Dock="Right"
+                            Style="{StaticResource Switch}" Click="OnCodexAgentSwitch"/>
+              <StackPanel Orientation="Horizontal">
+                <Ellipse Width="6" Height="6" Fill="#FF10A37F" VerticalAlignment="Center"/>
+                <TextBlock Text="Codex" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
+              </StackPanel>
+            </DockPanel>
+          </StackPanel>
+        </Border>
 
         <!-- Display (collapsible) -->
         <Border Style="{StaticResource CardSoft}" Margin="0,0,0,7">

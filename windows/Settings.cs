@@ -21,6 +21,9 @@ public sealed class Settings
     [JsonPropertyName("show_tokens")] public bool ShowTokens { get; set; } = true;
     [JsonPropertyName("show_project")] public bool ShowProject { get; set; } = true;
     [JsonPropertyName("small_image_key")] public string SmallImageKey { get; set; } = "discord-presence-icon";
+    [JsonPropertyName("selected_agent")] public AgentKind SelectedAgent { get; set; } = AgentKind.Claude;
+    [JsonPropertyName("agent_claude_enabled")] public bool AgentClaudeEnabled { get; set; } = true;
+    [JsonPropertyName("agent_codex_enabled")] public bool AgentCodexEnabled { get; set; } = true;
 
     /// <summary>Discord activity type: 0 Playing, 2 Listening, 3 Watching, 5 Competing.</summary>
     [JsonPropertyName("activity_type")] public int ActivityType { get; set; }
@@ -40,6 +43,21 @@ public sealed class Settings
 
     public static string ActivityLabel(int value) =>
         ActivityTypes.FirstOrDefault(t => t.Value == value).Name ?? "Playing";
+
+    public bool IsAgentEnabled(AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => AgentCodexEnabled,
+        _ => AgentClaudeEnabled,
+    };
+
+    public void SetAgentEnabled(AgentKind agent, bool enabled)
+    {
+        if (agent == AgentKind.Codex) AgentCodexEnabled = enabled;
+        else AgentClaudeEnabled = enabled;
+
+        if (!IsAgentEnabled(SelectedAgent))
+            SelectedAgent = AgentClaudeEnabled ? AgentKind.Claude : AgentKind.Codex;
+    }
 
     private static readonly JsonSerializerOptions FileOptions = new() { WriteIndented = true };
 

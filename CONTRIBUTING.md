@@ -49,7 +49,7 @@ You do this once, by hand, in Discord's developer portal.
 3. Choose what to display: project, model, tokens, the activity type, the idle window, and the image asset keys.
 4. Toggle **Enable presence** on. Toggle **Launch at login** to start the app automatically when you log in.
 
-Once Discord is running and a Claude Code session is active, the presence shows up on your profile. It clears again when the session goes idle (no transcript activity within the idle window) or when you quit the app.
+Once Discord is running and a supported coding-agent session is active, the presence shows up on your profile. It clears again when the session goes idle (no transcript activity within the idle window) or when you quit the app.
 
 ## App Sandbox: keep it OFF
 

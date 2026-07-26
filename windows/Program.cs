@@ -38,9 +38,11 @@ internal static class Program
         var settings = Settings.Load();
         using var controller = new PresenceController(settings);
         using var usage = new ClaudeUsage();
+        using var codexUsage = new CodexUsage();
         using var status = new AnthropicStatus();
         controller.Start();
         usage.Start();
+        codexUsage.Start();
         status.Start();
 
         // Let the first session scan, usage fetch, and status fetch land so
@@ -52,7 +54,8 @@ internal static class Program
             Thread.Sleep(100);
         }
 
-        var window = new PopoverWindow(settings, controller, usage, status, new SleepGuard(), () => { });
+        var window = new PopoverWindow(
+            settings, controller, usage, codexUsage, status, new SleepGuard(), () => { });
         window.CaptureForDebug(path);
         controller.Shutdown();
     }

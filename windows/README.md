@@ -1,9 +1,9 @@
 # AgentCord for Windows (C# / .NET)
 
 A native Windows port of the macOS menu bar app, written in C# on .NET 8. Same
-idea: while a Claude Code session is running, your Discord profile shows what
-you're working on, and it clears itself when the session goes quiet or you
-quit.
+idea: while a Claude Code or Codex session is running, your Discord profile
+shows what you're working on, and it clears itself when the session goes quiet
+or you quit. If both agents are active, the most recently updated session wins.
 
 The app lives entirely in the system tray — no taskbar entry. Left-clicking the
 tray icon opens a popover that mirrors the macOS one: rounded cards, a
@@ -21,9 +21,9 @@ matching the macOS app's ethos.
 |---|---|---|
 | Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` (`DiscordIpc.cs`) |
 | IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
-| Session detection | `FSEvents` on `~/.claude/projects` | timer re-scan of `%USERPROFILE%\.claude\projects` (`ClaudeSession.cs`) |
+| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects` and `%USERPROFILE%\.codex\sessions` (`ClaudeSession.cs`, `CodexSession.cs`) |
 | Presence controller | `PresenceController.swift` | `PresenceController.cs` |
-| Usage limits (5h / weekly / per-model) | `ClaudeUsage.swift` (keychain) | `ClaudeUsage.cs` (credentials file + `HttpClient`) |
+| Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs` (credentials file + `HttpClient`) and `CodexUsage.cs` (`codex app-server`) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
 | Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` (`Settings.cs`) |
 | UI | `NSStatusItem` + SwiftUI popover | `NotifyIcon` (`TrayApplicationContext.cs`) + WPF popover (`PopoverWindow.xaml`) |
@@ -50,11 +50,11 @@ dotnet run
 ```
 
 **Left-click** the tray icon for the popover: connection pill, the active
-session (project, model, live elapsed timer, today's tokens), usage bars
-(5-hour, weekly, and any per-model weekly windows), an expandable Claude status
-breakdown, and a Settings screen with presence, launch-at-login, prevent-sleep,
-display fields, activity type, and the idle window. **Right-click** for a quick
-menu (show, toggle presence, quit).
+session (project, model, live elapsed timer, tokens), provider-specific usage
+bars, an expandable Claude status breakdown, and a Settings screen with agent
+toggles, presence, launch-at-login, prevent-sleep, display fields, activity
+type, and the idle window. Use the Claude/Codex switcher to inspect either
+agent. **Right-click** for a quick menu (show, toggle presence, quit).
 
 Two debug flags: `--popover` opens the popover at startup, and
 `--screenshot <path>` renders both popover screens to PNGs off-screen and exits
@@ -93,13 +93,12 @@ ERROR/CLOSE) alongside its writes, matching the macOS design. Reconnects use
 exponential backoff capped at 30s, and the current activity is re-sent on
 every READY.
 
-**Session detection.** `ClaudeSession.cs` re-scans the transcript tree on the
-controller's 3-second tick, parsing each `.jsonl` defensively: today's tokens
-are summed across all transcripts, and the elapsed timer reflects combined
-working time with idle gaps (>5 min between messages) excluded — matching the
-Swift semantics, including the midnight reset. Per-file aggregates are
-memoized by mtime so re-scans stay cheap. Repo names come from `git` (remote
-origin, then toplevel, then the directory name), spawned with
+**Session detection.** `ClaudeSession.cs` and `CodexSession.cs` re-scan their
+transcript trees on the controller's 3-second tick and parse each `.jsonl`
+defensively. Claude's totals cover the local calendar day; Codex reports the
+current transcript's model, latest context token count, and start time. Per-file aggregates
+are memoized by mtime so re-scans stay cheap. Repo names come from `git`
+(remote origin, then toplevel, then the directory name), spawned with
 `CreateNoWindow` so nothing flashes a console.
 
 **Usage limits.** The macOS app reads Claude Code's OAuth token from the
@@ -109,6 +108,8 @@ and hits the same undocumented endpoint with `HttpClient`. Polls run every 5
 minutes (opening the menu triggers a throttled refresh); a failed poll keeps
 the last good snapshot for up to 30 minutes before showing a dash. Per-model
 weekly windows (e.g. a separate Fable limit) are shown when the plan has them.
+Codex usage is requested through Codex's local `app-server` JSONL protocol, so
+AgentCord does not read or refresh ChatGPT credentials itself.
 
 **UI.** WinForms owns the tray icon and the message loop; the popover is a WPF
 window (`PopoverWindow.xaml`) on that same thread, which is what makes the

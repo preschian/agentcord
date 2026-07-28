@@ -4,8 +4,9 @@
 //
 //  Detects the currently active Cursor agent session by watching
 //  ~/.cursor/projects/**/agent-transcripts/*.jsonl and enriching with
-//  ~/.cursor/chats/**/<session-id>/meta.json (cwd, createdAtMs). The on-disk
-//  schema is undocumented, so all parsing is defensive.
+//  ~/.cursor/chats/**/<session-id>/meta.json (cwd, createdAtMs) plus the
+//  sibling store.db (`lastUsedModel`). The on-disk schema is undocumented,
+//  so all parsing is defensive.
 //
 
 import Foundation
@@ -30,6 +31,9 @@ final class CursorSession: ObservableObject {
     private var timer: DispatchSourceTimer?
     private var metaBySessionID: [String: URL] = [:]
     private var repoNameCache: [String: String] = [:]
+    /// Last-used model per chat `store.db`, keyed by mtime so we don't spawn
+    /// `sqlite3` on every idle scan.
+    private var modelCache: [URL: (mtime: Date?, model: String?)] = [:]
 
     init(cursorHome: URL? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -104,6 +108,7 @@ final class CursorSession: ObservableObject {
         var cwd: String?
         var createdAtMs: Int64?
         var updatedAtMs: Int64?
+        var model: String?
     }
 
     private func scan() {
@@ -152,7 +157,7 @@ final class CursorSession: ObservableObject {
 
         let info = SessionInfo(
             projectName: projectName.isEmpty ? "Cursor" : projectName,
-            model: nil,
+            model: meta?.model.map(Self.prettyModel),
             startEpochMs: startMs,
             totalTokens: 0,
             lastModified: activity,
@@ -180,9 +185,80 @@ final class CursorSession: ObservableObject {
         return SessionMeta(
             cwd: obj["cwd"] as? String,
             createdAtMs: obj["createdAtMs"] as? Int64 ?? (obj["createdAtMs"] as? Int).map(Int64.init),
-            updatedAtMs: obj["updatedAtMs"] as? Int64 ?? (obj["updatedAtMs"] as? Int).map(Int64.init)
+            updatedAtMs: obj["updatedAtMs"] as? Int64 ?? (obj["updatedAtMs"] as? Int).map(Int64.init),
+            model: readLastUsedModel(chatDir: url.deletingLastPathComponent())
         )
     }
+
+    /// Cursor keeps the chat's last model in `store.db` meta (hex-encoded JSON
+    /// with `lastUsedModel`), not in meta.json. Read via the sqlite3 CLI the
+    /// same way CursorUsage reads the auth state DB — no libsqlite link.
+    private func readLastUsedModel(chatDir: URL) -> String? {
+        let dbURL = chatDir.appendingPathComponent("store.db")
+        guard FileManager.default.fileExists(atPath: dbURL.path) else { return nil }
+
+        let dbMtime = (try? dbURL.resourceValues(forKeys: [.contentModificationDateKey]))
+            .flatMap(\.contentModificationDate)
+        let walURL = URL(fileURLWithPath: dbURL.path + "-wal")
+        let walMtime = (try? walURL.resourceValues(forKeys: [.contentModificationDateKey]))
+            .flatMap(\.contentModificationDate)
+        let stamp = [dbMtime, walMtime].compactMap { $0 }.max()
+
+        if let cached = modelCache[dbURL], cached.mtime == stamp {
+            return cached.model
+        }
+
+        let model = Self.queryLastUsedModel(dbPath: dbURL.path)
+        modelCache[dbURL] = (stamp, model)
+        return model
+    }
+
+    private static func queryLastUsedModel(dbPath: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [
+            dbPath,
+            "SELECT value FROM meta WHERE key = 0 LIMIT 1;"
+        ]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0,
+              let hex = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !hex.isEmpty,
+              let jsonData = Data(hexString: hex),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let model = obj["lastUsedModel"] as? String,
+              !model.isEmpty
+        else { return nil }
+        return model
+    }
+
+    /// `grok-4.5` → `Grok 4.5`, `composer-2.5-fast` → `Composer 2.5 Fast`,
+    /// `default` → `Auto` (Cursor's automatic model picker).
+    static func prettyModel(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower == "default" { return "Auto" }
+
+        var value = raw
+        if lower.hasPrefix("cursor-") {
+            value = String(raw.dropFirst("cursor-".count))
+        }
+
+        return value.split(separator: "-").map { part -> String in
+            let s = String(part)
+            if s.first?.isNumber == true { return s }
+            if s.lowercased() == "gpt" { return "GPT" }
+            return s.prefix(1).uppercased() + s.dropFirst()
+        }.joined(separator: " ")
+    }
+
 
     private func rebuildMetaIndex() {
         metaBySessionID.removeAll(keepingCapacity: true)
@@ -246,5 +322,23 @@ final class CursorSession: ObservableObject {
         guard process.terminationStatus == 0 else { return nil }
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (output?.isEmpty == false) ? output : nil
+    }
+}
+
+private extension Data {
+    /// Decode an even-length hex string into raw bytes. Returns nil on any
+    /// malformed nibble so callers can treat bad Cursor store rows as missing.
+    init?(hexString: String) {
+        let hex = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hex.count.isMultiple(of: 2), !hex.isEmpty else { return nil }
+        var data = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            data.append(byte)
+            index = next
+        }
+        self = data
     }
 }

@@ -19,6 +19,10 @@ final class CodexUsage: ObservableObject {
     /// True when app-server reports a ChatGPT-backed Codex account.
     @Published private(set) var isAuthenticated = false
 
+    /// Email of the signed-in ChatGPT account, as reported by `account/read`.
+    /// Nil for API-key auth, which has no associated account.
+    @Published private(set) var accountEmail: String?
+
     var pollInterval: TimeInterval = 300
     var minFetchInterval: TimeInterval = 60
     /// How long a disk-cached snapshot may still be shown after the last
@@ -171,9 +175,11 @@ final class CodexUsage: ObservableObject {
             switch id {
             case 1:
                 if let envelope = try? JSONDecoder().decode(AccountEnvelope.self, from: line) {
-                    let type = envelope.result?.account?.type
+                    let account = envelope.result?.account
+                    let type = account?.type
                     activeAuthenticated = type == "chatgpt" || type == "personalAccessToken"
                     publishAuth(activeAuthenticated == true)
+                    publishEmail(account?.email)
                 }
             case 2:
                 guard object["error"] == nil,
@@ -303,6 +309,14 @@ final class CodexUsage: ObservableObject {
         }
     }
 
+    private func publishEmail(_ email: String?) {
+        let cleaned = (email?.isEmpty == false) ? email : nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.accountEmail != cleaned { self.accountEmail = cleaned }
+        }
+    }
+
     private struct CachePayload: Codable {
         var fetchedAt: Date
         var info: CodexUsageInfo
@@ -328,7 +342,10 @@ final class CodexUsage: ObservableObject {
 
 private struct AccountEnvelope: Decodable {
     struct Result: Decodable {
-        struct Account: Decodable { let type: String }
+        struct Account: Decodable {
+            let type: String
+            let email: String?
+        }
         let account: Account?
     }
     let result: Result?

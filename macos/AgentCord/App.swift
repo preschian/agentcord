@@ -476,24 +476,18 @@ struct MenuContentView: View {
     @State private var showSettings = false
     @State private var expandDisplay = false
     @State private var expandActivity = false
-    @State private var expandStatus = false
+    /// Which agent's row is expanded in the accordion. Nil collapses them all.
+    @State private var expandedAgent: AgentKind?
+    /// Agents whose account email is currently shown in the clear. Masked by
+    /// default so a peek at the menu bar doesn't leak the address.
+    @State private var revealedAccountEmails: Set<AgentKind> = []
 
     private let idleSteps = [5, 10, 15, 20, 25, 30]
 
-    /// Agents currently shown in the segmented switcher.
+    /// Agents currently listed in the popover.
     private var visibleAgents: [AgentKind] {
         let enabled = settings.enabledAgents
         return enabled.isEmpty ? [.claude] : enabled
-    }
-
-    private var selectedAgent: AgentKind {
-        let visible = visibleAgents
-        return visible.contains(settings.selectedAgent) ? settings.selectedAgent : visible[0]
-    }
-
-    /// Whether the selected agent has a linked account / can be tracked.
-    private var selectedAgentLinked: Bool {
-        isAgentLinked(selectedAgent)
     }
 
     private func isAgentLinked(_ agent: AgentKind) -> Bool {
@@ -509,13 +503,9 @@ struct MenuContentView: View {
         }
     }
 
-    private var linkedAgentCount: Int {
-        visibleAgents.filter { isAgentLinked($0) }.count
-    }
-
-    /// Session for the currently selected agent tab.
-    private var selectedSession: SessionInfo? {
-        switch selectedAgent {
+    /// The live session for one agent, if it has one.
+    private func session(for agent: AgentKind) -> SessionInfo? {
+        switch agent {
         case .claude: return controller.session.current
         case .cursor: return cursorSession.current
         case .codex: return codexSession.current
@@ -523,15 +513,8 @@ struct MenuContentView: View {
         }
     }
 
-    /// Whether the selected agent currently has a live session (for the status
-    /// dots in the switcher and the active-session card).
-    private func isAgentActive(_ agent: AgentKind) -> Bool {
-        switch agent {
-        case .claude: return controller.session.current != nil
-        case .cursor: return cursorSession.current != nil
-        case .codex: return codexSession.current != nil
-        case .grok: return grokSession.current != nil
-        }
+    private var activeAgentCount: Int {
+        visibleAgents.filter { isAgentLinked($0) && session(for: $0) != nil }.count
     }
 
     // Screens slide horizontally: going to Settings pushes left, going back
@@ -554,6 +537,14 @@ struct MenuContentView: View {
         .clipped()
         .foregroundStyle(Palette.text)
         .animation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32), value: showSettings)
+        .onAppear {
+            // Open the last-selected agent so the popover doesn't come up as a
+            // list of closed rows. Only on first appearance — after that the
+            // user's collapse choice stands.
+            if expandedAgent == nil, visibleAgents.contains(settings.selectedAgent) {
+                expandedAgent = settings.selectedAgent
+            }
+        }
     }
 
     // MARK: Screens
@@ -561,14 +552,12 @@ struct MenuContentView: View {
     private var mainScreen: some View {
         VStack(alignment: .leading, spacing: 11) {
             header
-            agentSwitcher
-            if selectedAgentLinked {
-                activeSessionCard
-                usageCard
-                statusCard
-            } else {
-                connectAgentCard
+            // With a single agent the summary would just repeat that agent's
+            // own rows, so it only earns its space once there are several.
+            if settings.unifiedUsage && visibleAgents.count > 1 {
+                unifiedUsageCard
             }
+            agentListCard
             settingsNavRow
             Rectangle()
                 .fill(Color.black.opacity(0.08))
@@ -611,24 +600,27 @@ struct MenuContentView: View {
 
             Text("agentcord")
                 .font(.system(size: 15, weight: .semibold))
-            Spacer()
+                .lineLimit(1)
+            Spacer(minLength: 6)
             statusPill
         }
         .frame(maxWidth: .infinity)
     }
 
     private var statusPill: some View {
-        // Multi-agent design: show how many enabled agents are linked.
-        // Fall back to Discord connection state when only one agent is on.
+        // Multi-agent design: how many enabled agents are running right now.
+        // The connected count is already implicit in the list below, so the pill
+        // only carries what's live. Falls back to the Discord connection state
+        // when only one agent is on.
         let total = max(visibleAgents.count, 1)
-        let linked = linkedAgentCount
         let accent: Color
         let textColor: Color
         let label: String
         if total > 1 {
-            accent = linked > 0 ? Palette.green : Palette.track
-            textColor = linked > 0 ? Palette.greenText : Palette.secondary.opacity(0.7)
-            label = "\(linked) of \(total) connected"
+            let active = activeAgentCount
+            accent = active > 0 ? Palette.green : Palette.track
+            textColor = active > 0 ? Palette.greenText : Palette.secondary.opacity(0.7)
+            label = active > 0 ? "\(active) active" : "Idle"
         } else if !settings.presenceEnabled {
             accent = Palette.track
             textColor = Palette.secondary.opacity(0.7)
@@ -643,114 +635,307 @@ struct MenuContentView: View {
             label = "Connecting"
         }
         return HStack(spacing: 5) {
-            Circle().fill(accent).frame(width: 6, height: 6)
-            Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(textColor)
+            Circle().fill(accent).frame(width: 6, height: 6).fixedSize()
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(textColor)
+                // "N active · M connected" is the widest label the pill carries.
+                // Without this the header squeezes it and it wraps to two lines.
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.leading, 6).padding(.trailing, 8).padding(.vertical, 2)
         .background(Capsule().fill(accent.opacity(0.12)))
         .overlay(Capsule().stroke(accent.opacity(0.28), lineWidth: 0.5))
     }
 
-    // MARK: Agent switcher
+    // MARK: Agent list (accordion)
 
-    /// macOS-style segmented control for switching between enabled agents.
-    private var agentSwitcher: some View {
-        let agents = visibleAgents
-        return Group {
-            if agents.count > 1 {
-                HStack(spacing: 2) {
-                    ForEach(agents) { agent in
-                        agentSegment(agent)
-                    }
-                }
-                .padding(2)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Palette.track.opacity(0.12))
-                )
-                .frame(maxWidth: .infinity)
+    /// Every enabled agent as one row. Tapping a row expands it in place to show
+    /// that agent's plan, session, usage and provider status — so several agents
+    /// stay visible at once instead of one at a time behind a tab switcher.
+    private var agentListCard: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(visibleAgents.enumerated()), id: \.element.id) { index, agent in
+                agentRow(agent, divider: index > 0)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    private func agentSegment(_ agent: AgentKind) -> some View {
-        let isSelected = agent == selectedAgent
+    private func agentRow(_ agent: AgentKind, divider: Bool) -> some View {
         let linked = isAgentLinked(agent)
-        let live = linked && isAgentActive(agent)
-        // Four tabs need a slightly smaller label so names still fit.
-        let nameSize: CGFloat = visibleAgents.count >= 4 ? 11 : 12
-        return Button {
-            settings.selectedAgent = agent
-            expandStatus = false
-        } label: {
-            HStack(spacing: 4) {
-                if linked {
-                    Circle()
-                        .fill(live ? Palette.green : Palette.track.opacity(0.7))
-                        .frame(width: 6, height: 6)
-                } else {
-                    Circle()
-                        .stroke(Palette.track.opacity(0.45), lineWidth: 1)
-                        .frame(width: 6, height: 6)
+        let session = session(for: agent)
+        let expanded = expandedAgent == agent
+
+        return VStack(spacing: 0) {
+            Button {
+                toggleExpanded(agent)
+            } label: {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(agent.displayName)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(linked ? Palette.text : Palette.secondary.opacity(0.5))
+                            .lineLimit(1)
+                        Text(rowSubtitle(agent, linked: linked, session: session))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Palette.secondary.opacity(0.5))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 8)
+                    agentRowTrailing(linked: linked, session: session)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Palette.secondary.opacity(0.3))
+                        // Pin the slot: chevron.down and chevron.right differ in
+                        // width, so without it the row shifts as it toggles.
+                        .frame(width: 9, alignment: .center)
                 }
-                Text(agent.displayName)
-                    .font(.system(size: nameSize, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(linked ? Palette.text : Palette.secondary.opacity(0.4))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                .padding(.horizontal, 11).padding(.vertical, 9)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 6.5, style: .continuous)
-                    .fill(isSelected ? Color.white : Color.clear)
-                    .shadow(color: isSelected ? .black.opacity(0.14) : .clear, radius: 1.25, y: 0.5)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .background(expanded ? Palette.track.opacity(0.04) : Color.clear)
+
+            if expanded {
+                agentDetail(agent, linked: linked, session: session)
+            }
         }
-        .buttonStyle(.plain)
+        .overlay(alignment: .top) {
+            if divider { Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5) }
+        }
     }
 
-    /// Empty state when the selected agent isn't linked yet (e.g. Grok signed out).
-    private var connectAgentCard: some View {
-        let agent = selectedAgent
-        return VStack(spacing: 10) {
-            Text(String(agent.displayName.prefix(1)))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Palette.secondary.opacity(0.55))
-                .frame(width: 34, height: 34)
-                .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Palette.track.opacity(0.1))
-                )
-
-            VStack(spacing: 3) {
-                Text("Connect \(agent.displayName)")
-                    .font(.system(size: 13, weight: .semibold))
-                Text(connectSubtitle(for: agent))
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Palette.secondary.opacity(0.55))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+    /// Right side of a collapsed row: a live timer, an idle marker, or a
+    /// call to action when the agent has no linked account.
+    @ViewBuilder
+    private func agentRowTrailing(linked: Bool, session: SessionInfo?) -> some View {
+        if let session {
+            HStack(spacing: 5) {
+                SessionDot(active: true)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(elapsedClock(session, now: context.date))
+                        .font(.system(size: 11.5, weight: .medium))
+                        .monospacedDigit()
+                }
             }
+            .fixedSize()
+        } else if linked {
+            Text("idle")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Palette.secondary.opacity(0.45))
+                .fixedSize()
+        } else {
+            Text("Connect")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Palette.blue)
+                .fixedSize()
+        }
+    }
 
+    private func rowSubtitle(_ agent: AgentKind, linked: Bool, session: SessionInfo?) -> String {
+        guard linked else { return "Not connected" }
+        guard let session else { return "Connected" }
+        return settings.showProject ? session.projectName : "Project hidden"
+    }
+
+    private func toggleExpanded(_ agent: AgentKind) {
+        if expandedAgent == agent {
+            expandedAgent = nil
+            revealedAccountEmails.remove(agent)
+        } else {
+            expandedAgent = agent
+            // Keep the persisted selection in step so the same agent reopens
+            // expanded the next time the popover is shown.
+            settings.selectedAgent = agent
+        }
+    }
+
+    // MARK: Agent detail
+
+    @ViewBuilder
+    private func agentDetail(_ agent: AgentKind, linked: Bool, session: SessionInfo?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if linked {
+                accountRow(agent)
+                sessionSection(agent, session: session)
+                usageRows(for: agent)
+                statusSection(agent)
+            } else {
+                connectPrompt(agent)
+            }
+        }
+        .padding(.horizontal, 11).padding(.top, 2).padding(.bottom, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.track.opacity(0.04))
+        .overlay(alignment: .top) {
+            Rectangle().fill(.black.opacity(0.05)).frame(height: 0.5)
+        }
+    }
+
+    /// The signed-in account plus the plan tag, when the usage API reported one.
+    /// Email starts masked; tap to reveal (and tap again to hide).
+    private func accountRow(_ agent: AgentKind) -> some View {
+        let email = accountEmail(for: agent)
+        let revealed = revealedAccountEmails.contains(agent)
+        let label: String = {
+            guard let email else { return agent.providerName }
+            return revealed ? email : maskedEmail(email)
+        }()
+
+        return HStack(spacing: 8) {
+            if email != nil {
+                Button {
+                    if revealed {
+                        revealedAccountEmails.remove(agent)
+                    } else {
+                        revealedAccountEmails.insert(agent)
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(label)
+                            .font(.system(size: 12.5))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: revealed ? "eye.slash" : "eye")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Palette.secondary.opacity(0.45))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(revealed ? "Hide email" : "Show email")
+            } else {
+                Text(label)
+                    .font(.system(size: 12.5))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            if let plan = planName(for: agent), !plan.isEmpty {
+                Text(plan.capitalized)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Palette.track.opacity(0.12)))
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(.black.opacity(0.08), lineWidth: 0.5))
+                    .fixedSize()
+            }
+        }
+        .padding(.top, 9)
+    }
+
+    /// Who the agent is signed in as. Nil until the provider surfaces it —
+    /// each one reports on a different schedule.
+    private func accountEmail(for agent: AgentKind) -> String? {
+        switch agent {
+        case .claude: return usage.accountEmail
+        case .cursor: return cursorUsage.accountEmail
+        case .codex: return codexUsage.accountEmail
+        case .grok: return grokUsage.accountEmail
+        }
+    }
+
+    /// `pres@example.com` → `p•••@e••••••.com`. Keeps the shape readable while
+    /// hiding the address until the user taps to reveal.
+    private func maskedEmail(_ email: String) -> String {
+        guard let at = email.firstIndex(of: "@") else {
+            return String(repeating: "•", count: max(email.count, 4))
+        }
+        let local = String(email[..<at])
+        let domain = String(email[email.index(after: at)...])
+
+        let maskedLocal: String = {
+            guard let first = local.first else { return "•••" }
+            return String(first) + String(repeating: "•", count: max(3, local.count - 1))
+        }()
+
+        let maskedDomain: String = {
+            guard let dot = domain.lastIndex(of: ".") else {
+                return String(repeating: "•", count: max(3, domain.count))
+            }
+            let name = domain[..<dot]
+            let tld = domain[dot...]
+            guard let first = name.first else { return "••" + tld }
+            return String(first) + String(repeating: "•", count: max(2, name.count - 1)) + tld
+        }()
+
+        return maskedLocal + "@" + maskedDomain
+    }
+
+    private func planName(for agent: AgentKind) -> String? {
+        switch agent {
+        case .claude: return usage.current?.planName
+        case .cursor: return cursorUsage.current?.planName
+        case .codex: return codexUsage.current?.planType
+        case .grok: return nil
+        }
+    }
+
+    /// Project, model/tokens and what Discord is currently broadcasting.
+    private func sessionSection(_ agent: AgentKind, session: SessionInfo?) -> some View {
+        let active = session != nil
+        let sharing = active && settings.presenceEnabled && controller.activeAgent == agent
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondary.opacity(0.55))
+                Text(projectText(session))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .italic(!active || !settings.showProject)
+                    .foregroundStyle(active ? Palette.text : Palette.secondary.opacity(0.5))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(active ? "active" : "idle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.secondary.opacity(0.5))
+            }
+            Text(metaLine(session))
+                .font(.system(size: 11.5))
+                .italic(metaBits(session).isEmpty)
+                .foregroundStyle(Palette.secondary.opacity(metaBits(session).isEmpty ? 0.4 : 0.6))
+                .padding(.leading, 20)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(sharing ? Palette.discord : Palette.track.opacity(0.6))
+                    .frame(width: 5, height: 5)
+                Text(broadcastText(hasSession: active, presenceOn: settings.presenceEnabled, sharing: sharing))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.secondary.opacity(0.5))
+                    .lineLimit(1)
+            }
+            .padding(.leading, 20)
+        }
+        .padding(.top, 9)
+        .overlay(alignment: .top) {
+            Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
+        }
+    }
+
+    /// Detail-pane empty state when the agent has no linked account.
+    private func connectPrompt(_ agent: AgentKind) -> some View {
+        VStack(spacing: 9) {
+            Text("Link your \(agent.providerName) account to track sessions, usage and status here.")
+                .font(.system(size: 12))
+                .foregroundStyle(Palette.secondary.opacity(0.6))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             Button(action: { openConnectHelp(for: agent) }) {
                 Text("Connect \(agent.displayName)")
                     .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .padding(.horizontal, 15).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Palette.blue))
             }
             .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 14).padding(.vertical, 16)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
-    }
-
-    private func connectSubtitle(for agent: AgentKind) -> String {
-        "Link your \(agent.providerName) account to track usage, sessions and status here."
+        .padding(.top, 12).padding(.bottom, 2).padding(.horizontal, 8)
     }
 
     private func openConnectHelp(for agent: AgentKind) {
@@ -821,70 +1006,7 @@ struct MenuContentView: View {
     private var settingsSummary: String {
         let n = settings.enabledAgents.count
         if n == 0 { return "No agents" }
-        return n == 1 ? "1 agent on" : "\(n) agents on"
-    }
-
-    // MARK: Active session card
-
-    private var activeSessionCard: some View {
-        let session = selectedSession
-        let hasSession = session != nil
-        let sharing = hasSession && settings.presenceEnabled && controller.activeAgent == selectedAgent
-        let active = hasSession
-
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text(active ? "ACTIVE SESSION" : "LAST SESSION")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Palette.secondary.opacity(0.55))
-                Spacer()
-                HStack(spacing: 5) {
-                    SessionDot(active: active).id(active)
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(elapsedClock(session, now: context.date))
-                            .font(.system(size: 11.5, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(active ? Palette.text : Palette.secondary.opacity(0.45))
-                    }
-                }
-                .padding(.leading, 7).padding(.trailing, 8).padding(.vertical, 2)
-                .background(Capsule().fill(Palette.track.opacity(0.1)))
-            }
-
-            HStack(spacing: 7) {
-                Image(systemName: "folder")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Palette.secondary.opacity(0.55))
-                Text(projectText(session))
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .italic(!hasSession || !settings.showProject)
-                    .foregroundStyle((active && hasSession && settings.showProject) ? Palette.text : Palette.secondary.opacity(0.45))
-            }
-
-            Text(metaLine(session))
-                .font(.system(size: 12.5))
-                .italic(metaBits(session).isEmpty)
-                .foregroundStyle(active && !metaBits(session).isEmpty ? Palette.secondary.opacity(0.7) : Palette.secondary.opacity(0.4))
-                .padding(.leading, 21)
-
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(sharing ? Palette.discord : Palette.track.opacity(0.6))
-                    .frame(width: 5, height: 5)
-                Text(broadcastText(hasSession: hasSession, presenceOn: settings.presenceEnabled, sharing: sharing))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.secondary.opacity(0.5))
-            }
-            .padding(.top, 8)
-            .overlay(alignment: .top) {
-                Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
-            }
-        }
-        .padding(.vertical, 11).padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        return "\(n) of \(AgentKind.allCases.count) on"
     }
 
     private func elapsedClock(_ session: SessionInfo?, now: Date) -> String {
@@ -927,83 +1049,33 @@ struct MenuContentView: View {
         return "Waiting for a session"
     }
 
-    // MARK: Usage card
+    // MARK: Unified usage
 
-    @ViewBuilder
-    private var usageCard: some View {
-        if settings.unifiedUsage && visibleAgents.count > 1 {
-            unifiedUsageCard
-        } else {
-            switch selectedAgent {
-            case .claude:
-                claudeUsageCard
-            case .cursor:
-                cursorUsageCard
-            case .codex:
-                codexUsageCard
-            case .grok:
-                grokUsageCard
-            }
-        }
-    }
-
-    /// Shared "USAGE" card header: optional plan tag on the right plus the
-    /// unified-view toggle (hidden when only one agent is enabled).
-    private func usageCardHeader(plan: String? = nil) -> some View {
-        HStack(spacing: 6) {
-            Text("USAGE")
+    /// Top-of-popover summary: one headline bar per connected agent, so the
+    /// tightest limit across every agent is visible without expanding a row.
+    private var unifiedUsageCard: some View {
+        let agents = visibleAgents.filter { isAgentLinked($0) }
+        let entries = agents.map { (agent: $0, entry: unifiedUsageEntry(for: $0)) }
+        return VStack(alignment: .leading, spacing: 9) {
+            Text("UNIFIED USAGE")
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.5)
                 .foregroundStyle(Palette.secondary.opacity(0.55))
-            Spacer()
-            if let plan, !plan.isEmpty {
-                Text(plan.capitalized)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-            }
-            if visibleAgents.count > 1 {
-                unifiedUsageToggle
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Chip that switches the usage card between the selected agent and a
-    /// unified view of every connected agent.
-    private var unifiedUsageToggle: some View {
-        let active = settings.unifiedUsage
-        return Button {
-            settings.unifiedUsage.toggle()
-        } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 8, weight: .semibold))
-                Text("All")
-                    .font(.system(size: 10.5, weight: .medium))
-            }
-            .foregroundStyle(active ? Palette.blue : Palette.secondary.opacity(0.55))
-            .padding(.horizontal, 7).padding(.vertical, 2.5)
-            .background(Capsule().fill(active ? Palette.blue.opacity(0.12) : Palette.track.opacity(0.12)))
-            .overlay(Capsule().stroke(active ? Palette.blue.opacity(0.3) : Color.clear, lineWidth: 0.5))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// One card summarising the primary usage window of every connected agent.
-    private var unifiedUsageCard: some View {
-        let agents = visibleAgents.filter { isAgentLinked($0) }
-        return VStack(alignment: .leading, spacing: 10) {
-            usageCardHeader()
-            if agents.isEmpty {
+            if entries.isEmpty {
                 Text("No connected agents")
                     .font(.system(size: 12.5))
                     .foregroundStyle(Palette.secondary.opacity(0.45))
                     .italic()
             } else {
-                ForEach(agents) { agent in
-                    let entry = unifiedUsageEntry(for: agent)
-                    usageRow(entry.label, entry.window, accent: agentAccent(agent))
+                ForEach(entries, id: \.agent.id) { item in
+                    // Dim the bar for agents that aren't running right now, so
+                    // the live ones read first.
+                    let live = session(for: item.agent) != nil
+                    usageRow(
+                        item.entry.label,
+                        item.entry.window,
+                        accent: Palette.blue.opacity(live ? 1 : 0.55)
+                    )
                 }
             }
         }
@@ -1034,63 +1106,54 @@ struct MenuContentView: View {
         }
     }
 
-    private var claudeUsageCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            usageCardHeader(plan: usage.current?.planName)
-            if usage.current == nil {
-                Text("Waiting for Claude usage…")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-                    .italic()
-            } else {
-                // Keep severity colors (blue / orange / red) — same as before
-                // multi-agent. Brand accents are only for Grok's context bar.
-                usageRow("Current session", usage.current?.fiveHour)
-                usageRow("All models", usage.current?.weekly)
-                ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
-                    usageRow(scoped.modelName, scoped.window)
-                }
-            }
+    // MARK: Per-agent usage rows
 
-            if let error = controller.lastError {
-                Text(error)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.red)
-                    .fixedSize(horizontal: false, vertical: true)
+    /// Every usage window one agent reports, rendered bare so an expanded
+    /// accordion row can host them without a nested card.
+    @ViewBuilder
+    private func usageRows(for agent: AgentKind) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            switch agent {
+            case .claude: claudeUsageRows
+            case .cursor: cursorUsageRows
+            case .codex: codexUsageRows
+            case .grok: grokUsageRows
             }
         }
-        .padding(.vertical, 11).padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
-    private var cursorUsageCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            usageCardHeader(plan: cursorUsage.current?.planName)
-
-            if let info = cursorUsage.current {
-                cursorUsageRow("Included usage", info.included)
-                if let auto = info.auto {
-                    cursorUsageRow("Auto + Composer", auto)
-                }
-                if let api = info.api {
-                    cursorUsageRow("API models", api)
-                }
-                if let onDemand = info.onDemand {
-                    cursorUsageRow("On-demand", onDemand)
-                }
-            } else {
-                Text("Waiting for Cursor usage…")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-                    .italic()
+    @ViewBuilder
+    private var claudeUsageRows: some View {
+        if usage.current == nil {
+            usagePlaceholder("Waiting for Claude usage…")
+        } else {
+            // Severity colors (blue / orange / red) rather than brand accents —
+            // an approaching limit should read the same for every agent.
+            usageRow("Current session", usage.current?.fiveHour)
+            usageRow("All models", usage.current?.weekly)
+            ForEach(usage.current?.modelWeekly ?? [], id: \.modelName) { scoped in
+                usageRow(scoped.modelName, scoped.window)
             }
         }
-        .padding(.vertical, 11).padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        if let error = controller.lastError {
+            Text(error)
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var cursorUsageRows: some View {
+        if let info = cursorUsage.current {
+            cursorUsageRow("Included usage", info.included)
+            if let auto = info.auto { cursorUsageRow("Auto + Composer", auto) }
+            if let api = info.api { cursorUsageRow("API models", api) }
+            if let onDemand = info.onDemand { cursorUsageRow("On-demand", onDemand) }
+        } else {
+            usagePlaceholder("Waiting for Cursor usage…")
+        }
     }
 
     private func cursorUsageRow(_ label: String, _ window: CursorUsageInfo.Window) -> some View {
@@ -1100,73 +1163,42 @@ struct MenuContentView: View {
             severity: window.severity,
             resetsAt: window.resetsAt
         )
-        return usageRow(label, mapped, accent: agentAccent(.cursor).opacity(0.85))
+        return usageRow(label, mapped)
     }
 
-    private var codexUsageCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            usageCardHeader(plan: codexUsage.current?.planType)
-
-            if let info = codexUsage.current {
-                usageRow(
-                    info.primaryLabel,
-                    info.primary,
-                    accent: agentAccent(.codex)
-                )
-                if let secondary = info.secondary {
-                    let label = info.secondaryLabel ?? "Secondary limit"
-                    usageRow(
-                        label,
-                        secondary,
-                        accent: agentAccent(.codex)
-                    )
-                }
-                ForEach(info.additionalWindows) { scoped in
-                    usageRow(
-                        scoped.label,
-                        scoped.window,
-                        accent: agentAccent(.codex)
-                    )
-                }
-            } else {
-                Text("Waiting for Codex usage…")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-                    .italic()
+    @ViewBuilder
+    private var codexUsageRows: some View {
+        if let info = codexUsage.current {
+            usageRow(info.primaryLabel, info.primary)
+            if let secondary = info.secondary {
+                usageRow(info.secondaryLabel ?? "Secondary limit", secondary)
             }
+            ForEach(info.additionalWindows) { scoped in
+                usageRow(scoped.label, scoped.window)
+            }
+        } else {
+            usagePlaceholder("Waiting for Codex usage…")
         }
-        .padding(.vertical, 11).padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
     }
 
     /// Weekly SuperGrok / CLI credits from `/v1/billing?format=credits`.
-    private var grokUsageCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            usageCardHeader()
-
-            if let info = grokUsage.current {
-                usageRow("Weekly credits", info.weekly, accent: agentAccent(.grok))
-                if let onDemand = info.onDemand {
-                    usageRow("On-demand", onDemand, accent: agentAccent(.grok))
-                }
-            } else if grokUsage.isAuthenticated {
-                Text("Waiting for Grok usage…")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-                    .italic()
-            } else {
-                Text("Not signed in — run grok login")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-                    .italic()
-            }
+    @ViewBuilder
+    private var grokUsageRows: some View {
+        if let info = grokUsage.current {
+            usageRow("Weekly credits", info.weekly)
+            if let onDemand = info.onDemand { usageRow("On-demand", onDemand) }
+        } else if grokUsage.isAuthenticated {
+            usagePlaceholder("Waiting for Grok usage…")
+        } else {
+            usagePlaceholder("Not signed in — run grok login")
         }
-        .padding(.vertical, 11).padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+    }
+
+    private func usagePlaceholder(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12.5))
+            .foregroundStyle(Palette.secondary.opacity(0.45))
+            .italic()
     }
 
     private func agentAccent(_ agent: AgentKind) -> Color {
@@ -1257,176 +1289,60 @@ struct MenuContentView: View {
         return "\(minutes)m"
     }
 
-    // MARK: Provider status card
+    // MARK: Provider status
 
-    /// Surfaces the selected agent's provider status page (status.claude.com,
-    /// status.openai.com, status.cursor.com, status.x.ai). Hidden entirely
-    /// until the first successful fetch so a brief offline moment shows
-    /// nothing rather than a broken card.
+    /// One line at the foot of an expanded agent: overall provider health, any
+    /// active incident, and a link out to the full status page. Hidden until
+    /// the first successful fetch so a brief offline moment shows nothing
+    /// rather than a broken row.
     @ViewBuilder
-    private var statusCard: some View {
-        if let status = providerStatus.info(for: selectedAgent) {
-            providerStatusCard(
-                title: "\(selectedAgent.statusProviderLabel) status",
-                status: status,
-                pageURL: selectedAgent.statusPageURL
-            )
-        }
-    }
-
-    private func providerStatusCard(title: String, status: StatusInfo, pageURL: URL) -> some View {
-        VStack(spacing: 0) {
-            statusHeader(title: title, status: status)
-
-            if expandStatus {
-                let shown = displayComponents(status)
-                VStack(alignment: .leading, spacing: 9) {
-                    ForEach(Array(status.incidents.enumerated()), id: \.offset) { _, incident in
-                        incidentCallout(incident)
-                    }
-
-                    if !shown.isEmpty {
-                        VStack(alignment: .leading, spacing: 7) {
-                            ForEach(Array(shown.enumerated()), id: \.offset) { _, comp in
-                                componentRow(comp)
-                            }
-                            if status.components.count > shown.count {
-                                Text("+ \(status.components.count - shown.count) more operational")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Palette.secondary.opacity(0.4))
-                            }
+    private func statusSection(_ agent: AgentKind) -> some View {
+        if let status = providerStatus.info(for: agent) {
+            VStack(alignment: .leading, spacing: 5) {
+                Link(destination: agent.statusPageURL) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(statusPillStyle(status.level).dot)
+                            .frame(width: 6, height: 6)
+                        Text("\(agent.statusProviderLabel) · \(status.summaryLabel)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Palette.secondary.opacity(0.7))
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        HStack(spacing: 3) {
+                            Text("Status")
+                                .font(.system(size: 11))
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 9, weight: .semibold))
                         }
+                        .foregroundStyle(Palette.secondary.opacity(0.4))
+                        .fixedSize()
                     }
-
-                    statusFooter(status, pageURL: pageURL)
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 11).padding(.top, 9).padding(.bottom, 10)
-                .overlay(alignment: .top) {
-                    Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
+                .buttonStyle(.plain)
+
+                // Only the newest incident — the full list lives on the status page.
+                if let incident = status.incidents.first {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(incident.name)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Palette.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(incidentMeta(incident))
+                            .font(.system(size: 11))
+                            .monospacedDigit()
+                            .foregroundStyle(Palette.secondary.opacity(0.5))
+                    }
+                    .padding(.leading, 14)
                 }
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
-    }
-
-    /// Collapsed row: provider status label, severity pill, and expand chevron.
-    private func statusHeader(title: String, status: StatusInfo) -> some View {
-        let pill = statusPillStyle(status.level)
-        return Button {
-            expandStatus.toggle()
-        } label: {
-            HStack(spacing: 6) {
-                Text(title).font(.system(size: 13))
-                Spacer()
-                HStack(spacing: 5) {
-                    Circle().fill(pill.dot).frame(width: 6, height: 6)
-                    Text(status.summaryLabel)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(pill.text)
-                }
-                .padding(.leading, 6).padding(.trailing, 8).padding(.vertical, 2)
-                .background(Capsule().fill(pill.bg))
-                .overlay(Capsule().stroke(pill.border, lineWidth: 0.5))
-                Image(systemName: expandStatus ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Palette.secondary.opacity(0.35))
-                    // Pin the chevron's slot: chevron.down and chevron.right have
-                    // different widths, so without a fixed frame the pill beside
-                    // it shifts a pixel each time the section toggles.
-                    .frame(width: 10, alignment: .center)
-            }
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// An active incident, tinted by its impact.
-    private func incidentCallout(_ incident: StatusInfo.Incident) -> some View {
-        let tint = impactColor(incident.impact)
-        return HStack(alignment: .top, spacing: 8) {
-            Circle().fill(tint).frame(width: 6, height: 6).padding(.top, 4)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(incident.name)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.text)
-                    .lineSpacing(1)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(incidentMeta(incident))
-                    .font(.system(size: 11))
-                    .monospacedDigit()
-                    .foregroundStyle(Palette.secondary.opacity(0.55))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tint.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(tint.opacity(0.2), lineWidth: 0.5))
-    }
-
-    /// One row of the per-component breakdown.
-    private func componentRow(_ comp: StatusInfo.Component) -> some View {
-        let color = componentColor(comp.status)
-        return HStack(spacing: 10) {
-            Text(comp.name)
-                .font(.system(size: 12.5))
-                .foregroundStyle(Palette.text)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 5) {
-                Circle().fill(color).frame(width: 6, height: 6)
-                Text(comp.status.label)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(color)
-                    .fixedSize()
-            }
-        }
-    }
-
-    /// Long component lists (OpenAI's page has ~25) would stretch the popover,
-    /// so cap the breakdown, keeping every non-operational component visible.
-    private func displayComponents(_ status: StatusInfo) -> [StatusInfo.Component] {
-        let cap = 10
-        let components = status.components
-        guard components.count > cap else { return components }
-        let degraded = components.filter { !$0.status.isOperational }
-        let operational = components.filter { $0.status.isOperational }
-        return Array((degraded + operational).prefix(max(cap, degraded.count)))
-    }
-
-    /// Footer summary line plus a link out to the full status page.
-    private func statusFooter(_ status: StatusInfo, pageURL: URL) -> some View {
-        let updated = "updated \(relativeUpdated(status.fetchedAt))"
-        let summary: String
-        if status.degradedCount > 0 {
-            summary = "\(status.degradedCount) of \(status.components.count) degraded · \(updated)"
-        } else if status.components.isEmpty {
-            // xAI's feed has no component breakdown, only incidents.
-            summary = status.incidents.isEmpty
-                ? "No active incidents · \(updated)"
-                : "\(status.incidents.count) active \(status.incidents.count == 1 ? "incident" : "incidents") · \(updated)"
-        } else {
-            summary = "All systems operational · \(updated)"
-        }
-        return Link(destination: pageURL) {
-            HStack {
-                Text(summary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.secondary.opacity(0.5))
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Palette.secondary.opacity(0.35))
-            }
-            .padding(.top, 8)
-            .contentShape(Rectangle())
+            .padding(.top, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .top) {
                 Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
             }
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: Status formatting
@@ -1443,25 +1359,6 @@ struct MenuContentView: View {
             return (Palette.blue.opacity(0.12), Palette.blue.opacity(0.3), Palette.blue, Palette.blueText)
         case .unknown:
             return (Palette.track.opacity(0.14), Palette.track.opacity(0.28), Palette.track, Palette.secondary.opacity(0.7))
-        }
-    }
-
-    private func componentColor(_ status: StatusInfo.ComponentStatus) -> Color {
-        switch status {
-        case .operational: return Palette.green
-        case .degraded, .partialOutage: return Palette.orange
-        case .majorOutage: return Palette.red
-        case .maintenance: return Palette.blue
-        case .unknown: return Palette.track
-        }
-    }
-
-    private func impactColor(_ impact: String) -> Color {
-        switch impact {
-        case "critical": return Palette.red
-        case "minor": return Palette.yellow
-        case "maintenance": return Palette.blue
-        default: return Palette.orange   // "major" and anything else
         }
     }
 
@@ -1483,15 +1380,6 @@ struct MenuContentView: View {
             return m > 0 ? "\(h)h \(m)m" : "\(h)h"
         }
         return "\(secs / 86400)d"
-    }
-
-    /// Relative freshness for the footer: "just now", "5m ago", "2h ago".
-    private func relativeUpdated(_ date: Date) -> String {
-        let secs = max(0, Int(Date().timeIntervalSince(date)))
-        if secs < 60 { return "just now" }
-        if secs < 3600 { return "\(secs / 60)m ago" }
-        if secs < 86400 { return "\(secs / 3600)h ago" }
-        return "\(secs / 86400)d ago"
     }
 
     // MARK: Agents settings
@@ -1601,7 +1489,8 @@ struct MenuContentView: View {
         VStack(spacing: 7) {
             collapsible(title: "Display & menu bar", summary: displaySummary, expanded: $expandDisplay) {
                 VStack(spacing: 0) {
-                    toggleRow("Show project", $settings.showProject, size: 12.5, divider: false)
+                    toggleRow("Show unified usage", $settings.unifiedUsage, size: 12.5, divider: false)
+                    toggleRow("Show project", $settings.showProject, size: 12.5, divider: true)
                     toggleRow("Show model", $settings.showModel, size: 12.5, divider: true)
                     toggleRow("Show tokens", $settings.showTokens, size: 12.5, divider: true)
                     toggleRow("Show status in menu bar", $settings.showMenuBarStatus, size: 12.5, divider: true)
@@ -1675,8 +1564,8 @@ struct MenuContentView: View {
 
     private var displaySummary: String {
         let count = [
-            settings.showProject, settings.showModel, settings.showTokens,
-            settings.showMenuBarStatus, settings.showUsageInMenuBar
+            settings.unifiedUsage, settings.showProject, settings.showModel,
+            settings.showTokens, settings.showMenuBarStatus, settings.showUsageInMenuBar
         ].filter { $0 }.count
         return "\(count) on"
     }

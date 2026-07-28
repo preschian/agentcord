@@ -22,6 +22,9 @@ final class CursorUsage: ObservableObject {
     /// True when a Cursor access token is present in the local state DB.
     @Published private(set) var isAuthenticated = false
 
+    /// Email of the signed-in Cursor account, cached by the Cursor app itself.
+    @Published private(set) var accountEmail: String?
+
     var pollInterval: TimeInterval = 300
     var minFetchInterval: TimeInterval = 60
     /// How long a disk-cached snapshot may still be shown after the last
@@ -42,6 +45,7 @@ final class CursorUsage: ObservableObject {
     private static let legacyUsageURL = URL(string: "https://api2.cursor.sh/auth/usage")!
     private static let accessTokenKey = "cursorAuth/accessToken"
     private static let membershipKey = "cursorAuth/stripeMembershipType"
+    private static let emailKey = "cursorAuth/cachedEmail"
 
     private static let cacheURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -68,6 +72,8 @@ final class CursorUsage: ObservableObject {
             lastSuccess = cached.fetchedAt
         }
         isAuthenticated = Self.readAccessToken() != nil
+        // Local read, so it's cheap enough to have ready before the first poll.
+        if isAuthenticated { accountEmail = Self.readEmail() }
     }
 
     func start() {
@@ -100,10 +106,12 @@ final class CursorUsage: ObservableObject {
         lastAttempt = now
         guard let token = Self.readAccessToken() else {
             publishAuth(false)
+            publishEmail(nil)
             handleFailure()
             return
         }
         publishAuth(true)
+        publishEmail(Self.readEmail())
 
         let membership = Self.readMembershipType()
 
@@ -196,6 +204,14 @@ final class CursorUsage: ObservableObject {
         }
     }
 
+    private func publishEmail(_ email: String?) {
+        let cleaned = (email?.isEmpty == false) ? email : nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.accountEmail != cleaned { self.accountEmail = cleaned }
+        }
+    }
+
     // MARK: Token
 
     /// Reads Cursor's OAuth access token from the local SQLite state database
@@ -206,6 +222,12 @@ final class CursorUsage: ObservableObject {
 
     private static func readMembershipType() -> String? {
         readStateValue(forKey: membershipKey)
+    }
+
+    /// The signed-in account's email, which the Cursor app caches alongside its
+    /// tokens. Stored as a bare string, not JSON.
+    private static func readEmail() -> String? {
+        readStateValue(forKey: emailKey)?.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
     }
 
     private static func readStateValue(forKey key: String) -> String? {

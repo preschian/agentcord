@@ -749,6 +749,9 @@ struct MenuContentView: View {
             expandedAgent = nil
             revealedAccountEmails.remove(agent)
         } else {
+            if let previouslyExpanded = expandedAgent {
+                revealedAccountEmails.remove(previouslyExpanded)
+            }
             expandedAgent = agent
             // Keep the persisted selection in step so the same agent reopens
             // expanded the next time the popover is shown.

@@ -77,6 +77,10 @@ final class ClaudeUsage: ObservableObject {
     /// When the plan was last fetched. Plans change rarely, so we refresh at
     /// most once per `planRefreshInterval`. Only touched on `queue`.
     private var planFetchedAt: Date = .distantPast
+    /// Token used for the last profile lookup. A changed token can belong to a
+    /// different account, so it must invalidate both the throttle and identity.
+    /// Only touched on `queue`.
+    private var lastProfileAccessToken: String?
     var planRefreshInterval: TimeInterval = 86_400 // 24h
 
     /// Disk cache so a relaunch (or a stretch of 429s) still shows the last
@@ -148,10 +152,18 @@ final class ClaudeUsage: ObservableObject {
         guard now.timeIntervalSince(lastAttempt) >= minFetchInterval else { return }
         lastAttempt = now
         guard let token = Self.readAccessToken() else {
+            lastProfileAccessToken = nil
+            planFetchedAt = .distantPast
+            publishAccountEmail(nil)
             handleFailure()
             return
         }
 
+        if lastProfileAccessToken != token {
+            lastProfileAccessToken = token
+            planFetchedAt = .distantPast
+            publishAccountEmail(nil)
+        }
         fetchPlanIfStale(token: token)
 
         let request = Self.makeRequest(url: Self.endpoint, token: token)
@@ -199,11 +211,7 @@ final class ClaudeUsage: ObservableObject {
                     return
                 }
 
-                if let email = decoded.account?.email, !email.isEmpty {
-                    DispatchQueue.main.async {
-                        if self.accountEmail != email { self.accountEmail = email }
-                    }
-                }
+                self.publishAccountEmail(decoded.account?.email)
 
                 // The plan is optional in the response — an account with neither
                 // an organization type nor the plan booleans yields none, and
@@ -247,6 +255,14 @@ final class ClaudeUsage: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.current != info { self.current = info }
+        }
+    }
+
+    private func publishAccountEmail(_ email: String?) {
+        let cleaned = (email?.isEmpty == false) ? email : nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.accountEmail != cleaned { self.accountEmail = cleaned }
         }
     }
 

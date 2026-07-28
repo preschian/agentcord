@@ -176,10 +176,14 @@ final class CursorSession: ObservableObject {
         // not just the age of the current chat.
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let cutoffMs = nowMs - Self.lookbackMs
+        let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoffMs) / 1000)
+        // Skip historical transcripts before parsing — otherwise a long-lived
+        // Cursor install re-reads every JSONL on each active scan.
+        let recentFiles = files.filter { $0.date >= cutoffDate }
         var totalActiveMs: Int64 = 0
         var activeLastMs: Int64?
 
-        for file in files {
+        for file in recentFiles {
             let entry = transcriptAggregate(url: file.url, mtime: file.date)
             let (activeMs, lastMs) = Self.activeDuration(
                 conversationalStamps: entry.conversationalStampsMs,
@@ -194,8 +198,8 @@ final class CursorSession: ObservableObject {
             }
         }
 
-        let liveURLs = Set(files.map(\.url))
-        transcriptCache = transcriptCache.filter { liveURLs.contains($0.key) }
+        let recentURLs = Set(recentFiles.map(\.url))
+        transcriptCache = transcriptCache.filter { recentURLs.contains($0.key) }
 
         var elapsedMs = totalActiveMs
         if let last = activeLastMs {
@@ -345,12 +349,12 @@ final class CursorSession: ObservableObject {
         else { return nil }
 
         let offsetBody = trimmed[utc.upperBound..<trimmed.index(before: trimmed.endIndex)]
-        guard let offsetHours = Int(offsetBody) else { return nil }
+        guard let offsetSeconds = parseUTCOffsetSeconds(offsetBody) else { return nil }
         let body = trimmed[..<utc.lowerBound].trimmingCharacters(in: .whitespaces)
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: offsetHours * 3600)
+        formatter.timeZone = TimeZone(secondsFromGMT: offsetSeconds)
         for format in ["EEEE, MMM d, yyyy, h:mm a", "EEEE, MMMM d, yyyy, h:mm a"] {
             formatter.dateFormat = format
             if let date = formatter.date(from: String(body)) {
@@ -358,6 +362,24 @@ final class CursorSession: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// Parses Cursor's UTC offset forms: `+7`, `-3`, `+05:30`, `+5:45`, `-3:30`.
+    private static func parseUTCOffsetSeconds(_ raw: Substring) -> Int? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let signChar = trimmed.first, signChar == "+" || signChar == "-" else { return nil }
+        let sign = signChar == "-" ? -1 : 1
+        let body = trimmed.dropFirst()
+        let parts = body.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let hours = Int(parts[0]), hours >= 0, hours <= 18 else { return nil }
+        let minutes: Int
+        if parts.count == 2 {
+            guard let parsed = Int(parts[1]), (0...59).contains(parsed) else { return nil }
+            minutes = parsed
+        } else {
+            minutes = 0
+        }
+        return sign * (hours * 3600 + minutes * 60)
     }
 
     // MARK: Meta lookup

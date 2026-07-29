@@ -22,6 +22,11 @@ final class ClaudeUsage: ObservableObject {
     /// The latest usage snapshot, or nil when it could not be fetched.
     @Published private(set) var current: UsageInfo?
 
+    /// Email of the signed-in Claude account, from the OAuth profile. Nil until
+    /// the first profile fetch lands. Not cached to disk — it's identity, so we
+    /// would rather show nothing than a stale account after a re-login.
+    @Published private(set) var accountEmail: String?
+
     /// How often to refresh while the app runs. The numbers move slowly and the
     /// endpoint rate-limits aggressively (HTTP 429), so we poll sparingly.
     var pollInterval: TimeInterval = 300
@@ -72,6 +77,10 @@ final class ClaudeUsage: ObservableObject {
     /// When the plan was last fetched. Plans change rarely, so we refresh at
     /// most once per `planRefreshInterval`. Only touched on `queue`.
     private var planFetchedAt: Date = .distantPast
+    /// Token used for the last profile lookup. A changed token can belong to a
+    /// different account, so it must invalidate both the throttle and identity.
+    /// Only touched on `queue`.
+    private var lastProfileAccessToken: String?
     var planRefreshInterval: TimeInterval = 86_400 // 24h
 
     /// Disk cache so a relaunch (or a stretch of 429s) still shows the last
@@ -143,10 +152,18 @@ final class ClaudeUsage: ObservableObject {
         guard now.timeIntervalSince(lastAttempt) >= minFetchInterval else { return }
         lastAttempt = now
         guard let token = Self.readAccessToken() else {
+            lastProfileAccessToken = nil
+            planFetchedAt = .distantPast
+            publishAccountEmail(nil)
             handleFailure()
             return
         }
 
+        if lastProfileAccessToken != token {
+            lastProfileAccessToken = token
+            planFetchedAt = .distantPast
+            publishAccountEmail(nil)
+        }
         fetchPlanIfStale(token: token)
 
         let request = Self.makeRequest(url: Self.endpoint, token: token)
@@ -177,9 +194,10 @@ final class ClaudeUsage: ObservableObject {
         }.resume()
     }
 
-    /// Refreshes the plan label from the OAuth profile endpoint, at most once
-    /// per `planRefreshInterval`. Best-effort: any failure keeps the last known
-    /// plan (possibly restored from the disk cache). Runs on `queue`.
+    /// Refreshes the plan label and account email from the OAuth profile
+    /// endpoint, at most once per `planRefreshInterval`. Best-effort: any
+    /// failure keeps the last known plan (possibly restored from the disk
+    /// cache). Runs on `queue`.
     private func fetchPlanIfStale(token: String) {
         guard Date().timeIntervalSince(planFetchedAt) >= planRefreshInterval else { return }
         planFetchedAt = Date() // Even on failure, don't retry before the next interval.
@@ -189,10 +207,16 @@ final class ClaudeUsage: ObservableObject {
             guard let self else { return }
             self.queue.async {
                 guard (response as? HTTPURLResponse)?.statusCode == 200, let data,
-                      let decoded = try? JSONDecoder().decode(ProfileResponse.self, from: data),
-                      let plan = decoded.planLabel else {
+                      let decoded = try? JSONDecoder().decode(ProfileResponse.self, from: data) else {
                     return
                 }
+
+                self.publishAccountEmail(decoded.account?.email)
+
+                // The plan is optional in the response — an account with neither
+                // an organization type nor the plan booleans yields none, and
+                // that must not discard the email above.
+                guard let plan = decoded.planLabel else { return }
                 self.planName = plan
                 // Re-publish the current snapshot with the (possibly new) plan
                 // so the popover doesn't wait for the next usage poll.
@@ -231,6 +255,14 @@ final class ClaudeUsage: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.current != info { self.current = info }
+        }
+    }
+
+    private func publishAccountEmail(_ email: String?) {
+        let cleaned = (email?.isEmpty == false) ? email : nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.accountEmail != cleaned { self.accountEmail = cleaned }
         }
     }
 
@@ -385,12 +417,14 @@ final class ClaudeUsage: ObservableObject {
 
 // MARK: - Wire format
 
-/// The subset of the `/api/oauth/profile` response we care about: just enough
-/// to name the subscription plan. Every field is optional — a missing or
-/// renamed key silently yields no plan rather than failing the fetch.
+/// The subset of the `/api/oauth/profile` response we care about: the
+/// subscription plan and the signed-in account's email. Every field is optional
+/// — a missing or renamed key silently yields nothing rather than failing the
+/// fetch.
 private struct ProfileResponse: Decodable {
 
     struct Account: Decodable {
+        let email: String?
         let has_claude_max: Bool?
         let has_claude_pro: Bool?
     }

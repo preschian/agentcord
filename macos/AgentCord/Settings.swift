@@ -47,8 +47,8 @@ final class SettingsStore: ObservableObject {
     @Published var showProject: Bool { didSet { defaults.set(showProject, forKey: Key.showProject) } }
     @Published var showMenuBarStatus: Bool { didSet { defaults.set(showMenuBarStatus, forKey: Key.showMenuBarStatus) } }
     @Published var showUsageInMenuBar: Bool { didSet { defaults.set(showUsageInMenuBar, forKey: Key.showUsageInMenuBar) } }
-    /// Show one usage card covering every connected agent instead of the
-    /// selected agent's card.
+    /// Show the summary card covering every connected agent above the agent
+    /// list. Each agent's own windows still live in its expanded row.
     @Published var unifiedUsage: Bool { didSet { defaults.set(unifiedUsage, forKey: Key.unifiedUsage) } }
     @Published var doNotDisturb: Bool { didSet { defaults.set(doNotDisturb, forKey: Key.doNotDisturb) } }
     @Published var preventSleep: Bool { didSet { defaults.set(preventSleep, forKey: Key.preventSleep) } }
@@ -75,7 +75,7 @@ final class SettingsStore: ObservableObject {
             Key.showProject: true,
             Key.showMenuBarStatus: true,
             Key.showUsageInMenuBar: false,
-            Key.unifiedUsage: false,
+            Key.unifiedUsage: true,
             Key.doNotDisturb: false,
             Key.preventSleep: false,
             Key.smallImageKey: "discord-presence-icon",

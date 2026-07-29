@@ -170,19 +170,19 @@ final class PresenceController: ObservableObject {
     }
 
     private func buildPresence(from info: SessionInfo) -> RichPresence {
-        // Header (bold title): the model, e.g. "Opus 4.8".
-        let name = (settings.showModel ? info.model : nil) ?? "agentcord"
+        // Match Windows: agent name as the bold title, model on the second
+        // line, project + tokens combined on the third.
+        let name = info.agent.displayName
+        let details = settings.showModel ? info.model : nil
 
-        // details: the repository being worked on.
-        let details = settings.showProject ? "Working on: \(info.projectName)" : nil
-
-        // state: token usage.
-        let state: String?
-        if settings.showTokens, info.totalTokens > 0 {
-            state = "\(Self.formatTokens(info.totalTokens)) tokens"
-        } else {
-            state = nil
+        var stateParts: [String] = []
+        if settings.showProject {
+            stateParts.append("Working on: \(info.projectName)")
         }
+        if settings.showTokens, info.totalTokens > 0 {
+            stateParts.append("\(Self.formatTokens(info.totalTokens)) tokens")
+        }
+        let state = stateParts.isEmpty ? nil : stateParts.joined(separator: " · ")
 
         let assets = Assets(
             large_image: Self.logoAsset(for: info.agent),
@@ -201,7 +201,7 @@ final class PresenceController: ObservableObject {
             state: state,
             timestamps: Timestamps(start: info.startEpochMs, end: nil),
             assets: assets,
-            buttons: [Self.presenceButton(for: info.agent), Self.repoButton]
+            buttons: [Self.repoButton]
         )
     }
 
@@ -219,19 +219,6 @@ final class PresenceController: ObservableObject {
         label: "AgentCord on GitHub",
         url: "https://github.com/preschian/agentcord"
     )
-
-    private static func presenceButton(for agent: AgentKind) -> PresenceButton {
-        switch agent {
-        case .codex:
-            return PresenceButton(label: "What is Codex", url: "https://developers.openai.com/codex")
-        case .claude:
-            return PresenceButton(label: "What is Claude Code", url: "https://www.anthropic.com")
-        case .cursor:
-            return PresenceButton(label: "What is Cursor", url: "https://cursor.com")
-        case .grok:
-            return PresenceButton(label: "What is Grok", url: "https://grok.com")
-        }
-    }
 
     static func formatTokens(_ count: Int) -> String {
         if count >= 1_000_000 {

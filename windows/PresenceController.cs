@@ -131,7 +131,6 @@ public sealed class PresenceController : IDisposable
             },
             Buttons =
             [
-                AgentButton(info.Agent),
                 RepoButton,
             ],
         };
@@ -139,20 +138,6 @@ public sealed class PresenceController : IDisposable
 
     public SessionInfo? SessionFor(AgentKind agent) =>
         agent == AgentKind.Codex ? CodexSession : ClaudeSession;
-
-    private static PresenceButton AgentButton(AgentKind agent) => agent switch
-    {
-        AgentKind.Codex => new PresenceButton
-        {
-            Label = "What is Codex",
-            Url = "https://developers.openai.com/codex",
-        },
-        _ => new PresenceButton
-        {
-            Label = "What is Claude Code",
-            Url = "https://www.anthropic.com",
-        },
-    };
 
     private static PresenceButton RepoButton => new()
     {

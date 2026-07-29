@@ -22,6 +22,9 @@ final class GrokUsage: ObservableObject {
     /// True when ~/.grok/auth.json has usable OIDC credentials.
     @Published private(set) var isAuthenticated = false
 
+    /// Email of the signed-in xAI account, recorded in ~/.grok/auth.json.
+    @Published private(set) var accountEmail: String?
+
     var pollInterval: TimeInterval = 300
     var minFetchInterval: TimeInterval = 60
     /// How long a disk-cached snapshot may still be shown after the last
@@ -222,6 +225,14 @@ final class GrokUsage: ObservableObject {
         }
     }
 
+    private func publishEmail(_ email: String?) {
+        let cleaned = (email?.isEmpty == false) ? email : nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.accountEmail != cleaned { self.accountEmail = cleaned }
+        }
+    }
+
     // MARK: Credentials
 
     private func loadCredentialsFromDiskIfNeeded() {
@@ -231,12 +242,14 @@ final class GrokUsage: ObservableObject {
             cachedClientID = nil
             cachedIssuer = nil
             cachedUserID = nil
+            publishEmail(nil)
             return
         }
         cachedRefreshToken = auth.refreshToken
         cachedClientID = auth.clientID
         cachedIssuer = auth.issuer
         cachedUserID = auth.userID
+        publishEmail(auth.email)
         if let access = auth.accessToken, !access.isEmpty {
             cachedAccessToken = access
         }
@@ -248,6 +261,7 @@ final class GrokUsage: ObservableObject {
         var clientID: String?
         var issuer: String?
         var userID: String?
+        var email: String?
     }
 
     private static func authFileURL() -> URL? {
@@ -282,7 +296,8 @@ final class GrokUsage: ObservableObject {
                 refreshToken: refresh,
                 clientID: obj["oidc_client_id"] as? String,
                 issuer: obj["oidc_issuer"] as? String,
-                userID: obj["user_id"] as? String
+                userID: obj["user_id"] as? String,
+                email: obj["email"] as? String
             )
         }
         return nil

@@ -26,9 +26,11 @@ fix(windows): handle missing Discord IPC socket
 docs: clarify one-time Discord setup
 ```
 
-## Relaunch the app after every change (macOS)
+## Relaunch the app after every change
 
-After every change under `macos/`, rebuild and relaunch the app so the change is actually running. Other trees build differently — `windows/` (dotnet), `web/` (bun), `native/` (zig); see each directory's `README.md`.
+After every change under `macos/` or `windows/`, rebuild and relaunch the app so the change is actually running. Other trees build differently — `web/` (bun), `native/` (zig); see each directory's `README.md`.
+
+### macOS
 
 ```sh
 pkill -x AgentCord || true
@@ -37,3 +39,15 @@ open "$(xcodebuild -project macos/AgentCord.xcodeproj -scheme AgentCord -configu
 ```
 
 The app is a menu bar utility (sparkles icon) — it has no Dock icon or window, so check the menu bar to confirm it relaunched.
+
+### Windows
+
+Run the built `WinExe` directly — do **not** use `dotnet run`, which opens a console host window.
+
+```powershell
+Get-Process -Name AgentCord -ErrorAction SilentlyContinue | Stop-Process -Force
+dotnet build windows -c Debug --nologo
+Start-Process "windows\bin\Debug\net8.0-windows\AgentCord.exe"
+```
+
+The app lives in the system tray (no taskbar entry) — check the tray to confirm it relaunched.

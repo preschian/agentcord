@@ -96,16 +96,10 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void RefreshTooltip()
     {
-        var text = "AgentCord";
-        if (_controller.CurrentSession is { } session)
-        {
-            var bits = new List<string> { session.ProjectName };
-            if (session.Model is not null) bits.Add(session.Model);
-            bits.Add(Format.Elapsed(Format.NowMs() - session.StartEpochMs));
-            text = $"AgentCord — {string.Join(" · ", bits)}";
-        }
-        // NotifyIcon.Text throws past 127 characters.
-        if (text.Length > 127) text = text[..126] + "…";
+        // Mirrors the macOS menu bar line: session bits + compact usage.
+        // NotifyIcon.Text is plain text (multi-line via \n) and capped at 127 chars.
+        var text = TrayStatusText.Build(
+            _settings, _controller, _usage.Current, _codexUsage.Current, _cursorUsage.Current);
         if (_notifyIcon.Text != text) _notifyIcon.Text = text;
     }
 

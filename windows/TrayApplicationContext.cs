@@ -14,6 +14,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly PresenceController _controller;
     private readonly ClaudeUsage _usage = new();
     private readonly CodexUsage _codexUsage = new();
+    private readonly CursorUsage _cursorUsage = new();
     private readonly AnthropicStatus _status = new();
     private readonly SleepGuard _sleepGuard = new();
 
@@ -51,6 +52,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _controller.Start();
         _usage.Start();
         _codexUsage.Start();
+        _cursorUsage.Start();
         _status.Start();
 
         // Clear the presence even when the process exits via logoff/shutdown
@@ -72,7 +74,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// NotifyIcon.</summary>
     private PopoverWindow Popover =>
         _popover ??= new PopoverWindow(
-            _settings, _controller, _usage, _codexUsage, _status, _sleepGuard, Quit);
+            _settings, _controller, _usage, _codexUsage, _cursorUsage, _status, _sleepGuard, Quit);
 
     private void BuildMenu()
     {
@@ -128,6 +130,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _controller.Shutdown();
         _usage.Dispose();
         _codexUsage.Dispose();
+        _cursorUsage.Dispose();
         _status.Dispose();
         _sleepGuard.SetEnabled(false);
         _notifyIcon.Visible = false;

@@ -1,10 +1,11 @@
-// Detects the currently active Cursor agent session by scanning
-// %USERPROFILE%\.cursor\projects\**\agent-transcripts\**\*.jsonl and enriching
-// with %USERPROFILE%\.cursor\chats\**\<session-id>\meta.json (cwd, timestamps)
-// plus the sibling store.db (`lastUsedModel`) when sqlite3 is on PATH.
+// Detects the currently active Cursor agent session from:
+//   1. %USERPROFILE%\.cursor\projects\**\agent-transcripts\**\*.jsonl (CLI)
+//   2. T3 Code's ~/.t3/userdata/state.sqlite when provider is Cursor
+//   3. %USERPROFILE%\.cursor\acp-sessions\** (live ACP turn signal)
 //
-// Covers Cursor CLI and Cursor driven through T3 Code — both write agent
-// transcripts under ~/.cursor. Port of AgentCord/CursorSession.swift.
+// Enrich transcripts with ~/.cursor/chats/**/<session-id>/meta.json plus
+// store.db (`lastUsedModel`) when sqlite3 is on PATH. Port of
+// AgentCord/CursorSession.swift, extended for T3 Code / ACP on Windows.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -28,6 +29,8 @@ public sealed class CursorSession
 
     private readonly string _projectsDir;
     private readonly string _chatsDir;
+    private readonly string _acpDir;
+    private readonly T3CursorSession _t3Scanner = new();
     private readonly Dictionary<string, string> _metaBySessionId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _repoNameCache = [];
     private readonly Dictionary<string, (DateTime? Stamp, string? Model)> _modelCache = [];
@@ -39,10 +42,19 @@ public sealed class CursorSession
         var cursorHome = Path.Combine(home, ".cursor");
         _projectsDir = Path.Combine(cursorHome, "projects");
         _chatsDir = Path.Combine(cursorHome, "chats");
+        _acpDir = Path.Combine(cursorHome, "acp-sessions");
     }
 
-    /// <summary>Scan for the newest live Cursor agent transcript, or null.</summary>
+    /// <summary>Newest live Cursor session across CLI transcripts, T3 Code, and ACP.</summary>
     public SessionInfo? Scan()
+    {
+        _t3Scanner.ActiveWindowSeconds = ActiveWindowSeconds;
+        return new[] { ScanTranscripts(), _t3Scanner.Scan(), ScanAcp() }
+            .Where(s => s is not null)
+            .MaxBy(s => s!.LastModifiedMs);
+    }
+
+    private SessionInfo? ScanTranscripts()
     {
         List<(string Path, DateTime Mtime)> files;
         try
@@ -117,6 +129,89 @@ public sealed class CursorSession
             LastModifiedMs = activityMs,
             Agent = AgentKind.Cursor,
         };
+    }
+
+    /// <summary>T3 Code (and other ACP hosts) keep the live turn in
+    /// acp-sessions/*/store.db(-wal) even when agent-transcripts are idle.</summary>
+    private SessionInfo? ScanAcp()
+    {
+        try
+        {
+            if (!Directory.Exists(_acpDir)) return null;
+
+            string? bestDir = null;
+            DateTime bestMtime = DateTime.MinValue;
+            foreach (var dir in Directory.EnumerateDirectories(_acpDir))
+            {
+                var mtime = AcpActivityUtc(dir);
+                if (mtime is null) continue;
+                if (mtime > bestMtime)
+                {
+                    bestMtime = mtime.Value;
+                    bestDir = dir;
+                }
+            }
+
+            if (bestDir is null) return null;
+            if ((DateTime.UtcNow - bestMtime).TotalSeconds > ActiveWindowSeconds) return null;
+
+            string? cwd = null;
+            var metaPath = Path.Combine(bestDir, "meta.json");
+            if (File.Exists(metaPath))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(File.ReadAllText(metaPath));
+                    if (doc.RootElement.TryGetProperty("cwd", out var cwdEl)
+                        && cwdEl.ValueKind == JsonValueKind.String)
+                    {
+                        cwd = cwdEl.GetString();
+                    }
+                }
+                catch
+                {
+                    // meta is optional enrichment.
+                }
+            }
+
+            var project = string.IsNullOrWhiteSpace(cwd) ? "Cursor" : RepoName(cwd!);
+            var activityMs = new DateTimeOffset(bestMtime).ToUnixTimeMilliseconds();
+            var createdMs = new DateTimeOffset(Directory.GetCreationTimeUtc(bestDir)).ToUnixTimeMilliseconds();
+
+            return new SessionInfo
+            {
+                ProjectName = project,
+                Model = null,
+                StartEpochMs = createdMs > 0 && createdMs <= activityMs ? createdMs : activityMs,
+                TotalTokens = 0,
+                LastModifiedMs = activityMs,
+                Agent = AgentKind.Cursor,
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static DateTime? AcpActivityUtc(string dir)
+    {
+        DateTime? best = null;
+        foreach (var name in new[] { "store.db-wal", "store.db", "meta.json" })
+        {
+            var path = Path.Combine(dir, name);
+            try
+            {
+                if (!File.Exists(path)) continue;
+                var mtime = File.GetLastWriteTimeUtc(path);
+                if (best is null || mtime > best) best = mtime;
+            }
+            catch
+            {
+                // skip locked/vanished files
+            }
+        }
+        return best;
     }
 
     private sealed record TranscriptCacheEntry(

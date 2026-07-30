@@ -109,6 +109,19 @@ public sealed record UsageInfo
     public IReadOnlyList<ModelUsageWindow> ModelWeekly { get; init; } = [];
 }
 
+// --- Cursor subscription usage
+
+/// <summary>Cursor billing-period usage from the undocumented dashboard API.</summary>
+public sealed record CursorUsageInfo
+{
+    public required UsageWindow Included { get; init; }
+    public UsageWindow? Auto { get; init; }
+    public UsageWindow? Api { get; init; }
+    public UsageWindow? OnDemand { get; init; }
+    /// <summary>Human-readable plan name, e.g. "pro".</summary>
+    public string? PlanName { get; init; }
+}
+
 // --- Codex / ChatGPT subscription usage
 
 public sealed record NamedUsageWindow

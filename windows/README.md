@@ -12,10 +12,10 @@ tray icon opens a popover that mirrors the macOS one: rounded cards, a
 connection pill, colored usage bars, an expandable Claude status breakdown, and
 a settings screen with iOS-style switches.
 
-It uses only the .NET base class library (WinForms for the tray icon, WPF for
-the popover, named pipes, `HttpClient`, `System.Text.Json`, the registry API);
-the Discord IPC client is hand-written with no third-party dependencies,
-matching the macOS app's ethos.
+It uses the .NET base class library (WinForms for the tray icon, WPF for the
+popover, named pipes, `HttpClient`, `System.Text.Json`, the registry API) plus
+`Microsoft.Data.Sqlite` to read T3 Code's local session DB read-only. The
+Discord IPC client is hand-written.
 
 ## Feature map
 
@@ -25,7 +25,7 @@ matching the macOS app's ethos.
 | IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
 | Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, and `%USERPROFILE%\.cursor\projects/**/agent-transcripts` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`) |
 | Presence controller | `PresenceController.swift` | `PresenceController.cs` |
-| Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs` (credentials file + `HttpClient`) and `CodexUsage.cs` (`codex app-server`) |
+| Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs`, `CodexUsage.cs` (`codex app-server`), and `CursorUsage.cs` (`auth.json` / dashboard API) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
 | Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` (`Settings.cs`) |
 | UI | `NSStatusItem` + SwiftUI popover | `NotifyIcon` (`TrayApplicationContext.cs`) + WPF popover (`PopoverWindow.xaml`) |

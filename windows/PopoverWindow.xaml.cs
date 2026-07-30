@@ -863,7 +863,8 @@ public partial class PopoverWindow : Window
             };
             _accountEye = new TextBlock
             {
-                Text = "", // eye
+                // Segoe MDL2 / Fluent: View (E890). Updated in UpdateDetail when revealed.
+                Text = "\uE890",
                 FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
                 FontSize = 10,
                 Foreground = Brush(WithAlpha(Secondary, 0x73)),
@@ -1207,7 +1208,8 @@ public partial class PopoverWindow : Window
             else
             {
                 _accountText.Text = emailRevealed ? email : MaskedEmail(email);
-                _accountEye.Text = emailRevealed ? "" : ""; // eye-slash / eye
+                // Segoe MDL2 / Fluent: Hide (E894) when revealed, View (E890) when masked.
+                _accountEye.Text = emailRevealed ? "\uE894" : "\uE890";
                 _accountEye.Visibility = Visibility.Visible;
                 _accountButton.IsEnabled = true;
                 _accountButton.Cursor = Cursors.Hand;

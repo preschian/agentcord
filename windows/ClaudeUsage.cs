@@ -134,8 +134,6 @@ public sealed class ClaudeUsage : IDisposable
             var tokenChanged = !string.Equals(_lastProfileAccessToken, token, StringComparison.Ordinal);
             if (!tokenChanged && DateTime.UtcNow - _planFetchedAt < PlanRefreshInterval)
                 return;
-            _planFetchedAt = DateTime.UtcNow;
-            _lastProfileAccessToken = token;
         }
 
         try
@@ -153,20 +151,26 @@ public sealed class ClaudeUsage : IDisposable
             AccountEmail = string.IsNullOrEmpty(email) ? null : email;
 
             var plan = PlanLabel(root);
-            if (plan is null) return;
-
             UsageInfo? updated = null;
             lock (_lock)
             {
-                _planName = plan;
-                if (Current is { } cur && cur.PlanName != plan)
-                    updated = cur with { PlanName = plan };
+                // Only stamp the throttle after a successful profile parse so a
+                // timeout / 429 / offline blip can retry on the next poll.
+                _planFetchedAt = DateTime.UtcNow;
+                _lastProfileAccessToken = token;
+                if (plan is not null)
+                {
+                    _planName = plan;
+                    if (Current is { } cur && cur.PlanName != plan)
+                        updated = cur with { PlanName = plan };
+                }
             }
             if (updated is not null) Current = updated;
         }
         catch
         {
-            // Best-effort: keep the last known plan / email.
+            // Best-effort: keep the last known plan / email; leave the throttle
+            // untouched so the next poll can try again.
         }
     }
 

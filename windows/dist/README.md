@@ -32,6 +32,6 @@ dotnet publish -c Release -r win-x64 --self-contained true \
   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 ```
 
-The binary lands in `bin/Release/net8.0-windows/win-x64/publish/AgentCord.exe`
+The binary lands in `bin/Release/net10.0-windows/win-x64/publish/AgentCord.exe`
 (this directory is gitignored). See [../README.md](../README.md) for Discord
 setup, debug flags, and the full feature map.

@@ -1,6 +1,6 @@
 # AgentCord for Windows (C# / .NET)
 
-A native Windows port of the macOS menu bar app, written in C# on .NET 8. Same
+A native Windows port of the macOS menu bar app, written in C# on .NET 10. Same
 idea: while a Claude Code, Codex, or Cursor session is running, your Discord
 profile shows what you're working on, and it clears itself when the session
 goes quiet or you quit. Cursor covers both the Cursor CLI and Cursor sessions
@@ -34,11 +34,11 @@ Discord IPC client is hand-written.
 
 ## Prerequisites
 
-The [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (or newer).
+The [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (or newer).
 No Visual Studio required:
 
 ```sh
-winget install Microsoft.DotNet.SDK.8
+winget install Microsoft.DotNet.SDK.10
 ```
 
 ## Run it
@@ -65,16 +65,16 @@ Two debug flags: `--popover` opens the popover at startup, and
 ## Build a standalone exe
 
 The release build (see [`.github/workflows/release.yml`](../.github/workflows/release.yml))
-is a framework-dependent single file — a few MB, and it needs the [.NET 8
-Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) on the target
-machine (`winget install Microsoft.DotNet.DesktopRuntime.8`):
+is a framework-dependent single file — a few MB, and it needs the [.NET 10
+Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) on the target
+machine (`winget install Microsoft.DotNet.DesktopRuntime.10`):
 
 ```sh
 dotnet publish -c Release -r win-x64 --self-contained false \
   -p:PublishSingleFile=true
 ```
 
-The exe lands in `bin/Release/net8.0-windows/win-x64/publish/`.
+The exe lands in `bin/Release/net10.0-windows/win-x64/publish/`.
 
 Add `--self-contained true -p:IncludeNativeLibrariesForSelfExtract=true` to get
 an exe that runs with no runtime installed, at ~150 MB. WPF and WinForms support

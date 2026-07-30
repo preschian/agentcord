@@ -22,12 +22,12 @@ jobs:
 
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Publish agentcord.exe
         working-directory: windows
         # Framework-dependent single file: a couple of MB instead of ~150 MB,
-        # in exchange for requiring the .NET 8 Desktop Runtime on the target
+        # in exchange for requiring the .NET 10 Desktop Runtime on the target
         # machine. WPF cannot be trimmed or NativeAOT-compiled, so bundling the
         # runtime is all-or-nothing. Renamed to lowercase to keep the release
         # download URL (releases/latest/download/agentcord.exe) stable.

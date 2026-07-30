@@ -1,7 +1,8 @@
 // Code-behind for the popover: fills the XAML layout from the live state
 // (settings, controller, usage, Anthropic status) once per second while
 // visible, and applies setting changes from its toggles. Mirrors
-// MenuContentView in the macOS app's App.swift.
+// MenuContentView in the macOS app's App.swift — accordion agent list plus
+// optional unified usage card.
 
 using System.Diagnostics;
 using System.IO;
@@ -32,7 +33,11 @@ public partial class PopoverWindow : Window
     // drives, so no WPF Dispatcher assumptions are needed.
     private readonly FormsTimer _timer = new() { Interval = 1000 };
 
-    private readonly List<UsageRow> _usageRows = [];
+    private readonly List<UsageRow> _unifiedRows = [];
+    private readonly Dictionary<AgentKind, AgentRow> _agentRows = new();
+    private readonly HashSet<AgentKind> _revealedEmails = [];
+    private AgentKind? _expandedAgent;
+    private bool _seededExpanded;
     private StatusInfo? _renderedStatus;
     private bool _expandStatus;
     private DateTime _lastHidden = DateTime.MinValue;
@@ -165,10 +170,12 @@ public partial class PopoverWindow : Window
         Show();
 
         ShowMainScreen();
+        _expandedAgent = AgentKind.Claude;
+        _settings.SelectedAgent = AgentKind.Claude;
         _expandStatus = true;
-        StatusExpanded.Visibility = Visibility.Visible;
-        RenderStatusDetails(_status.Current);
         UpdateUi();
+        if (_agentRows.TryGetValue(AgentKind.Claude, out var claudeRow))
+            claudeRow.SetStatusExpanded(true);
         SavePng(path);
 
         MainScreen.Visibility = Visibility.Collapsed;
@@ -236,6 +243,9 @@ public partial class PopoverWindow : Window
         _sleepGuard.SetEnabled(_settings.PreventSleep);
     }
 
+    private void OnShowUnifiedUsageSwitch(object sender, RoutedEventArgs e) =>
+        SaveDisplayToggle(v => _settings.UnifiedUsage = v, ShowUnifiedUsageSwitch);
+
     private void OnShowProjectSwitch(object sender, RoutedEventArgs e) =>
         SaveDisplayToggle(v => _settings.ShowProject = v, ShowProjectSwitch);
 
@@ -244,24 +254,6 @@ public partial class PopoverWindow : Window
 
     private void OnShowTokensSwitch(object sender, RoutedEventArgs e) =>
         SaveDisplayToggle(v => _settings.ShowTokens = v, ShowTokensSwitch);
-
-    private void OnSelectClaude(object sender, RoutedEventArgs e) =>
-        SelectAgent(AgentKind.Claude);
-
-    private void OnSelectCodex(object sender, RoutedEventArgs e) =>
-        SelectAgent(AgentKind.Codex);
-
-    private void OnSelectCursor(object sender, RoutedEventArgs e) =>
-        SelectAgent(AgentKind.Cursor);
-
-    private void SelectAgent(AgentKind agent)
-    {
-        _settings.SelectedAgent = agent;
-        _settings.Save();
-        _expandStatus = false;
-        StatusExpanded.Visibility = Visibility.Collapsed;
-        UpdateUi();
-    }
 
     private void OnClaudeAgentSwitch(object sender, RoutedEventArgs e) =>
         SaveAgentToggle(AgentKind.Claude, ClaudeAgentSwitch);
@@ -276,6 +268,8 @@ public partial class PopoverWindow : Window
     {
         _settings.SetAgentEnabled(agent, toggle.IsChecked == true);
         _settings.Save();
+        if (_expandedAgent is AgentKind expanded && !_settings.IsAgentEnabled(expanded))
+            _expandedAgent = _settings.SelectedAgent;
         UpdateUi();
     }
 
@@ -304,14 +298,6 @@ public partial class PopoverWindow : Window
         UpdateUi();
     }
 
-    private void OnToggleStatus(object sender, RoutedEventArgs e)
-    {
-        _expandStatus = !_expandStatus;
-        StatusExpanded.Visibility = _expandStatus ? Visibility.Visible : Visibility.Collapsed;
-        StatusChevron.Text = _expandStatus ? "" : "";
-        if (_expandStatus) RenderStatusDetails(_status.Current);
-    }
-
     private void OnToggleDisplay(object sender, RoutedEventArgs e) =>
         ToggleSection(DisplayExpanded, DisplayChevron);
 
@@ -331,93 +317,108 @@ public partial class PopoverWindow : Window
         catch { }
     }
 
+    private void ToggleExpanded(AgentKind agent)
+    {
+        if (_expandedAgent == agent)
+        {
+            _expandedAgent = null;
+            _expandStatus = false;
+            _revealedEmails.Remove(agent);
+        }
+        else
+        {
+            if (_expandedAgent is AgentKind previous)
+                _revealedEmails.Remove(previous);
+            if (_expandedAgent != agent) _expandStatus = false;
+            _expandedAgent = agent;
+            _settings.SelectedAgent = agent;
+            _settings.Save();
+        }
+        UpdateUi();
+    }
+
     // --- Rendering
 
     private void UpdateUi()
     {
-        var selectedAgent = _settings.SelectedAgent;
-        var session = _controller.SessionFor(selectedAgent);
-        var hasSession = session is not null;
+        var enabled = _settings.EnabledAgents;
+        EnsureAgentRows(enabled);
+        SeedExpandedAgent(enabled);
+
         var presenceOn = _settings.PresenceEnabled;
-        var selectedEnabled = _settings.IsAgentEnabled(selectedAgent);
-        var sharing = hasSession && presenceOn && _controller.CurrentSession?.Agent == selectedAgent;
+        var activeCount = enabled.Count(a => _controller.SessionFor(a) is not null);
 
-        ClaudeAgentButton.Background = Brush(selectedAgent == AgentKind.Claude
-            ? WithAlpha(Blue, 0x1F) : Colors.Transparent);
-        CodexAgentButton.Background = Brush(selectedAgent == AgentKind.Codex
-            ? WithAlpha(Rgb(0x10, 0xA3, 0x7F), 0x24) : Colors.Transparent);
-        CursorAgentButton.Background = Brush(selectedAgent == AgentKind.Cursor
-            ? WithAlpha(Rgb(0x11, 0x11, 0x11), 0x1F) : Colors.Transparent);
-        ClaudeAgentText.FontWeight = selectedAgent == AgentKind.Claude ? FontWeights.SemiBold : FontWeights.Normal;
-        CodexAgentText.FontWeight = selectedAgent == AgentKind.Codex ? FontWeights.SemiBold : FontWeights.Normal;
-        CursorAgentText.FontWeight = selectedAgent == AgentKind.Cursor ? FontWeights.SemiBold : FontWeights.Normal;
-
-        // Connection pill.
-        if (!presenceOn)
+        // Connection / multi-agent status pill.
+        if (enabled.Count > 1)
+        {
+            if (!presenceOn)
+                SetPill(StatusPill, StatusPillDot, StatusPillText, Track, WithAlpha(Secondary, 0xB3), "Off");
+            else if (activeCount > 0)
+                SetPill(StatusPill, StatusPillDot, StatusPillText, Green, GreenText,
+                    activeCount == 1 ? "1 active" : $"{activeCount} active");
+            else
+                SetPill(StatusPill, StatusPillDot, StatusPillText, Yellow, YellowText, "0 active");
+        }
+        else if (!presenceOn)
             SetPill(StatusPill, StatusPillDot, StatusPillText, Track, WithAlpha(Secondary, 0xB3), "Off");
         else if (_controller.DiscordState == DiscordIpc.ConnState.Connected)
             SetPill(StatusPill, StatusPillDot, StatusPillText, Green, GreenText, "Connected");
         else
             SetPill(StatusPill, StatusPillDot, StatusPillText, Yellow, YellowText, "Connecting");
 
-        // Active session card.
-        SessionDot.Fill = Brush(hasSession ? Green : WithAlpha(Track, 0xB3));
-        ElapsedText.Text = session is null ? "—" : Format.Clock(Format.NowMs() - session.StartEpochMs);
-        ElapsedText.Foreground = Brush(hasSession ? TextColor : WithAlpha(Secondary, 0x73));
+        RenderUnifiedUsage(enabled);
 
-        var showProject = hasSession && _settings.ShowProject;
-        ProjectText.Text = session is null ? "No active session"
-            : _settings.ShowProject ? session.ProjectName : "Project hidden";
-        ProjectText.FontStyle = showProject ? FontStyles.Normal : FontStyles.Italic;
-        ProjectText.Foreground = Brush(hasSession && showProject ? TextColor : WithAlpha(Secondary, 0x73));
-
-        var bits = new List<string>();
-        if (session is not null)
+        foreach (var agent in enabled)
         {
-            if (_settings.ShowModel && session.Model is not null) bits.Add(session.Model);
-            if (_settings.ShowTokens && session.TotalTokens > 0)
-                bits.Add($"{PresenceController.FormatTokens(session.TotalTokens)} tokens");
+            if (!_agentRows.TryGetValue(agent, out var row)) continue;
+            var session = _controller.SessionFor(agent);
+            var linked = IsAgentLinked(agent);
+            var expanded = _expandedAgent == agent;
+            var sharing = session is not null && presenceOn
+                && _controller.CurrentSession?.Agent == agent;
+            row.UpdateHeader(agent, linked, session, expanded, _settings.ShowProject);
+            if (expanded)
+            {
+                row.UpdateDetail(agent, session, presenceOn, sharing, _settings,
+                    AccountEmail(agent), PlanName(agent),
+                    _revealedEmails.Contains(agent),
+                    () =>
+                    {
+                        if (!_revealedEmails.Add(agent))
+                            _revealedEmails.Remove(agent);
+                        UpdateUi();
+                    },
+                    UsageRowsFor(agent),
+                    agent == AgentKind.Claude ? _controller.LastError : null,
+                    agent == AgentKind.Claude ? _status.Current : null,
+                    _expandStatus,
+                    () =>
+                    {
+                        _expandStatus = !_expandStatus;
+                        UpdateUi();
+                    },
+                    OnOpenStatusPage);
+                if (_expandStatus && agent == AgentKind.Claude
+                    && !ReferenceEquals(_status.Current, _renderedStatus))
+                {
+                    row.RenderStatusDetails(_status.Current);
+                    _renderedStatus = _status.Current;
+                }
+            }
+            else
+            {
+                row.CollapseDetail();
+            }
         }
-        MetaText.Text = bits.Count > 0 ? string.Join("  ·  ", bits)
-            : session is null ? "Waiting for a session" : "Model & tokens hidden";
-        MetaText.FontStyle = bits.Count > 0 ? FontStyles.Normal : FontStyles.Italic;
-        MetaText.Foreground = Brush(WithAlpha(Secondary, hasSession && bits.Count > 0 ? (byte)0xB3 : (byte)0x66));
 
-        BroadcastDot.Fill = Brush(sharing ? Discord : WithAlpha(Track, 0x99));
-        BroadcastText.Text = !presenceOn ? "Presence is off"
-            : !selectedEnabled ? $"{selectedAgent.DisplayName()} is disabled"
-            : sharing ? "Sharing to Discord as your status"
-            : hasSession ? "A newer agent session is sharing" : "Waiting for a session";
-
-        // Usage card.
-        RenderUsage(selectedAgent);
-        ErrorText.Text = _controller.LastError ?? "";
-        ErrorText.Visibility = _controller.LastError is null ? Visibility.Collapsed : Visibility.Visible;
-
-        // Anthropic status only belongs to the Claude tab. Do not show it as
-        // though it represented OpenAI when Codex is selected.
-        var status = selectedAgent == AgentKind.Claude ? _status.Current : null;
-        StatusCard.Visibility = status is null ? Visibility.Collapsed : Visibility.Visible;
-        if (status is not null)
-        {
-            var (accent, textColor) = StatusPillColors(status.Indicator);
-            SetPill(ClaudePill, ClaudePillDot, ClaudePillText, accent, textColor, status.SummaryLabel);
-            if (_expandStatus && !ReferenceEquals(status, _renderedStatus)) RenderStatusDetails(status);
-            if (_expandStatus) StatusFooterText.Text = StatusFooter(status);
-        }
-
-        var enabledAgents = new[]
-        {
-            _settings.AgentClaudeEnabled,
-            _settings.AgentCodexEnabled,
-            _settings.AgentCursorEnabled,
-        }.Count(v => v);
-        SettingsSummary.Text = enabledAgents == 1 ? "1 agent on" : $"{enabledAgents} agents on";
+        var enabledCount = enabled.Count;
+        SettingsSummary.Text = enabledCount == 1 ? "1 agent on" : $"{enabledCount} agents on";
 
         // Settings screen.
         PresenceSwitch.IsChecked = presenceOn;
         AutostartSwitch.IsChecked = Autostart.IsEnabled();
         PreventSleepSwitch.IsChecked = _settings.PreventSleep;
+        ShowUnifiedUsageSwitch.IsChecked = _settings.UnifiedUsage;
         ShowProjectSwitch.IsChecked = _settings.ShowProject;
         ShowModelSwitch.IsChecked = _settings.ShowModel;
         ShowTokensSwitch.IsChecked = _settings.ShowTokens;
@@ -425,7 +426,10 @@ public partial class PopoverWindow : Window
         CodexAgentSwitch.IsChecked = _settings.AgentCodexEnabled;
         CursorAgentSwitch.IsChecked = _settings.AgentCursorEnabled;
 
-        var displayCount = new[] { _settings.ShowProject, _settings.ShowModel, _settings.ShowTokens }.Count(v => v);
+        var displayCount = new[]
+        {
+            _settings.UnifiedUsage, _settings.ShowProject, _settings.ShowModel, _settings.ShowTokens,
+        }.Count(v => v);
         DisplaySummary.Text = $"{displayCount} on";
 
         var idleMinutes = (int)Math.Round(_settings.IdleWindowSeconds / 60.0);
@@ -436,7 +440,108 @@ public partial class PopoverWindow : Window
         ActivitySummary.Text = $"{ActivityLabel.Text} · {idleMinutes} min";
     }
 
-    private void RenderUsage(AgentKind agent)
+    private void SeedExpandedAgent(IReadOnlyList<AgentKind> enabled)
+    {
+        if (_seededExpanded) return;
+        _seededExpanded = true;
+        if (_expandedAgent is null && enabled.Contains(_settings.SelectedAgent))
+            _expandedAgent = _settings.SelectedAgent;
+        else if (_expandedAgent is null && enabled.Count > 0)
+            _expandedAgent = enabled[0];
+    }
+
+    private void EnsureAgentRows(IReadOnlyList<AgentKind> enabled)
+    {
+        var wanted = enabled.ToHashSet();
+        var stale = _agentRows.Keys.Where(a => !wanted.Contains(a)).ToList();
+        foreach (var agent in stale)
+        {
+            AgentListPanel.Children.Remove(_agentRows[agent].Root);
+            _agentRows.Remove(agent);
+        }
+
+        // Rebuild order when the enabled set or order changed.
+        var currentOrder = AgentListPanel.Children
+            .OfType<FrameworkElement>()
+            .Select(e => e.Tag)
+            .OfType<AgentKind>()
+            .ToList();
+        if (currentOrder.SequenceEqual(enabled) && _agentRows.Count == enabled.Count)
+            return;
+
+        AgentListPanel.Children.Clear();
+        for (var i = 0; i < enabled.Count; i++)
+        {
+            var agent = enabled[i];
+            if (!_agentRows.TryGetValue(agent, out var row))
+            {
+                row = new AgentRow(agent, () => ToggleExpanded(agent));
+                _agentRows[agent] = row;
+            }
+            row.SetDivider(i > 0);
+            AgentListPanel.Children.Add(row.Root);
+        }
+    }
+
+    private void RenderUnifiedUsage(IReadOnlyList<AgentKind> enabled)
+    {
+        var show = _settings.UnifiedUsage && enabled.Count > 1;
+        UnifiedUsageCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show) return;
+
+        var linked = enabled.Where(IsAgentLinked).ToList();
+        UnifiedUsageEmpty.Visibility = linked.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UnifiedUsageRows.Visibility = linked.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (linked.Count == 0)
+        {
+            _unifiedRows.Clear();
+            UnifiedUsageRows.Children.Clear();
+            return;
+        }
+
+        EnsureUsageRows(_unifiedRows, UnifiedUsageRows, linked.Count);
+        for (var i = 0; i < linked.Count; i++)
+        {
+            var agent = linked[i];
+            var live = _controller.SessionFor(agent) is not null;
+            var window = UnifiedWindow(agent);
+            _unifiedRows[i].Update(agent.DisplayName(), window, live ? 1.0 : 0.55);
+        }
+    }
+
+    private UsageWindow? UnifiedWindow(AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => _codexUsage.Current?.Primary,
+        AgentKind.Cursor => _cursorUsage.Current?.Included,
+        _ => _usage.Current?.FiveHour,
+    };
+
+    /// <summary>Linked when usage data, auth, or a live session exists.</summary>
+    private bool IsAgentLinked(AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => _codexUsage.IsAuthenticated || _codexUsage.Current is not null
+            || _controller.SessionFor(agent) is not null,
+        AgentKind.Cursor => _cursorUsage.IsAuthenticated || _cursorUsage.Current is not null
+            || _controller.SessionFor(agent) is not null,
+        _ => _usage.AccountEmail is not null || _usage.Current is not null
+            || _controller.SessionFor(agent) is not null,
+    };
+
+    private string? AccountEmail(AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => _codexUsage.AccountEmail,
+        AgentKind.Cursor => _cursorUsage.AccountEmail,
+        _ => _usage.AccountEmail,
+    };
+
+    private string? PlanName(AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => _codexUsage.Current?.PlanType,
+        AgentKind.Cursor => _cursorUsage.Current?.PlanName,
+        _ => _usage.Current?.PlanName,
+    };
+
+    private List<(string Label, UsageWindow? Window)> UsageRowsFor(AgentKind agent)
     {
         if (agent == AgentKind.Codex)
         {
@@ -449,70 +554,81 @@ public partial class PopoverWindow : Window
                 rows.Add((usage.SecondaryLabel ?? "Secondary limit", usage.Secondary));
             if (usage is not null)
                 rows.AddRange(usage.AdditionalWindows.Select(item => (item.Label, (UsageWindow?)item.Window)));
-            RenderUsageRows(rows);
-            return;
+            if (usage is null)
+                rows.Add(("Waiting for Codex usage…", null));
+            return rows;
         }
 
         if (agent == AgentKind.Cursor)
         {
             var usage = _cursorUsage.Current;
+            if (usage is null)
+                return [("Waiting for Cursor usage…", null)];
             var rows = new List<(string Label, UsageWindow? Window)>
             {
-                ("Included", usage?.Included),
+                ("Included usage", usage.Included),
             };
-            if (usage?.Auto is not null) rows.Add(("Auto", usage.Auto));
-            if (usage?.Api is not null) rows.Add(("API", usage.Api));
-            if (usage?.OnDemand is not null) rows.Add(("On-demand", usage.OnDemand));
-            if (usage is null) rows.Add(("API", null));
-            RenderUsageRows(rows);
-            return;
+            if (usage.Auto is not null) rows.Add(("Auto + Composer", usage.Auto));
+            if (usage.Api is not null) rows.Add(("API models", usage.Api));
+            if (usage.OnDemand is not null) rows.Add(("On-demand", usage.OnDemand));
+            return rows;
         }
 
         var claude = _usage.Current;
+        if (claude is null)
+            return [("Waiting for Claude usage…", null)];
         var claudeRows = new List<(string Label, UsageWindow? Window)>
         {
-            ("Current session", claude?.FiveHour),
-            ("All models", claude?.Weekly),
+            ("Current session", claude.FiveHour),
+            ("All models", claude.Weekly),
         };
-        if (claude is not null)
-            claudeRows.AddRange(claude.ModelWeekly.Select(item => (item.ModelName, (UsageWindow?)item.Window)));
-        RenderUsageRows(claudeRows);
+        claudeRows.AddRange(claude.ModelWeekly.Select(item => (item.ModelName, (UsageWindow?)item.Window)));
+        return claudeRows;
     }
 
-    private void RenderUsageRows(IReadOnlyList<(string Label, UsageWindow? Window)> rows)
+    private static void EnsureUsageRows(List<UsageRow> pool, Panel host, int wanted)
     {
-        var wanted = rows.Count;
-        if (_usageRows.Count != wanted)
+        if (pool.Count == wanted) return;
+        pool.Clear();
+        host.Children.Clear();
+        for (var i = 0; i < wanted; i++)
         {
-            _usageRows.Clear();
-            UsageRows.Children.Clear();
-            for (var i = 0; i < wanted; i++)
-            {
-                var row = new UsageRow();
-                _usageRows.Add(row);
-                UsageRows.Children.Add(row.Root);
-            }
+            var row = new UsageRow();
+            pool.Add(row);
+            host.Children.Add(row.Root);
         }
-
-        for (var i = 0; i < rows.Count; i++)
-            _usageRows[i].Update(rows[i].Label, rows[i].Window);
     }
 
-    private void RenderStatusDetails(StatusInfo? status)
+    // --- Small UI helpers
+
+    /// <summary>A colored capsule: tinted background, stronger border, dot, label.</summary>
+    private static void SetPill(Border pill, Ellipse dot, TextBlock text, Color accent, Color textColor, string label)
     {
-        _renderedStatus = status;
-        IncidentsPanel.Children.Clear();
-        ComponentsPanel.Children.Clear();
-        if (status is null) return;
-
-        foreach (var incident in status.Incidents)
-            IncidentsPanel.Children.Add(IncidentCallout(incident));
-
-        foreach (var component in status.Components)
-            ComponentsPanel.Children.Add(ComponentRow(component));
-
-        StatusFooterText.Text = StatusFooter(status);
+        pill.Background = Brush(WithAlpha(accent, 0x1F));
+        pill.BorderBrush = Brush(WithAlpha(accent, 0x47));
+        dot.Fill = Brush(accent);
+        text.Foreground = Brush(textColor);
+        text.Text = label;
     }
+
+    private static Color Rgb(byte r, byte g, byte b) => Color.FromRgb(r, g, b);
+    private static Color WithAlpha(Color c, byte a) => Color.FromArgb(a, c.R, c.G, c.B);
+
+    private static SolidColorBrush Brush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
+    private static (Color Accent, Color Text) StatusPillColors(string indicator) => indicator switch
+    {
+        "none" => (Green, GreenText),
+        "minor" or "major" => (Orange, Rgb(0xC2, 0x66, 0x0A)),
+        "critical" => (Red, Rgb(0xC0, 0x27, 0x1F)),
+        "maintenance" => (Blue, Rgb(0x00, 0x57, 0xB6)),
+        _ => (Track, WithAlpha(Secondary, 0xB3)),
+    };
 
     private static string StatusFooter(StatusInfo status)
     {
@@ -530,7 +646,7 @@ public partial class PopoverWindow : Window
             "critical" => Red,
             "minor" => Yellow,
             "maintenance" => Blue,
-            _ => Orange, // "major" and anything else
+            _ => Orange,
         };
 
         var meta = char.ToUpperInvariant(incident.Status[0]) + incident.Status[1..];
@@ -616,35 +732,599 @@ public partial class PopoverWindow : Window
         return row;
     }
 
-    private static (Color Accent, Color Text) StatusPillColors(string indicator) => indicator switch
+    private static ControlTemplate ChromelessButtonTemplate()
     {
-        "none" => (Green, GreenText),
-        "minor" or "major" => (Orange, Rgb(0xC2, 0x66, 0x0A)),
-        "critical" => (Red, Rgb(0xC0, 0x27, 0x1F)),
-        "maintenance" => (Blue, Rgb(0x00, 0x57, 0xB6)),
-        _ => (Track, WithAlpha(Secondary, 0xB3)),
-    };
-
-    // --- Small UI helpers
-
-    /// <summary>A colored capsule: tinted background, stronger border, dot, label.</summary>
-    private static void SetPill(Border pill, Ellipse dot, TextBlock text, Color accent, Color textColor, string label)
-    {
-        pill.Background = Brush(WithAlpha(accent, 0x1F));
-        pill.BorderBrush = Brush(WithAlpha(accent, 0x47));
-        dot.Fill = Brush(accent);
-        text.Foreground = Brush(textColor);
-        text.Text = label;
+        var factory = new FrameworkElementFactory(typeof(ContentPresenter));
+        factory.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Stretch);
+        factory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        factory.SetValue(ContentPresenter.ContentSourceProperty, "Content");
+        return new ControlTemplate(typeof(Button)) { VisualTree = factory };
     }
 
-    private static Color Rgb(byte r, byte g, byte b) => Color.FromRgb(r, g, b);
-    private static Color WithAlpha(Color c, byte a) => Color.FromArgb(a, c.R, c.G, c.B);
-
-    private static SolidColorBrush Brush(Color color)
+    /// <summary>One accordion row for an enabled agent.</summary>
+    private sealed class AgentRow
     {
-        var brush = new SolidColorBrush(color);
-        brush.Freeze();
-        return brush;
+        public readonly Border Root;
+        public readonly AgentKind Agent;
+
+        private readonly Border _divider;
+        private readonly Border _headerBg;
+        private readonly TextBlock _name;
+        private readonly TextBlock _subtitle;
+        private readonly Ellipse _liveDot;
+        private readonly TextBlock _trailing;
+        private readonly TextBlock _chevron;
+        private readonly Border _detail;
+        private readonly StackPanel _detailBody;
+
+        private readonly Button _accountButton;
+        private readonly TextBlock _accountText;
+        private readonly TextBlock _accountEye;
+        private readonly Border _planChip;
+        private readonly TextBlock _planText;
+        private readonly TextBlock _projectText;
+        private readonly TextBlock _sessionState;
+        private readonly TextBlock _metaText;
+        private readonly Ellipse _broadcastDot;
+        private readonly TextBlock _broadcastText;
+        private readonly StackPanel _usageHost;
+        private readonly TextBlock _errorText;
+        private readonly Border _statusCard;
+        private readonly TextBlock _statusChevron;
+        private readonly Border _statusPill;
+        private readonly Ellipse _statusPillDot;
+        private readonly TextBlock _statusPillText;
+        private readonly StackPanel _statusExpanded;
+        private readonly StackPanel _incidentsPanel;
+        private readonly StackPanel _componentsPanel;
+        private readonly TextBlock _statusFooterText;
+
+        private readonly List<UsageRow> _usageRows = [];
+
+        public AgentRow(AgentKind agent, Action onToggle)
+        {
+            Agent = agent;
+            _name = new TextBlock
+            {
+                Text = agent.DisplayName(),
+                FontSize = 13,
+                FontWeight = FontWeights.Medium,
+            };
+            _subtitle = new TextBlock
+            {
+                FontSize = 10.5,
+                Foreground = Brush(WithAlpha(Secondary, 0x80)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
+            _liveDot = new Ellipse
+            {
+                Width = 6, Height = 6,
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+            };
+            _trailing = new TextBlock
+            {
+                FontSize = 11.5,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Typography.SetNumeralAlignment(_trailing, FontNumeralAlignment.Tabular);
+            _chevron = new TextBlock
+            {
+                Text = "",
+                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontSize = 10,
+                Foreground = Brush(WithAlpha(Secondary, 0x4D)),
+                Width = 10,
+                TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 0, 0),
+            };
+
+            var titleCol = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            titleCol.Children.Add(_name);
+            titleCol.Children.Add(_subtitle);
+
+            var trailingStack = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            trailingStack.Children.Add(_liveDot);
+            trailingStack.Children.Add(_trailing);
+
+            var header = new DockPanel { Margin = new Thickness(11, 9, 11, 9) };
+            DockPanel.SetDock(_chevron, Dock.Right);
+            DockPanel.SetDock(trailingStack, Dock.Right);
+            header.Children.Add(_chevron);
+            header.Children.Add(trailingStack);
+            header.Children.Add(titleCol);
+
+            var headerButton = new Button
+            {
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(0),
+                Cursor = Cursors.Hand,
+                Focusable = false,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Content = header,
+                Template = ChromelessButtonTemplate(),
+            };
+            headerButton.Click += (_, _) => onToggle();
+
+            _headerBg = new Border { Child = headerButton };
+
+            // Detail: account + session + usage + optional Claude status.
+            _accountText = new TextBlock
+            {
+                FontSize = 12.5,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            _accountEye = new TextBlock
+            {
+                // Segoe MDL2 / Fluent: View (E890). Updated in UpdateDetail when revealed.
+                Text = "\uE890",
+                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontSize = 10,
+                Foreground = Brush(WithAlpha(Secondary, 0x73)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(5, 0, 0, 0),
+                Visibility = Visibility.Collapsed,
+            };
+            var accountLeft = new StackPanel { Orientation = Orientation.Horizontal };
+            accountLeft.Children.Add(_accountText);
+            accountLeft.Children.Add(_accountEye);
+            _accountButton = new Button
+            {
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(0),
+                Cursor = Cursors.Hand,
+                Focusable = false,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Template = ChromelessButtonTemplate(),
+                Content = accountLeft,
+            };
+            _accountButton.Click += (_, _) => _onToggleEmail?.Invoke();
+            _planText = new TextBlock
+            {
+                FontSize = 10.5,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            _planChip = new Border
+            {
+                Background = Brush(WithAlpha(Track, 0x1F)),
+                BorderBrush = Brush(WithAlpha(Colors.Black, 0x14)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(7, 2, 7, 2),
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+                Child = _planText,
+            };
+            var accountRow = new DockPanel { Margin = new Thickness(0, 9, 0, 8) };
+            DockPanel.SetDock(_planChip, Dock.Right);
+            accountRow.Children.Add(_planChip);
+            accountRow.Children.Add(_accountButton);
+
+            _projectText = new TextBlock
+            {
+                FontSize = 12.5,
+                FontWeight = FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
+            _sessionState = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = Brush(WithAlpha(Secondary, 0x80)),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            _metaText = new TextBlock
+            {
+                FontSize = 11.5,
+                Margin = new Thickness(20, 0, 0, 0),
+            };
+            _broadcastDot = new Ellipse
+            {
+                Width = 5, Height = 5,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            _broadcastText = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = Brush(WithAlpha(Secondary, 0x80)),
+                Margin = new Thickness(6, 0, 0, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
+            _usageHost = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+            _errorText = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = Brush(Red),
+                TextWrapping = TextWrapping.Wrap,
+                Visibility = Visibility.Collapsed,
+                Margin = new Thickness(0, 6, 0, 0),
+            };
+
+            var folder = new TextBlock
+            {
+                Text = "",
+                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontSize = 12,
+                Foreground = Brush(WithAlpha(Secondary, 0x8C)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 7, 0),
+            };
+            var projectRow = new DockPanel();
+            DockPanel.SetDock(_sessionState, Dock.Right);
+            projectRow.Children.Add(_sessionState);
+            var projectLeft = new StackPanel { Orientation = Orientation.Horizontal };
+            projectLeft.Children.Add(folder);
+            projectLeft.Children.Add(_projectText);
+            projectRow.Children.Add(projectLeft);
+
+            var broadcastRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(20, 4, 0, 0),
+            };
+            broadcastRow.Children.Add(_broadcastDot);
+            broadcastRow.Children.Add(_broadcastText);
+
+            var sessionBlock = new StackPanel { Margin = new Thickness(0, 2, 0, 0) };
+            sessionBlock.Children.Add(new Border
+            {
+                BorderBrush = Brush(WithAlpha(Colors.Black, 0x0F)),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Padding = new Thickness(0, 10, 0, 0),
+                Child = projectRow,
+            });
+            sessionBlock.Children.Add(_metaText);
+            sessionBlock.Children.Add(broadcastRow);
+
+            // Claude status expander.
+            _statusChevron = new TextBlock
+            {
+                Text = "",
+                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontSize = 10,
+                Foreground = Brush(WithAlpha(Secondary, 0x66)),
+                Width = 10,
+                TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 0, 0),
+            };
+            _statusPillDot = new Ellipse { Width = 6, Height = 6, VerticalAlignment = VerticalAlignment.Center };
+            _statusPillText = new TextBlock { FontSize = 11, FontWeight = FontWeights.Medium, Margin = new Thickness(5, 0, 0, 0) };
+            var pillInner = new StackPanel { Orientation = Orientation.Horizontal };
+            pillInner.Children.Add(_statusPillDot);
+            pillInner.Children.Add(_statusPillText);
+            _statusPill = new Border
+            {
+                CornerRadius = new CornerRadius(9),
+                Padding = new Thickness(6, 2, 8, 2),
+                VerticalAlignment = VerticalAlignment.Center,
+                BorderThickness = new Thickness(1),
+                Child = pillInner,
+            };
+            _incidentsPanel = new StackPanel();
+            _componentsPanel = new StackPanel();
+            _statusFooterText = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = Brush(WithAlpha(Secondary, 0x8C)),
+            };
+            _statusExpanded = new StackPanel
+            {
+                Visibility = Visibility.Collapsed,
+                Margin = new Thickness(0, 4, 0, 0),
+            };
+            _statusExpanded.Children.Add(_incidentsPanel);
+            _statusExpanded.Children.Add(_componentsPanel);
+            var statusFooterBtn = new Button
+            {
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(0),
+                Cursor = Cursors.Hand,
+                Focusable = false,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Margin = new Thickness(0, 8, 0, 0),
+                Template = ChromelessButtonTemplate(),
+            };
+            var footerDock = new DockPanel();
+            var ext = new TextBlock
+            {
+                Text = "",
+                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontSize = 10,
+                Foreground = Brush(WithAlpha(Secondary, 0x66)),
+            };
+            DockPanel.SetDock(ext, Dock.Right);
+            footerDock.Children.Add(ext);
+            footerDock.Children.Add(_statusFooterText);
+            statusFooterBtn.Content = footerDock;
+            _statusExpanded.Children.Add(statusFooterBtn);
+
+            var statusHeaderBtn = new Button
+            {
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(0),
+                Cursor = Cursors.Hand,
+                Focusable = false,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Template = ChromelessButtonTemplate(),
+            };
+            var statusHeader = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
+            DockPanel.SetDock(_statusChevron, Dock.Right);
+            DockPanel.SetDock(_statusPill, Dock.Right);
+            statusHeader.Children.Add(_statusChevron);
+            statusHeader.Children.Add(_statusPill);
+            statusHeader.Children.Add(new TextBlock
+            {
+                Text = "Claude status",
+                FontSize = 12.5,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            statusHeaderBtn.Content = statusHeader;
+
+            var statusStack = new StackPanel();
+            statusStack.Children.Add(statusHeaderBtn);
+            statusStack.Children.Add(_statusExpanded);
+            _statusCard = new Border
+            {
+                Visibility = Visibility.Collapsed,
+                Child = statusStack,
+            };
+
+            // Wire status clicks after fields exist; handlers set via UpdateDetail.
+            statusHeaderBtn.Tag = this;
+            statusFooterBtn.Tag = this;
+
+            _detailBody = new StackPanel { Margin = new Thickness(11, 2, 11, 11) };
+            _detailBody.Children.Add(accountRow);
+            _detailBody.Children.Add(sessionBlock);
+            _detailBody.Children.Add(_usageHost);
+            _detailBody.Children.Add(_errorText);
+            _detailBody.Children.Add(_statusCard);
+
+            _detail = new Border
+            {
+                Background = Brush(WithAlpha(Track, 0x0A)),
+                BorderBrush = Brush(WithAlpha(Colors.Black, 0x0D)),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Visibility = Visibility.Collapsed,
+                Child = _detailBody,
+            };
+
+            _divider = new Border
+            {
+                Height = 1,
+                Background = Brush(WithAlpha(Colors.Black, 0x0F)),
+                Visibility = Visibility.Collapsed,
+            };
+
+            var column = new StackPanel();
+            column.Children.Add(_divider);
+            column.Children.Add(_headerBg);
+            column.Children.Add(_detail);
+
+            Root = new Border { Child = column, Tag = agent };
+
+            // Store click targets for status on the buttons via closures.
+            statusHeaderBtn.Click += (_, _) => _onToggleStatus?.Invoke();
+            statusFooterBtn.Click += (_, e) => _onOpenStatus?.Invoke(statusFooterBtn, e);
+        }
+
+        private Action? _onToggleStatus;
+        private Action? _onToggleEmail;
+        private RoutedEventHandler? _onOpenStatus;
+
+        public void SetDivider(bool show) =>
+            _divider.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+
+        public void UpdateHeader(
+            AgentKind agent, bool linked, SessionInfo? session, bool expanded, bool showProject)
+        {
+            _name.Foreground = Brush(linked ? TextColor : WithAlpha(Secondary, 0x80));
+            if (!linked)
+                _subtitle.Text = "Not connected";
+            else if (session is null)
+                _subtitle.Text = "Connected";
+            else
+                _subtitle.Text = showProject ? session.ProjectName : "Project hidden";
+
+            if (session is not null)
+            {
+                _liveDot.Visibility = Visibility.Visible;
+                _liveDot.Fill = Brush(Green);
+                _liveDot.Margin = new Thickness(0, 0, 5, 0);
+                _trailing.Text = Format.Clock(Format.NowMs() - session.StartEpochMs);
+                _trailing.FontWeight = FontWeights.Medium;
+                _trailing.Foreground = Brush(TextColor);
+            }
+            else if (linked)
+            {
+                _liveDot.Visibility = Visibility.Collapsed;
+                _trailing.Text = "idle";
+                _trailing.FontWeight = FontWeights.Normal;
+                _trailing.Foreground = Brush(WithAlpha(Secondary, 0x73));
+            }
+            else
+            {
+                _liveDot.Visibility = Visibility.Collapsed;
+                _trailing.Text = "Connect";
+                _trailing.FontWeight = FontWeights.Medium;
+                _trailing.Foreground = Brush(Blue);
+            }
+
+            _chevron.Text = expanded ? "" : "";
+            _headerBg.Background = expanded
+                ? Brush(WithAlpha(Track, 0x0A))
+                : Brushes.Transparent;
+            _detail.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        public void CollapseDetail()
+        {
+            _detail.Visibility = Visibility.Collapsed;
+            _statusExpanded.Visibility = Visibility.Collapsed;
+            _statusChevron.Text = "";
+        }
+
+        public void UpdateDetail(
+            AgentKind agent,
+            SessionInfo? session,
+            bool presenceOn,
+            bool sharing,
+            Settings settings,
+            string? email,
+            string? plan,
+            bool emailRevealed,
+            Action onToggleEmail,
+            IReadOnlyList<(string Label, UsageWindow? Window)> usageRows,
+            string? error,
+            StatusInfo? status,
+            bool expandStatus,
+            Action onToggleStatus,
+            RoutedEventHandler onOpenStatus)
+        {
+            _onToggleStatus = onToggleStatus;
+            _onToggleEmail = onToggleEmail;
+            _onOpenStatus = onOpenStatus;
+            _detail.Visibility = Visibility.Visible;
+
+            // Account row: masked email (tap to reveal) + plan chip.
+            if (string.IsNullOrEmpty(email))
+            {
+                _accountText.Text = agent.ProviderName();
+                _accountEye.Visibility = Visibility.Collapsed;
+                _accountButton.IsEnabled = false;
+                _accountButton.Cursor = Cursors.Arrow;
+            }
+            else
+            {
+                _accountText.Text = emailRevealed ? email : MaskedEmail(email);
+                // Segoe MDL2 / Fluent: Hide (E894) when revealed, View (E890) when masked.
+                _accountEye.Text = emailRevealed ? "\uE894" : "\uE890";
+                _accountEye.Visibility = Visibility.Visible;
+                _accountButton.IsEnabled = true;
+                _accountButton.Cursor = Cursors.Hand;
+                _accountButton.ToolTip = emailRevealed ? "Hide email" : "Show email";
+            }
+
+            if (string.IsNullOrWhiteSpace(plan))
+            {
+                _planChip.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                _planText.Text = Capitalize(plan);
+                _planChip.Visibility = Visibility.Visible;
+            }
+
+            var active = session is not null;
+            var showProject = active && settings.ShowProject;
+            _projectText.Text = session is null ? "No active session"
+                : settings.ShowProject ? session.ProjectName : "Project hidden";
+            _projectText.FontStyle = showProject ? FontStyles.Normal : FontStyles.Italic;
+            _projectText.Foreground = Brush(active && showProject ? TextColor : WithAlpha(Secondary, 0x80));
+            _sessionState.Text = active ? "active" : "idle";
+
+            var bits = new List<string>();
+            if (session is not null)
+            {
+                if (settings.ShowModel && session.Model is not null) bits.Add(session.Model);
+                if (settings.ShowTokens && session.TotalTokens > 0)
+                    bits.Add($"{PresenceController.FormatTokens(session.TotalTokens)} tokens");
+            }
+            _metaText.Text = bits.Count > 0 ? string.Join("  ·  ", bits)
+                : session is null ? "Waiting for a session" : "Model & tokens hidden";
+            _metaText.FontStyle = bits.Count > 0 ? FontStyles.Normal : FontStyles.Italic;
+            _metaText.Foreground = Brush(WithAlpha(Secondary,
+                active && bits.Count > 0 ? (byte)0x99 : (byte)0x66));
+
+            _broadcastDot.Fill = Brush(sharing ? Discord : WithAlpha(Track, 0x99));
+            _broadcastText.Text = !presenceOn ? "Presence is off"
+                : sharing ? "Sharing to Discord as your status"
+                : active ? "A newer agent session is sharing" : "Waiting for a session";
+
+            EnsureUsageRows(_usageRows, _usageHost, usageRows.Count);
+            for (var i = 0; i < usageRows.Count; i++)
+                _usageRows[i].Update(usageRows[i].Label, usageRows[i].Window);
+
+            _errorText.Text = error ?? "";
+            _errorText.Visibility = error is null ? Visibility.Collapsed : Visibility.Visible;
+
+            if (status is null)
+            {
+                _statusCard.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                _statusCard.Visibility = Visibility.Visible;
+                var (accent, textColor) = StatusPillColors(status.Indicator);
+                SetPill(_statusPill, _statusPillDot, _statusPillText, accent, textColor, status.SummaryLabel);
+                SetStatusExpanded(expandStatus);
+                if (expandStatus) _statusFooterText.Text = StatusFooter(status);
+            }
+        }
+
+        public void SetStatusExpanded(bool expand)
+        {
+            _statusExpanded.Visibility = expand ? Visibility.Visible : Visibility.Collapsed;
+            _statusChevron.Text = expand ? "" : "";
+        }
+
+        public void RenderStatusDetails(StatusInfo? status)
+        {
+            _incidentsPanel.Children.Clear();
+            _componentsPanel.Children.Clear();
+            if (status is null) return;
+            foreach (var incident in status.Incidents)
+                _incidentsPanel.Children.Add(IncidentCallout(incident));
+            foreach (var component in status.Components)
+                _componentsPanel.Children.Add(ComponentRow(component));
+            _statusFooterText.Text = StatusFooter(status);
+        }
+    }
+
+    /// <summary>`pres@example.com` → `p•••@e••••••.com`.</summary>
+    private static string MaskedEmail(string email)
+    {
+        var at = email.IndexOf('@');
+        if (at < 0) return new string('•', Math.Max(email.Length, 4));
+
+        var local = email[..at];
+        var domain = email[(at + 1)..];
+        var maskedLocal = local.Length == 0
+            ? "•••"
+            : local[0] + new string('•', Math.Max(3, local.Length - 1));
+
+        var dot = domain.LastIndexOf('.');
+        string maskedDomain;
+        if (dot < 0)
+        {
+            maskedDomain = new string('•', Math.Max(3, domain.Length));
+        }
+        else
+        {
+            var name = domain[..dot];
+            var tld = domain[dot..];
+            maskedDomain = name.Length == 0
+                ? "••" + tld
+                : name[0] + new string('•', Math.Max(2, name.Length - 1)) + tld;
+        }
+        return maskedLocal + "@" + maskedDomain;
+    }
+
+    private static string Capitalize(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return value;
+        return char.ToUpperInvariant(value[0]) + (value.Length > 1 ? value[1..] : "");
     }
 
     /// <summary>One usage row: label + "46% · resets …" + a colored progress
@@ -661,7 +1341,6 @@ public partial class PopoverWindow : Window
 
         public UsageRow()
         {
-            // Tabular figures keep the percentages from jittering as they tick.
             Typography.SetNumeralAlignment(_value, FontNumeralAlignment.Tabular);
             DockPanel.SetDock(_value, Dock.Right);
             var top = new DockPanel();
@@ -687,9 +1366,11 @@ public partial class PopoverWindow : Window
             Root.Children.Add(track);
         }
 
-        public void Update(string label, UsageWindow? window)
+        public void Update(string label, UsageWindow? window, double accentOpacity = 1.0)
         {
             _label.Text = label;
+            _label.Opacity = accentOpacity;
+            _value.Opacity = accentOpacity;
             if (window is null)
             {
                 _value.Text = "—";
@@ -705,18 +1386,19 @@ public partial class PopoverWindow : Window
                 _value.Text = $"{window.Percent}%{reset}";
             }
 
-            // Keep a faint sliver visible even at 0% so the track reads as a bar.
             var fraction = Math.Clamp((window?.Percent ?? 0) / 100.0, 0.015, 1.0);
             _fillCol.Width = new GridLength(fraction, GridUnitType.Star);
             _restCol.Width = new GridLength(1 - fraction, GridUnitType.Star);
 
             var severity = window?.Severity.ToLowerInvariant() ?? "normal";
-            _fill.Background = Brush(severity switch
+            var color = severity switch
             {
                 "normal" => Blue,
                 "warning" or "warn" or "low" => Orange,
                 _ => Red,
-            });
+            };
+            var alpha = (byte)Math.Clamp((int)Math.Round(0xFF * accentOpacity), 0x40, 0xFF);
+            _fill.Background = Brush(WithAlpha(color, alpha));
         }
     }
 }

@@ -140,111 +140,22 @@
                      VerticalAlignment="Center" Margin="9,0,0,0"/>
         </DockPanel>
 
-        <!-- Agent switcher -->
-        <Border Style="{StaticResource CardSoft}" Margin="0,0,0,11" Padding="3">
-          <Grid>
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition/>
-              <ColumnDefinition/>
-              <ColumnDefinition/>
-            </Grid.ColumnDefinitions>
-            <Button x:Name="ClaudeAgentButton" Grid.Column="0" Style="{StaticResource PlainRow}"
-                    Click="OnSelectClaude">
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="6,5">
-                <Ellipse Width="6" Height="6" Fill="#FFD97757" VerticalAlignment="Center"/>
-                <TextBlock x:Name="ClaudeAgentText" Text="Claude" FontSize="12" Margin="5,0,0,0"/>
-              </StackPanel>
-            </Button>
-            <Button x:Name="CodexAgentButton" Grid.Column="1" Style="{StaticResource PlainRow}"
-                    Click="OnSelectCodex">
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="6,5">
-                <Ellipse Width="6" Height="6" Fill="#FF10A37F" VerticalAlignment="Center"/>
-                <TextBlock x:Name="CodexAgentText" Text="Codex" FontSize="12" Margin="5,0,0,0"/>
-              </StackPanel>
-            </Button>
-            <Button x:Name="CursorAgentButton" Grid.Column="2" Style="{StaticResource PlainRow}"
-                    Click="OnSelectCursor">
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="6,5">
-                <Ellipse Width="6" Height="6" Fill="#FF111111" VerticalAlignment="Center"/>
-                <TextBlock x:Name="CursorAgentText" Text="Cursor" FontSize="12" Margin="5,0,0,0"/>
-              </StackPanel>
-            </Button>
-          </Grid>
-        </Border>
-
-        <!-- Active session card -->
-        <Border Style="{StaticResource Card}" Margin="0,0,0,11">
-          <StackPanel>
-            <DockPanel>
-              <Border DockPanel.Dock="Right" Background="#1A787880" CornerRadius="9" Padding="7,2,8,2">
-                <StackPanel Orientation="Horizontal">
-                  <Ellipse x:Name="SessionDot" Width="6" Height="6" VerticalAlignment="Center"/>
-                  <!-- Tabular figures keep the ticking clock from jittering. -->
-                  <TextBlock x:Name="ElapsedText" FontSize="11.5" FontWeight="Medium" Margin="5,0,0,0"
-                             Typography.NumeralAlignment="Tabular"/>
-                </StackPanel>
-              </Border>
-              <TextBlock Text="ACTIVE SESSION" FontSize="11" FontWeight="SemiBold"
-                         Foreground="{StaticResource SecMid}" VerticalAlignment="Center"/>
-            </DockPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,9,0,0">
-              <TextBlock Style="{StaticResource Glyph}" Text="&#xE8B7;" FontSize="12"
-                         Foreground="{StaticResource SecMid}"/>
-              <TextBlock x:Name="ProjectText" FontSize="13.5" FontWeight="SemiBold" Margin="7,0,0,0"/>
-            </StackPanel>
-            <TextBlock x:Name="MetaText" FontSize="12.5" Margin="21,4,0,0"/>
-            <Border BorderBrush="#0F000000" BorderThickness="0,1,0,0" Margin="0,9,0,0" Padding="0,8,0,0">
-              <StackPanel Orientation="Horizontal">
-                <Ellipse x:Name="BroadcastDot" Width="5" Height="5" VerticalAlignment="Center"/>
-                <TextBlock x:Name="BroadcastText" FontSize="11"
-                           Foreground="{StaticResource SecMid}" Margin="6,0,0,0"/>
-              </StackPanel>
-            </Border>
-          </StackPanel>
-        </Border>
-
-        <!-- Usage card -->
-        <Border Style="{StaticResource Card}" Margin="0,0,0,11">
-          <StackPanel>
-            <TextBlock Text="USAGE" FontSize="11" FontWeight="SemiBold"
-                       Foreground="{StaticResource SecMid}"/>
-            <StackPanel x:Name="UsageRows" Margin="0,10,0,-10"/>
-            <TextBlock x:Name="ErrorText" FontSize="11" Foreground="#FFFF3B30"
-                       TextWrapping="Wrap" Visibility="Collapsed" Margin="0,10,0,0"/>
-          </StackPanel>
-        </Border>
-
-        <!-- Claude status card (hidden until the first successful fetch) -->
-        <Border x:Name="StatusCard" Style="{StaticResource CardSoft}" Margin="0,0,0,11"
+        <!-- Unified usage summary (shown when setting on and >1 enabled agent) -->
+        <Border x:Name="UnifiedUsageCard" Style="{StaticResource Card}" Margin="0,0,0,11"
                 Visibility="Collapsed">
           <StackPanel>
-            <Button Style="{StaticResource PlainRow}" Click="OnToggleStatus">
-              <DockPanel Margin="11,8">
-                <TextBlock x:Name="StatusChevron" DockPanel.Dock="Right" Style="{StaticResource Glyph}"
-                           Text="&#xE76C;" FontSize="10" Foreground="{StaticResource SecSoft}"
-                           Margin="6,0,0,0" Width="10" TextAlignment="Center"/>
-                <Border x:Name="ClaudePill" DockPanel.Dock="Right" CornerRadius="9"
-                        Padding="6,2,8,2" VerticalAlignment="Center" BorderThickness="1">
-                  <StackPanel Orientation="Horizontal">
-                    <Ellipse x:Name="ClaudePillDot" Width="6" Height="6" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="ClaudePillText" FontSize="11" FontWeight="Medium" Margin="5,0,0,0"/>
-                  </StackPanel>
-                </Border>
-                <TextBlock Text="Claude status" FontSize="13" VerticalAlignment="Center"/>
-              </DockPanel>
-            </Button>
-            <StackPanel x:Name="StatusExpanded" Visibility="Collapsed" Margin="11,1,11,10">
-              <StackPanel x:Name="IncidentsPanel"/>
-              <StackPanel x:Name="ComponentsPanel"/>
-              <Button Style="{StaticResource PlainRow}" Click="OnOpenStatusPage" Margin="0,8,0,0">
-                <DockPanel>
-                  <TextBlock DockPanel.Dock="Right" Style="{StaticResource Glyph}" Text="&#xE8A7;"
-                             FontSize="10" Foreground="{StaticResource SecSoft}"/>
-                  <TextBlock x:Name="StatusFooterText" FontSize="11" Foreground="{StaticResource SecMid}"/>
-                </DockPanel>
-              </Button>
-            </StackPanel>
+            <TextBlock Text="UNIFIED USAGE" FontSize="11" FontWeight="SemiBold"
+                       Foreground="{StaticResource SecMid}"/>
+            <StackPanel x:Name="UnifiedUsageRows" Margin="0,10,0,-10"/>
+            <TextBlock x:Name="UnifiedUsageEmpty" Text="No connected agents" FontSize="12.5"
+                       FontStyle="Italic" Foreground="{StaticResource SecSoft}"
+                       Visibility="Collapsed" Margin="0,10,0,0"/>
           </StackPanel>
+        </Border>
+
+        <!-- Agent accordion (rows built in code-behind) -->
+        <Border Style="{StaticResource Card}" Margin="0,0,0,11" Padding="0">
+          <StackPanel x:Name="AgentListPanel"/>
         </Border>
 
         <!-- Settings nav row -->
@@ -359,6 +270,12 @@
               </DockPanel>
             </Button>
             <StackPanel x:Name="DisplayExpanded" Visibility="Collapsed" Margin="11,1,11,8">
+              <DockPanel Margin="0,5">
+                <ToggleButton x:Name="ShowUnifiedUsageSwitch" DockPanel.Dock="Right"
+                              Style="{StaticResource Switch}" Click="OnShowUnifiedUsageSwitch"/>
+                <TextBlock Text="Show unified usage" FontSize="12.5" VerticalAlignment="Center"/>
+              </DockPanel>
+              <Rectangle Height="1" Fill="#0D000000"/>
               <DockPanel Margin="0,5">
                 <ToggleButton x:Name="ShowProjectSwitch" DockPanel.Dock="Right"
                               Style="{StaticResource Switch}" Click="OnShowProjectSwitch"/>

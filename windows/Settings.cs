@@ -20,6 +20,9 @@ public sealed class Settings
     [JsonPropertyName("show_model")] public bool ShowModel { get; set; } = true;
     [JsonPropertyName("show_tokens")] public bool ShowTokens { get; set; } = true;
     [JsonPropertyName("show_project")] public bool ShowProject { get; set; } = true;
+    /// <summary>Show the summary card covering every connected agent's primary
+    /// usage window above the agent list (macOS "Show unified usage").</summary>
+    [JsonPropertyName("unified_usage")] public bool UnifiedUsage { get; set; } = true;
     [JsonPropertyName("small_image_key")] public string SmallImageKey { get; set; } = "discord-presence-icon";
     [JsonPropertyName("selected_agent")] public AgentKind SelectedAgent { get; set; } = AgentKind.Claude;
     [JsonPropertyName("agent_claude_enabled")] public bool AgentClaudeEnabled { get; set; } = true;
@@ -51,6 +54,19 @@ public sealed class Settings
         AgentKind.Cursor => AgentCursorEnabled,
         _ => AgentClaudeEnabled,
     };
+
+    /// <summary>Agents the user has toggled on in Settings, in display order.</summary>
+    public IReadOnlyList<AgentKind> EnabledAgents
+    {
+        get
+        {
+            var list = new List<AgentKind>(3);
+            if (AgentClaudeEnabled) list.Add(AgentKind.Claude);
+            if (AgentCodexEnabled) list.Add(AgentKind.Codex);
+            if (AgentCursorEnabled) list.Add(AgentKind.Cursor);
+            return list;
+        }
+    }
 
     public void SetAgentEnabled(AgentKind agent, bool enabled)
     {

@@ -8,9 +8,9 @@ driven through T3 Code. If several agents are active, the most recently updated
 session wins.
 
 The app lives entirely in the system tray — no taskbar entry. Left-clicking the
-tray icon opens a popover that mirrors the macOS one: rounded cards, a
-connection pill, colored usage bars, an expandable Claude status breakdown, and
-a settings screen with iOS-style switches.
+tray icon opens a popover that mirrors the macOS one: accordion agent list,
+optional unified usage summary, colored usage bars, an expandable Claude status
+breakdown, and a settings screen with iOS-style switches.
 
 It uses the .NET base class library (WinForms for the tray icon, WPF for the
 popover, named pipes, `HttpClient`, `System.Text.Json`, the registry API) plus
@@ -51,12 +51,12 @@ cd windows
 dotnet run
 ```
 
-**Left-click** the tray icon for the popover: connection pill, the active
-session (project, model, live elapsed timer, tokens), provider-specific usage
-bars, an expandable Claude status breakdown, and a Settings screen with agent
-toggles, presence, launch-at-login, prevent-sleep, display fields, activity
-type, and the idle window. Use the Claude/Codex/Cursor switcher to inspect an
-agent. **Right-click** for a quick menu (show, toggle presence, quit).
+**Left-click** the tray icon for the popover: connection pill, optional unified
+usage card (one primary bar per linked agent), accordion rows for every enabled
+agent (expand for session, usage, and Claude status), and a Settings screen with
+agent toggles, presence, launch-at-login, prevent-sleep, display fields
+(including Show unified usage), activity type, and the idle window.
+**Right-click** for a quick menu (show, toggle presence, quit).
 
 Two debug flags: `--popover` opens the popover at startup, and
 `--screenshot <path>` renders both popover screens to PNGs off-screen and exits
@@ -118,10 +118,11 @@ AgentCord does not read or refresh ChatGPT credentials itself.
 **UI.** WinForms owns the tray icon and the message loop; the popover is a WPF
 window (`PopoverWindow.xaml`) on that same thread, which is what makes the
 macOS look reachable — rounded cards, drop shadow, capsule pills, custom
-toggle switches, and progress bars whose fill is a star-sized grid column. It
-is borderless, transparent, topmost, and absent from the taskbar; it anchors
-itself to the bottom-right work-area corner and re-anchors whenever a section
-expands, so it grows upward like the macOS popover hangs off its status item.
+toggle switches, accordion agent rows, the unified usage card, and progress
+bars whose fill is a star-sized grid column. It is borderless, transparent,
+topmost, and absent from the taskbar; it anchors itself to the bottom-right
+work-area corner and re-anchors whenever a section expands, so it grows upward
+like the macOS popover hangs off its status item.
 
 Two quirks worth knowing. `Show()` can be followed by a `Deactivated` before
 activation ever lands (the message loop may not be pumping yet), which would

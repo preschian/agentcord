@@ -12,6 +12,11 @@ public sealed class CodexUsage : IDisposable
 {
     public CodexUsageInfo? Current { get; private set; }
 
+    /// <summary>Email of the signed-in ChatGPT account, from account/read.</summary>
+    public string? AccountEmail { get; private set; }
+
+    public bool IsAuthenticated { get; private set; }
+
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMinutes(5);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromMinutes(1);
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
@@ -80,17 +85,27 @@ public sealed class CodexUsage : IDisposable
             await process.StandardInput.WriteLineAsync(
                 """{"method":"initialize","id":0,"params":{"clientInfo":{"name":"agentcord","title":"AgentCord","version":"0.4.0"}}}""");
             await process.StandardInput.WriteLineAsync(
+                """{"method":"account/read","id":1,"params":{"refreshToken":false}}""");
+            await process.StandardInput.WriteLineAsync(
                 """{"method":"account/rateLimits/read","id":2,"params":null}""");
             await process.StandardInput.FlushAsync();
 
             using var timeout = new CancellationTokenSource(RequestTimeout);
             CodexUsageInfo? result = null;
+            string? email = null;
+            bool? authenticated = null;
             try
             {
                 while (!timeout.IsCancellationRequested)
                 {
                     var line = await process.StandardOutput.ReadLineAsync(timeout.Token);
                     if (line is null) break;
+                    if (TryParseAccount(line, out var accountEmail, out var accountAuth))
+                    {
+                        email = accountEmail;
+                        authenticated = accountAuth;
+                        continue;
+                    }
                     if (TryParseResponse(line, out result)) break;
                 }
             }
@@ -106,12 +121,16 @@ public sealed class CodexUsage : IDisposable
                 catch { }
             }
 
+            if (authenticated is bool auth) IsAuthenticated = auth;
+            AccountEmail = string.IsNullOrEmpty(email) ? null : email;
+
             if (result is null)
             {
                 HandleFailure();
                 return;
             }
 
+            if (!IsAuthenticated) IsAuthenticated = true;
             Current = result;
             lock (_lock) _lastSuccess = DateTime.UtcNow;
         }
@@ -130,6 +149,36 @@ public sealed class CodexUsage : IDisposable
         lock (_lock)
         {
             if (DateTime.UtcNow - _lastSuccess > MaxStaleness) Current = null;
+        }
+    }
+
+    private static bool TryParseAccount(string line, out string? email, out bool authenticated)
+    {
+        email = null;
+        authenticated = false;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("id", out var id)
+                || !id.TryGetInt32(out var requestId)
+                || requestId != 1)
+                return false;
+
+            if (!root.TryGetProperty("result", out var result)
+                || result.ValueKind != JsonValueKind.Object
+                || !result.TryGetProperty("account", out var account)
+                || account.ValueKind != JsonValueKind.Object)
+                return true;
+
+            email = StringProp(account, "email");
+            var type = StringProp(account, "type");
+            authenticated = type is "chatgpt" or "personalAccessToken";
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

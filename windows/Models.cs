@@ -66,6 +66,13 @@ public static class AgentKindExtensions
         AgentKind.Cursor => "Cursor",
         _ => "Claude",
     };
+
+    public static string ProviderName(this AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => "OpenAI",
+        AgentKind.Cursor => "Cursor",
+        _ => "Anthropic",
+    };
 }
 
 /// <summary>A snapshot of a currently active coding-agent session.</summary>
@@ -107,6 +114,8 @@ public sealed record UsageInfo
     public required UsageWindow Weekly { get; init; }
     /// <summary>Per-model weekly limits, in API order. Empty when the plan has none.</summary>
     public IReadOnlyList<ModelUsageWindow> ModelWeekly { get; init; } = [];
+    /// <summary>Subscription plan label from the OAuth profile, e.g. "Pro".</summary>
+    public string? PlanName { get; init; }
 }
 
 // --- Cursor subscription usage

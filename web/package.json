@@ -14,7 +14,7 @@
     "deploy": "bun run build && wrangler deploy"
   },
   "dependencies": {
-    "@astrojs/cloudflare": "^14.1.4",
+    "@astrojs/cloudflare": "^14.1.7",
     "@astrojs/sitemap": "^3.7.3",
     "astro": "^7.1.3"
   },

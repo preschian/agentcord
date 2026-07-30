@@ -3,9 +3,13 @@
 //
 // Numbers come from undocumented endpoints the Cursor app itself calls. We
 // reuse Cursor's access token from %APPDATA%\Cursor\auth.json (preferred) or
-// state.vscdb via sqlite3, then hit the same endpoints. Best-effort: missing
-// token / expired auth / endpoint change leaves Current null (or the last
-// cached snapshot while still fresh). Port of AgentCord/CursorUsage.swift.
+// state.vscdb via sqlite3, then hit the same endpoints. Account email and plan
+// prefer the IDE's state.vscdb cache (cursorAuth/cachedEmail,
+// stripeMembershipType); when those are missing — typical for CLI-only
+// auth.json installs — we fall back to AuthService/GetEmail and
+// /auth/full_stripe_profile. Best-effort: missing token / expired auth /
+// endpoint change leaves Current null (or the last cached snapshot while still
+// fresh). Port of AgentCord/CursorUsage.swift.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -21,6 +25,11 @@ public sealed class CursorUsage : IDisposable
 {
     public CursorUsageInfo? Current { get; private set; }
 
+    /// <summary>Email of the signed-in Cursor account, cached by the Cursor app.</summary>
+    public string? AccountEmail { get; private set; }
+
+    public bool IsAuthenticated { get; private set; }
+
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(300);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromSeconds(60);
     /// <summary>Keep a disk-cached snapshot for a day so relaunch / idle
@@ -30,6 +39,10 @@ public sealed class CursorUsage : IDisposable
     private static readonly Uri PeriodUsageUrl = new(
         "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage");
     private static readonly Uri LegacyUsageUrl = new("https://api2.cursor.sh/auth/usage");
+    private static readonly Uri GetEmailUrl = new(
+        "https://api2.cursor.sh/aiserver.v1.AuthService/GetEmail");
+    private static readonly Uri StripeProfileUrl = new(
+        "https://api2.cursor.sh/auth/full_stripe_profile");
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly object _lock = new();
@@ -45,6 +58,8 @@ public sealed class CursorUsage : IDisposable
             Current = cached.Info;
             _lastSuccess = cached.FetchedAt;
         }
+        IsAuthenticated = ReadAccessToken() is not null;
+        if (IsAuthenticated) AccountEmail = ReadLocalEmail();
     }
 
     public void Start()
@@ -75,9 +90,20 @@ public sealed class CursorUsage : IDisposable
         try
         {
             var token = ReadAccessToken();
-            if (token is null) { HandleFailure(); return; }
+            if (token is null)
+            {
+                IsAuthenticated = false;
+                AccountEmail = null;
+                HandleFailure();
+                return;
+            }
 
-            var membership = ReadMembershipType();
+            IsAuthenticated = true;
+            // Desktop IDE caches email/plan in state.vscdb; CLI-only installs
+            // (auth.json alone) have neither, so fall back to Cursor APIs.
+            AccountEmail = ReadLocalEmail() ?? await FetchEmailAsync(token);
+            var membership = ReadLocalMembershipType() ?? await FetchMembershipAsync(token);
+
             var info = await FetchPeriodUsageAsync(token)
                 ?? await FetchLegacyUsageAsync(token);
             if (info is null) { HandleFailure(); return; }
@@ -137,6 +163,61 @@ public sealed class CursorUsage : IDisposable
         return ParseLegacyUsage(doc.RootElement);
     }
 
+    /// <summary>POST AuthService/GetEmail — used when state.vscdb has no
+    /// cachedEmail (typical for Cursor CLI-only auth.json installs).</summary>
+    private async Task<string?> FetchEmailAsync(string token)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, GetEmailUrl)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.TryAddWithoutValidation("Connect-Protocol-Version", "1");
+            request.Headers.TryAddWithoutValidation("User-Agent", "AgentCord");
+
+            using var response = await _http.SendAsync(request);
+            if (!response.IsSuccessStatusCode) return null;
+
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var email = doc.RootElement.TryGetProperty("email", out var value)
+                && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+            return string.IsNullOrEmpty(email) ? null : email;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>GET /auth/full_stripe_profile → membershipType (e.g. "pro").</summary>
+    private async Task<string?> FetchMembershipAsync(string token)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, StripeProfileUrl);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.TryAddWithoutValidation("User-Agent", "AgentCord");
+
+            using var response = await _http.SendAsync(request);
+            if (!response.IsSuccessStatusCode) return null;
+
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var membership = doc.RootElement.TryGetProperty("membershipType", out var value)
+                && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+            return string.IsNullOrEmpty(membership) ? null : membership;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     // --- Auth
 
     /// <summary>Prefer auth.json (common on Windows CLI installs), then the
@@ -144,8 +225,11 @@ public sealed class CursorUsage : IDisposable
     private static string? ReadAccessToken() =>
         ReadAuthJsonToken() ?? ReadStateValue("cursorAuth/accessToken");
 
-    private static string? ReadMembershipType() =>
+    private static string? ReadLocalMembershipType() =>
         ReadStateValue("cursorAuth/stripeMembershipType");
+
+    private static string? ReadLocalEmail() =>
+        ReadStateValue("cursorAuth/cachedEmail");
 
     private static string? ReadAuthJsonToken()
     {

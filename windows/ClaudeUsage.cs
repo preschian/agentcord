@@ -10,6 +10,9 @@
 // fresh on every poll, so while Claude Code keeps it refreshed we stay current
 // without implementing the OAuth refresh flow.
 //
+// Account email and plan label come from /api/oauth/profile (refreshed at most
+// once per day, or when the access token changes).
+//
 // Everything is best-effort: any failure (no token, expired token, endpoint
 // changed, offline) just leaves Current null and the menu shows a dash.
 
@@ -25,6 +28,9 @@ public sealed class ClaudeUsage : IDisposable
     /// <summary>The latest usage snapshot, or null when it could not be fetched.</summary>
     public UsageInfo? Current { get; private set; }
 
+    /// <summary>Email of the signed-in Claude account, from the OAuth profile.</summary>
+    public string? AccountEmail { get; private set; }
+
     /// <summary>How often to refresh while the app runs. The numbers move slowly
     /// and the endpoint rate-limits aggressively (HTTP 429), so poll sparingly.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(300);
@@ -37,12 +43,19 @@ public sealed class ClaudeUsage : IDisposable
     /// start failing, so a transient blip doesn't make the readout vanish.</summary>
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromSeconds(1800);
 
+    /// <summary>Plans change rarely; refresh the profile at most once a day.</summary>
+    public TimeSpan PlanRefreshInterval { get; init; } = TimeSpan.FromHours(24);
+
     private static readonly Uri Endpoint = new("https://api.anthropic.com/api/oauth/usage");
+    private static readonly Uri ProfileEndpoint = new("https://api.anthropic.com/api/oauth/profile");
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly object _lock = new();
     private DateTime _lastSuccess = DateTime.MinValue;
     private DateTime _lastAttempt = DateTime.MinValue;
+    private DateTime _planFetchedAt = DateTime.MinValue;
+    private string? _planName;
+    private string? _lastProfileAccessToken;
     private System.Threading.Timer? _timer;
 
     public void Start()
@@ -76,25 +89,127 @@ public sealed class ClaudeUsage : IDisposable
         try
         {
             var token = ReadAccessToken();
-            if (token is null) { HandleFailure(); return; }
+            if (token is null)
+            {
+                lock (_lock)
+                {
+                    _lastProfileAccessToken = null;
+                    _planFetchedAt = DateTime.MinValue;
+                }
+                AccountEmail = null;
+                HandleFailure();
+                return;
+            }
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
-            request.Headers.Add("anthropic-version", "2023-06-01");
+            await FetchPlanIfStaleAsync(token);
 
+            using var request = MakeAuthRequest(HttpMethod.Get, Endpoint, token);
             using var response = await _http.SendAsync(request);
             if (!response.IsSuccessStatusCode) { HandleFailure(); return; }
 
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
             var info = ParseUsage(doc.RootElement);
-            lock (_lock) _lastSuccess = DateTime.UtcNow;
+            string? plan;
+            lock (_lock)
+            {
+                _lastSuccess = DateTime.UtcNow;
+                plan = _planName;
+            }
+            if (plan is not null) info = info with { PlanName = plan };
             Current = info;
         }
         catch
         {
             HandleFailure();
         }
+    }
+
+    /// <summary>Refreshes the plan label and account email from the OAuth
+    /// profile endpoint, at most once per PlanRefreshInterval (or when the
+    /// access token changes). Best-effort.</summary>
+    private async Task FetchPlanIfStaleAsync(string token)
+    {
+        lock (_lock)
+        {
+            var tokenChanged = !string.Equals(_lastProfileAccessToken, token, StringComparison.Ordinal);
+            if (!tokenChanged && DateTime.UtcNow - _planFetchedAt < PlanRefreshInterval)
+                return;
+            _planFetchedAt = DateTime.UtcNow;
+            _lastProfileAccessToken = token;
+        }
+
+        try
+        {
+            using var request = MakeAuthRequest(HttpMethod.Get, ProfileEndpoint, token);
+            using var response = await _http.SendAsync(request);
+            if (!response.IsSuccessStatusCode) return;
+
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var root = doc.RootElement;
+            var email = root.TryGetProperty("account", out var account)
+                && account.ValueKind == JsonValueKind.Object
+                ? StringProp(account, "email")
+                : null;
+            AccountEmail = string.IsNullOrEmpty(email) ? null : email;
+
+            var plan = PlanLabel(root);
+            if (plan is null) return;
+
+            UsageInfo? updated = null;
+            lock (_lock)
+            {
+                _planName = plan;
+                if (Current is { } cur && cur.PlanName != plan)
+                    updated = cur with { PlanName = plan };
+            }
+            if (updated is not null) Current = updated;
+        }
+        catch
+        {
+            // Best-effort: keep the last known plan / email.
+        }
+    }
+
+    private static HttpRequestMessage MakeAuthRequest(HttpMethod method, Uri url, string token)
+    {
+        var request = new HttpRequestMessage(method, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+        return request;
+    }
+
+    /// <summary>Display label, e.g. "Pro" from "claude_pro". Prefers the
+    /// organization type; falls back to the account's plan booleans.</summary>
+    private static string? PlanLabel(JsonElement root)
+    {
+        if (root.TryGetProperty("organization", out var org) && org.ValueKind == JsonValueKind.Object
+            && StringProp(org, "organization_type") is { Length: > 0 } type)
+        {
+            var stripped = type.StartsWith("claude_", StringComparison.Ordinal)
+                ? type["claude_".Length..]
+                : type;
+            return CapitalizeWords(stripped.Replace('_', ' '));
+        }
+
+        if (root.TryGetProperty("account", out var account) && account.ValueKind == JsonValueKind.Object)
+        {
+            if (BoolProp(account, "has_claude_max") == true) return "Max";
+            if (BoolProp(account, "has_claude_pro") == true) return "Pro";
+        }
+        return null;
+    }
+
+    private static string CapitalizeWords(string value)
+    {
+        var parts = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var p = parts[i];
+            parts[i] = p.Length == 0 ? p
+                : char.ToUpperInvariant(p[0]) + (p.Length > 1 ? p[1..].ToLowerInvariant() : "");
+        }
+        return string.Join(' ', parts);
     }
 
     /// <summary>A failed fetch keeps the last good snapshot until it ages past
@@ -185,6 +300,11 @@ public sealed class ClaudeUsage : IDisposable
     private static string? StringProp(JsonElement obj, string name) =>
         obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString() : null;
+
+    private static bool? BoolProp(JsonElement obj, string name) =>
+        obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(name, out var v) &&
+        (v.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            ? v.GetBoolean() : null;
 
     private static double? NumberProp(JsonElement? obj, string name) =>
         obj is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number

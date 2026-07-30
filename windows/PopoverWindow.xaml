@@ -146,19 +146,27 @@
             <Grid.ColumnDefinitions>
               <ColumnDefinition/>
               <ColumnDefinition/>
+              <ColumnDefinition/>
             </Grid.ColumnDefinitions>
             <Button x:Name="ClaudeAgentButton" Grid.Column="0" Style="{StaticResource PlainRow}"
                     Click="OnSelectClaude">
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="8,5">
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="6,5">
                 <Ellipse Width="6" Height="6" Fill="#FFD97757" VerticalAlignment="Center"/>
                 <TextBlock x:Name="ClaudeAgentText" Text="Claude" FontSize="12" Margin="5,0,0,0"/>
               </StackPanel>
             </Button>
             <Button x:Name="CodexAgentButton" Grid.Column="1" Style="{StaticResource PlainRow}"
                     Click="OnSelectCodex">
-              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="8,5">
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="6,5">
                 <Ellipse Width="6" Height="6" Fill="#FF10A37F" VerticalAlignment="Center"/>
                 <TextBlock x:Name="CodexAgentText" Text="Codex" FontSize="12" Margin="5,0,0,0"/>
+              </StackPanel>
+            </Button>
+            <Button x:Name="CursorAgentButton" Grid.Column="2" Style="{StaticResource PlainRow}"
+                    Click="OnSelectCursor">
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="6,5">
+                <Ellipse Width="6" Height="6" Fill="#FF111111" VerticalAlignment="Center"/>
+                <TextBlock x:Name="CursorAgentText" Text="Cursor" FontSize="12" Margin="5,0,0,0"/>
               </StackPanel>
             </Button>
           </Grid>
@@ -323,6 +331,15 @@
               <StackPanel Orientation="Horizontal">
                 <Ellipse Width="6" Height="6" Fill="#FF10A37F" VerticalAlignment="Center"/>
                 <TextBlock Text="Codex" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
+              </StackPanel>
+            </DockPanel>
+            <Rectangle Height="1" Fill="#0D000000"/>
+            <DockPanel Margin="0,5">
+              <ToggleButton x:Name="CursorAgentSwitch" DockPanel.Dock="Right"
+                            Style="{StaticResource Switch}" Click="OnCursorAgentSwitch"/>
+              <StackPanel Orientation="Horizontal">
+                <Ellipse Width="6" Height="6" Fill="#FF111111" VerticalAlignment="Center"/>
+                <TextBlock Text="Cursor" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
               </StackPanel>
             </DockPanel>
           </StackPanel>

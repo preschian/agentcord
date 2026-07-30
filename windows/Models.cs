@@ -55,6 +55,7 @@ public enum AgentKind
 {
     Claude,
     Codex,
+    Cursor,
 }
 
 public static class AgentKindExtensions
@@ -62,6 +63,7 @@ public static class AgentKindExtensions
     public static string DisplayName(this AgentKind agent) => agent switch
     {
         AgentKind.Codex => "Codex",
+        AgentKind.Cursor => "Cursor",
         _ => "Claude",
     };
 }
@@ -105,6 +107,19 @@ public sealed record UsageInfo
     public required UsageWindow Weekly { get; init; }
     /// <summary>Per-model weekly limits, in API order. Empty when the plan has none.</summary>
     public IReadOnlyList<ModelUsageWindow> ModelWeekly { get; init; } = [];
+}
+
+// --- Cursor subscription usage
+
+/// <summary>Cursor billing-period usage from the undocumented dashboard API.</summary>
+public sealed record CursorUsageInfo
+{
+    public required UsageWindow Included { get; init; }
+    public UsageWindow? Auto { get; init; }
+    public UsageWindow? Api { get; init; }
+    public UsageWindow? OnDemand { get; init; }
+    /// <summary>Human-readable plan name, e.g. "pro".</summary>
+    public string? PlanName { get; init; }
 }
 
 // --- Codex / ChatGPT subscription usage

@@ -12,7 +12,7 @@
     <ApplicationIcon>assets\agentcord.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <Version>0.4.0</Version>
-    <Description>Claude Code and Codex activity on your Discord profile</Description>
+    <Description>Claude Code, Codex, and Cursor activity on your Discord profile</Description>
   </PropertyGroup>
 
   <!-- The project mixes WinForms (tray icon) and WPF (popover). Drop the
@@ -22,6 +22,9 @@
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
   </ItemGroup>
 
 </Project>

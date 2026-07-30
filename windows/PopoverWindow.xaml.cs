@@ -23,6 +23,7 @@ public partial class PopoverWindow : Window
     private readonly PresenceController _controller;
     private readonly ClaudeUsage _usage;
     private readonly CodexUsage _codexUsage;
+    private readonly CursorUsage _cursorUsage;
     private readonly AnthropicStatus _status;
     private readonly SleepGuard _sleepGuard;
     private readonly Action _quit;
@@ -62,12 +63,13 @@ public partial class PopoverWindow : Window
 
     public PopoverWindow(
         Settings settings, PresenceController controller, ClaudeUsage usage, CodexUsage codexUsage,
-        AnthropicStatus status, SleepGuard sleepGuard, Action quit)
+        CursorUsage cursorUsage, AnthropicStatus status, SleepGuard sleepGuard, Action quit)
     {
         _settings = settings;
         _controller = controller;
         _usage = usage;
         _codexUsage = codexUsage;
+        _cursorUsage = cursorUsage;
         _status = status;
         _sleepGuard = sleepGuard;
         _quit = quit;
@@ -93,6 +95,7 @@ public partial class PopoverWindow : Window
         // (throttled internally) so they're current.
         _usage.Refresh();
         _codexUsage.Refresh();
+        _cursorUsage.Refresh();
         _status.Refresh();
         ShowMainScreen();
         UpdateUi();
@@ -248,6 +251,9 @@ public partial class PopoverWindow : Window
     private void OnSelectCodex(object sender, RoutedEventArgs e) =>
         SelectAgent(AgentKind.Codex);
 
+    private void OnSelectCursor(object sender, RoutedEventArgs e) =>
+        SelectAgent(AgentKind.Cursor);
+
     private void SelectAgent(AgentKind agent)
     {
         _settings.SelectedAgent = agent;
@@ -262,6 +268,9 @@ public partial class PopoverWindow : Window
 
     private void OnCodexAgentSwitch(object sender, RoutedEventArgs e) =>
         SaveAgentToggle(AgentKind.Codex, CodexAgentSwitch);
+
+    private void OnCursorAgentSwitch(object sender, RoutedEventArgs e) =>
+        SaveAgentToggle(AgentKind.Cursor, CursorAgentSwitch);
 
     private void SaveAgentToggle(AgentKind agent, ToggleButton toggle)
     {
@@ -337,8 +346,11 @@ public partial class PopoverWindow : Window
             ? WithAlpha(Blue, 0x1F) : Colors.Transparent);
         CodexAgentButton.Background = Brush(selectedAgent == AgentKind.Codex
             ? WithAlpha(Rgb(0x10, 0xA3, 0x7F), 0x24) : Colors.Transparent);
+        CursorAgentButton.Background = Brush(selectedAgent == AgentKind.Cursor
+            ? WithAlpha(Rgb(0x11, 0x11, 0x11), 0x1F) : Colors.Transparent);
         ClaudeAgentText.FontWeight = selectedAgent == AgentKind.Claude ? FontWeights.SemiBold : FontWeights.Normal;
         CodexAgentText.FontWeight = selectedAgent == AgentKind.Codex ? FontWeights.SemiBold : FontWeights.Normal;
+        CursorAgentText.FontWeight = selectedAgent == AgentKind.Cursor ? FontWeights.SemiBold : FontWeights.Normal;
 
         // Connection pill.
         if (!presenceOn)
@@ -394,7 +406,12 @@ public partial class PopoverWindow : Window
             if (_expandStatus) StatusFooterText.Text = StatusFooter(status);
         }
 
-        var enabledAgents = new[] { _settings.AgentClaudeEnabled, _settings.AgentCodexEnabled }.Count(v => v);
+        var enabledAgents = new[]
+        {
+            _settings.AgentClaudeEnabled,
+            _settings.AgentCodexEnabled,
+            _settings.AgentCursorEnabled,
+        }.Count(v => v);
         SettingsSummary.Text = enabledAgents == 1 ? "1 agent on" : $"{enabledAgents} agents on";
 
         // Settings screen.
@@ -406,6 +423,7 @@ public partial class PopoverWindow : Window
         ShowTokensSwitch.IsChecked = _settings.ShowTokens;
         ClaudeAgentSwitch.IsChecked = _settings.AgentClaudeEnabled;
         CodexAgentSwitch.IsChecked = _settings.AgentCodexEnabled;
+        CursorAgentSwitch.IsChecked = _settings.AgentCursorEnabled;
 
         var displayCount = new[] { _settings.ShowProject, _settings.ShowModel, _settings.ShowTokens }.Count(v => v);
         DisplaySummary.Text = $"{displayCount} on";
@@ -431,6 +449,21 @@ public partial class PopoverWindow : Window
                 rows.Add((usage.SecondaryLabel ?? "Secondary limit", usage.Secondary));
             if (usage is not null)
                 rows.AddRange(usage.AdditionalWindows.Select(item => (item.Label, (UsageWindow?)item.Window)));
+            RenderUsageRows(rows);
+            return;
+        }
+
+        if (agent == AgentKind.Cursor)
+        {
+            var usage = _cursorUsage.Current;
+            var rows = new List<(string Label, UsageWindow? Window)>
+            {
+                ("Included", usage?.Included),
+            };
+            if (usage?.Auto is not null) rows.Add(("Auto", usage.Auto));
+            if (usage?.Api is not null) rows.Add(("API", usage.Api));
+            if (usage?.OnDemand is not null) rows.Add(("On-demand", usage.OnDemand));
+            if (usage is null) rows.Add(("API", null));
             RenderUsageRows(rows);
             return;
         }

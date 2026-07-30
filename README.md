@@ -7,7 +7,7 @@ The app lives in the macOS menu bar or Windows system tray with no window in the
 **Downloads:** prebuilt binaries for [macOS](https://github.com/preschian/agentcord/releases/latest/download/AgentCord.dmg) and [Windows](https://github.com/preschian/agentcord/releases/latest/download/agentcord.exe) are on [GitHub Releases](https://github.com/preschian/agentcord/releases).
 
 > [!NOTE]
-> The Windows exe needs the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). If it doesn't start, install it with `winget install Microsoft.DotNet.DesktopRuntime.8` and try again.
+> The Windows exe needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). If it doesn't start, install it with `winget install Microsoft.DotNet.DesktopRuntime.10` and try again.
 
 > [!NOTE]
 > The macOS app isn't signed or notarized by Apple yet, so the first time you open it macOS will block it. To open it anyway: open the app once (macOS shows a warning and refuses), then go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the AgentCord message. This is only needed the first time.

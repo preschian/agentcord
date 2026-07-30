@@ -1,9 +1,11 @@
 # AgentCord for Windows (C# / .NET)
 
 A native Windows port of the macOS menu bar app, written in C# on .NET 8. Same
-idea: while a Claude Code or Codex session is running, your Discord profile
-shows what you're working on, and it clears itself when the session goes quiet
-or you quit. If both agents are active, the most recently updated session wins.
+idea: while a Claude Code, Codex, or Cursor session is running, your Discord
+profile shows what you're working on, and it clears itself when the session
+goes quiet or you quit. Cursor covers both the Cursor CLI and Cursor sessions
+driven through T3 Code. If several agents are active, the most recently updated
+session wins.
 
 The app lives entirely in the system tray — no taskbar entry. Left-clicking the
 tray icon opens a popover that mirrors the macOS one: rounded cards, a
@@ -21,7 +23,7 @@ matching the macOS app's ethos.
 |---|---|---|
 | Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` (`DiscordIpc.cs`) |
 | IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
-| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects` and `%USERPROFILE%\.codex\sessions` (`ClaudeSession.cs`, `CodexSession.cs`) |
+| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, and `%USERPROFILE%\.cursor\projects/**/agent-transcripts` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`) |
 | Presence controller | `PresenceController.swift` | `PresenceController.cs` |
 | Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs` (credentials file + `HttpClient`) and `CodexUsage.cs` (`codex app-server`) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
@@ -53,7 +55,7 @@ dotnet run
 session (project, model, live elapsed timer, tokens), provider-specific usage
 bars, an expandable Claude status breakdown, and a Settings screen with agent
 toggles, presence, launch-at-login, prevent-sleep, display fields, activity
-type, and the idle window. Use the Claude/Codex switcher to inspect either
+type, and the idle window. Use the Claude/Codex/Cursor switcher to inspect an
 agent. **Right-click** for a quick menu (show, toggle presence, quit).
 
 Two debug flags: `--popover` opens the popover at startup, and
@@ -93,11 +95,13 @@ ERROR/CLOSE) alongside its writes, matching the macOS design. Reconnects use
 exponential backoff capped at 30s, and the current activity is re-sent on
 every READY.
 
-**Session detection.** `ClaudeSession.cs` and `CodexSession.cs` re-scan their
-transcript trees on the controller's 3-second tick and parse each `.jsonl`
-defensively. Claude's totals cover the local calendar day; Codex reports the
-current transcript's model, latest context token count, and start time. Per-file aggregates
-are memoized by mtime so re-scans stay cheap. Repo names come from `git`
+**Session detection.** `ClaudeSession.cs`, `CodexSession.cs`, and
+`CursorSession.cs` re-scan their transcript trees on the controller's 3-second
+tick and parse each `.jsonl` defensively. Claude's totals cover the local
+calendar day; Codex reports the current transcript's model, latest context
+token count, and start time; Cursor sums working time over the last 24 hours
+and enriches from `~/.cursor/chats/**/meta.json`. Per-file aggregates are
+memoized by mtime so re-scans stay cheap. Repo names come from `git`
 (remote origin, then toplevel, then the directory name), spawned with
 `CreateNoWindow` so nothing flashes a console.
 

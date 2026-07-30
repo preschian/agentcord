@@ -55,6 +55,7 @@ public enum AgentKind
 {
     Claude,
     Codex,
+    Cursor,
 }
 
 public static class AgentKindExtensions
@@ -62,6 +63,7 @@ public static class AgentKindExtensions
     public static string DisplayName(this AgentKind agent) => agent switch
     {
         AgentKind.Codex => "Codex",
+        AgentKind.Cursor => "Cursor",
         _ => "Claude",
     };
 }

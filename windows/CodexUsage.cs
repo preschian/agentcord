@@ -1,6 +1,12 @@
 // Reads Codex / ChatGPT subscription rate limits through Codex's local
 // app-server JSONL protocol. Codex remains the owner of its credentials and
 // refresh lifecycle; AgentCord never reads OAuth tokens directly.
+//
+// Best-effort: a failed probe keeps the last disk-cached snapshot so relaunch
+// / idle stretches still show numbers instead of "Waiting for Codex usage…".
+// The cache is bound to Codex's local account_id so a logout or account switch
+// cannot keep showing another account's numbers. We only read account_id for
+// that binding — OAuth tokens stay owned by Codex / app-server.
 
 using System.Diagnostics;
 using System.IO;
@@ -19,20 +25,50 @@ public sealed class CodexUsage : IDisposable
 
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMinutes(5);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromMinutes(1);
+    /// <summary>How long a disk-cached snapshot may still be shown after the last
+    /// successful fetch. Matches macOS — generous so an idle stretch or a
+    /// relaunch shows the last known numbers instead of "Waiting…".</summary>
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
     private readonly object _lock = new();
     private DateTime _lastAttempt = DateTime.MinValue;
     private DateTime _lastSuccess = DateTime.MinValue;
+    private string? _accountKey;
     private System.Threading.Timer? _timer;
     private int _fetching;
     private bool _disposed;
 
+    public CodexUsage()
+    {
+        var key = CurrentAccountKey();
+        if (key is null)
+        {
+            ClearCache();
+            return;
+        }
+
+        var cached = LoadCache();
+        if (cached is not null
+            && cached.AccountKey == key
+            && DateTime.UtcNow - cached.FetchedAt <= MaxStaleness)
+        {
+            Current = cached.Info;
+            _lastSuccess = cached.FetchedAt;
+            _accountKey = key;
+            IsAuthenticated = true;
+        }
+        else if (cached is not null)
+        {
+            ClearCache();
+        }
+    }
+
     public void Start()
     {
+        var first = Current is null ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(5);
         _timer = new System.Threading.Timer(
-            _ => _ = FetchAsync(), null, TimeSpan.FromSeconds(2), PollInterval);
+            _ => _ = FetchAsync(), null, first, PollInterval);
     }
 
     public void Refresh()
@@ -57,6 +93,17 @@ public sealed class CodexUsage : IDisposable
 
         try
         {
+            var key = CurrentAccountKey();
+            if (key is null)
+            {
+                InvalidateIdentity();
+                return;
+            }
+
+            if (_accountKey is not null && _accountKey != key)
+                InvalidateIdentity();
+            _accountKey = key;
+
             var executable = FindExecutable();
             if (executable is null)
             {
@@ -121,7 +168,13 @@ public sealed class CodexUsage : IDisposable
                 catch { }
             }
 
-            if (authenticated is bool auth) IsAuthenticated = auth;
+            if (authenticated == false)
+            {
+                InvalidateIdentity();
+                return;
+            }
+
+            if (authenticated is true) IsAuthenticated = true;
             AccountEmail = string.IsNullOrEmpty(email) ? null : email;
 
             if (result is null)
@@ -133,6 +186,7 @@ public sealed class CodexUsage : IDisposable
             if (!IsAuthenticated) IsAuthenticated = true;
             Current = result;
             lock (_lock) _lastSuccess = DateTime.UtcNow;
+            SaveCache(result, _lastSuccess, key);
         }
         catch
         {
@@ -148,7 +202,95 @@ public sealed class CodexUsage : IDisposable
     {
         lock (_lock)
         {
-            if (DateTime.UtcNow - _lastSuccess > MaxStaleness) Current = null;
+            if (DateTime.UtcNow - _lastSuccess > MaxStaleness)
+                InvalidateIdentityUnlocked();
+        }
+    }
+
+    private void InvalidateIdentity()
+    {
+        lock (_lock) InvalidateIdentityUnlocked();
+    }
+
+    private void InvalidateIdentityUnlocked()
+    {
+        Current = null;
+        AccountEmail = null;
+        IsAuthenticated = false;
+        _accountKey = null;
+        _lastSuccess = DateTime.MinValue;
+        ClearCache();
+    }
+
+    // --- Disk cache
+
+    /// <summary>AccountKey is Codex's local tokens.account_id from auth.json.</summary>
+    private sealed record CachePayload(DateTime FetchedAt, string AccountKey, CodexUsageInfo Info);
+
+    private static string CachePath
+    {
+        get
+        {
+            var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrEmpty(baseDir)) baseDir = Path.GetTempPath();
+            return Path.Combine(baseDir, "AgentCord", "codex-usage-cache.json");
+        }
+    }
+
+    private static CachePayload? LoadCache()
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<CachePayload>(File.ReadAllText(CachePath));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void SaveCache(CodexUsageInfo info, DateTime fetchedAt, string accountKey)
+    {
+        try
+        {
+            var path = CachePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(new CachePayload(fetchedAt, accountKey, info)));
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            // Best-effort cache.
+        }
+    }
+
+    private static void ClearCache()
+    {
+        try { File.Delete(CachePath); }
+        catch { }
+        try { File.Delete(CachePath + ".tmp"); }
+        catch { }
+    }
+
+    /// <summary>Stable ChatGPT account id from Codex's auth.json. Identity only —
+    /// we never read or refresh the OAuth tokens ourselves.</summary>
+    private static string? CurrentAccountKey()
+    {
+        try
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var path = Path.Combine(home, ".codex", "auth.json");
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (!doc.RootElement.TryGetProperty("tokens", out var tokens)
+                || tokens.ValueKind != JsonValueKind.Object)
+                return null;
+            var id = tokens.TryGetProperty("account_id", out var value) ? value.GetString() : null;
+            return string.IsNullOrEmpty(id) ? null : id;
+        }
+        catch
+        {
+            return null;
         }
     }
 

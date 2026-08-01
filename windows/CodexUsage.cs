@@ -1,6 +1,9 @@
 // Reads Codex / ChatGPT subscription rate limits through Codex's local
 // app-server JSONL protocol. Codex remains the owner of its credentials and
 // refresh lifecycle; AgentCord never reads OAuth tokens directly.
+//
+// Best-effort: a failed probe keeps the last disk-cached snapshot so relaunch
+// / idle stretches still show numbers instead of "Waiting for Codex usage…".
 
 using System.Diagnostics;
 using System.IO;
@@ -19,6 +22,9 @@ public sealed class CodexUsage : IDisposable
 
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMinutes(5);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromMinutes(1);
+    /// <summary>How long a disk-cached snapshot may still be shown after the last
+    /// successful fetch. Matches macOS — generous so an idle stretch or a
+    /// relaunch shows the last known numbers instead of "Waiting…".</summary>
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
@@ -29,10 +35,21 @@ public sealed class CodexUsage : IDisposable
     private int _fetching;
     private bool _disposed;
 
+    public CodexUsage()
+    {
+        if (LoadCache() is { } cached
+            && DateTime.UtcNow - cached.FetchedAt <= MaxStaleness)
+        {
+            Current = cached.Info;
+            _lastSuccess = cached.FetchedAt;
+        }
+    }
+
     public void Start()
     {
+        var first = Current is null ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(5);
         _timer = new System.Threading.Timer(
-            _ => _ = FetchAsync(), null, TimeSpan.FromSeconds(2), PollInterval);
+            _ => _ = FetchAsync(), null, first, PollInterval);
     }
 
     public void Refresh()
@@ -133,6 +150,7 @@ public sealed class CodexUsage : IDisposable
             if (!IsAuthenticated) IsAuthenticated = true;
             Current = result;
             lock (_lock) _lastSuccess = DateTime.UtcNow;
+            SaveCache(result, _lastSuccess);
         }
         catch
         {
@@ -148,8 +166,58 @@ public sealed class CodexUsage : IDisposable
     {
         lock (_lock)
         {
-            if (DateTime.UtcNow - _lastSuccess > MaxStaleness) Current = null;
+            if (DateTime.UtcNow - _lastSuccess > MaxStaleness)
+            {
+                Current = null;
+                ClearCache();
+            }
         }
+    }
+
+    // --- Disk cache
+
+    private sealed record CachePayload(DateTime FetchedAt, CodexUsageInfo Info);
+
+    private static string CachePath
+    {
+        get
+        {
+            var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrEmpty(baseDir)) baseDir = Path.GetTempPath();
+            return Path.Combine(baseDir, "AgentCord", "codex-usage-cache.json");
+        }
+    }
+
+    private static CachePayload? LoadCache()
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<CachePayload>(File.ReadAllText(CachePath));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void SaveCache(CodexUsageInfo info, DateTime fetchedAt)
+    {
+        try
+        {
+            var path = CachePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, JsonSerializer.Serialize(new CachePayload(fetchedAt, info)));
+        }
+        catch
+        {
+            // Best-effort cache.
+        }
+    }
+
+    private static void ClearCache()
+    {
+        try { File.Delete(CachePath); }
+        catch { }
     }
 
     private static bool TryParseAccount(string line, out string? email, out bool authenticated)

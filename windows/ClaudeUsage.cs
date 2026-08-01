@@ -13,8 +13,9 @@
 // Account email and plan label come from /api/oauth/profile (refreshed at most
 // once per day, or when the access token changes).
 //
-// Everything is best-effort: any failure (no token, expired token, endpoint
-// changed, offline) just leaves Current null and the menu shows a dash.
+// Everything is best-effort: any failure (no token, expired token, rate limit,
+// endpoint change) keeps the last disk-cached snapshot so the popover stays
+// filled instead of showing "Waiting for Claude usage…".
 
 using System.IO;
 using System.Net.Http;
@@ -39,9 +40,10 @@ public sealed class ClaudeUsage : IDisposable
     /// (menu opens) so reopening the menu can't hammer the endpoint.</summary>
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromSeconds(60);
 
-    /// <summary>How long to keep showing the last good snapshot after fetches
-    /// start failing, so a transient blip doesn't make the readout vanish.</summary>
-    public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromSeconds(1800);
+    /// <summary>How long a disk-cached snapshot may still be shown after the last
+    /// successful fetch. Claude's usage endpoint 429s often, so this matches
+    /// macOS at a full day — better a slightly stale bar than "Waiting…".</summary>
+    public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
 
     /// <summary>Plans change rarely; refresh the profile at most once a day.</summary>
     public TimeSpan PlanRefreshInterval { get; init; } = TimeSpan.FromHours(24);
@@ -58,9 +60,25 @@ public sealed class ClaudeUsage : IDisposable
     private string? _lastProfileAccessToken;
     private System.Threading.Timer? _timer;
 
+    public ClaudeUsage()
+    {
+        // Restore a still-usable snapshot before the first network round-trip so
+        // the popover isn't empty while we wait (or while the API rate-limits).
+        if (LoadCache() is { } cached
+            && DateTime.UtcNow - cached.FetchedAt <= MaxStaleness)
+        {
+            Current = cached.Info;
+            _lastSuccess = cached.FetchedAt;
+            _planName = cached.Info.PlanName;
+        }
+    }
+
     public void Start()
     {
-        _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, TimeSpan.FromSeconds(1), PollInterval);
+        // Prefer a slightly longer first delay when we already have a cache hit,
+        // so we don't immediately burn a rate-limit slot on every relaunch.
+        var first = Current is null ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(5);
+        _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, first, PollInterval);
     }
 
     /// <summary>Request a refresh (e.g. when the menu opens). Throttled by
@@ -117,6 +135,7 @@ public sealed class ClaudeUsage : IDisposable
             }
             if (plan is not null) info = info with { PlanName = plan };
             Current = info;
+            SaveCache(info, _lastSuccess);
         }
         catch
         {
@@ -152,6 +171,7 @@ public sealed class ClaudeUsage : IDisposable
 
             var plan = PlanLabel(root);
             UsageInfo? updated = null;
+            DateTime fetchedAt = DateTime.MinValue;
             lock (_lock)
             {
                 // Only stamp the throttle after a successful profile parse so a
@@ -162,10 +182,19 @@ public sealed class ClaudeUsage : IDisposable
                 {
                     _planName = plan;
                     if (Current is { } cur && cur.PlanName != plan)
+                    {
                         updated = cur with { PlanName = plan };
+                        fetchedAt = _lastSuccess;
+                    }
                 }
             }
-            if (updated is not null) Current = updated;
+            if (updated is not null)
+            {
+                Current = updated;
+                // Keep the disk cache in step so a relaunch shows the new plan.
+                if (fetchedAt != DateTime.MinValue)
+                    SaveCache(updated, fetchedAt);
+            }
         }
         catch
         {
@@ -217,13 +246,63 @@ public sealed class ClaudeUsage : IDisposable
     }
 
     /// <summary>A failed fetch keeps the last good snapshot until it ages past
-    /// MaxStaleness, so a transient hiccup doesn't make the readout flicker.</summary>
+    /// MaxStaleness, so a transient hiccup / 429 doesn't blank the readout.</summary>
     private void HandleFailure()
     {
         lock (_lock)
         {
-            if (DateTime.UtcNow - _lastSuccess > MaxStaleness) Current = null;
+            if (DateTime.UtcNow - _lastSuccess > MaxStaleness)
+            {
+                Current = null;
+                ClearCache();
+            }
         }
+    }
+
+    // --- Disk cache
+
+    private sealed record CachePayload(DateTime FetchedAt, UsageInfo Info);
+
+    private static string CachePath
+    {
+        get
+        {
+            var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrEmpty(baseDir)) baseDir = Path.GetTempPath();
+            return Path.Combine(baseDir, "AgentCord", "claude-usage-cache.json");
+        }
+    }
+
+    private static CachePayload? LoadCache()
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<CachePayload>(File.ReadAllText(CachePath));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void SaveCache(UsageInfo info, DateTime fetchedAt)
+    {
+        try
+        {
+            var path = CachePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, JsonSerializer.Serialize(new CachePayload(fetchedAt, info)));
+        }
+        catch
+        {
+            // Best-effort cache.
+        }
+    }
+
+    private static void ClearCache()
+    {
+        try { File.Delete(CachePath); }
+        catch { }
     }
 
     /// <summary>Reads Claude Code's OAuth access token from

@@ -41,10 +41,11 @@ public sealed class CodexSession
         if (files.Count == 0) return null;
 
         // Prefer parsed event timestamps over filesystem mtime for idle and
-        // selection. Bound the candidate set by mtime so years of history stay
-        // cheap; the per-file cache keeps re-scans of unchanged files free.
+        // selection. Every transcript must be inspected because an active
+        // session can have a stale mtime; the per-file cache keeps re-scans of
+        // unchanged files cheap.
         SessionInfo? best = null;
-        foreach (var file in files.Take(100))
+        foreach (var file in files)
         {
             var state = ReadTranscript(file.Path, file.Mtime);
             var activityMs = SessionActivity.NormalizeMs(state.LastEventAtMs, file.Mtime);
@@ -68,8 +69,8 @@ public sealed class CodexSession
                 best = info;
         }
 
-        var retained = files.Take(100).Select(file => file.Path).ToHashSet();
-        foreach (var stale in _cache.Keys.Where(path => !retained.Contains(path)).ToList())
+        var livePaths = files.Select(file => file.Path).ToHashSet();
+        foreach (var stale in _cache.Keys.Where(path => !livePaths.Contains(path)).ToList())
             _cache.Remove(stale);
 
         return best;

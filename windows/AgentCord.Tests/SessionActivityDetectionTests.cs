@@ -27,6 +27,18 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void NormalizeMs_uses_event_when_mtime_is_newer()
+    {
+        var eventAt = DateTime.UtcNow.AddHours(-2);
+        var mtime = DateTime.UtcNow.AddSeconds(-10);
+        var activity = SessionActivity.NormalizeMs(
+            new DateTimeOffset(eventAt).ToUnixTimeMilliseconds(), mtime);
+
+        Assert.Equal(new DateTimeOffset(eventAt).ToUnixTimeMilliseconds(), activity);
+        Assert.False(SessionActivity.IsWithinWindow(activity, 60));
+    }
+
+    [Fact]
     public void Claude_detects_active_session_when_mtime_is_stale()
     {
         using var dir = TempDir.Create();
@@ -87,6 +99,35 @@ public sealed class SessionActivityDetectionTests
         Assert.Equal(AgentKind.Codex, info!.Agent);
         Assert.Equal("GPT-5.2", info.Model);
         Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 60));
+    }
+
+    [Fact]
+    public void Codex_finds_active_session_beyond_the_mtime_candidate_limit()
+    {
+        using var dir = TempDir.Create();
+        var day = Path.Combine(dir.Root, "2026", "08", "01");
+        Directory.CreateDirectory(day);
+
+        var now = DateTime.UtcNow;
+        for (var i = 0; i < 100; i++)
+        {
+            var filler = Path.Combine(day, $"filler-{i:D3}.jsonl");
+            File.WriteAllText(filler, "");
+            File.SetLastWriteTimeUtc(filler, now.AddSeconds(-30));
+        }
+
+        var eventAt = DateTimeOffset.UtcNow.AddSeconds(-10);
+        var iso = eventAt.ToString("o");
+        var active = Path.Combine(day, "active.jsonl");
+        File.WriteAllText(active,
+            "{\"timestamp\":\"" + iso + "\",\"type\":\"session_meta\",\"payload\":{\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}}\n");
+        File.SetLastWriteTimeUtc(active, now.AddHours(-2));
+
+        var scanner = new CodexSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        Assert.True(info!.LastModifiedMs >= eventAt.ToUnixTimeMilliseconds());
     }
 
     [Fact]

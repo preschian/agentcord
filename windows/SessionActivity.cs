@@ -5,12 +5,13 @@ namespace AgentCord;
 
 internal static class SessionActivity
 {
-    /// <summary>Newest activity signal from an optional event timestamp and
-    /// filesystem mtime. Event timestamps win when present and newer.</summary>
+    /// <summary>Activity signal from an optional event timestamp and filesystem
+    /// mtime. The filesystem timestamp is only a fallback when no event
+    /// timestamp is available.</summary>
     public static long NormalizeMs(long? eventMs, DateTime mtimeUtc)
     {
         var mtimeMs = new DateTimeOffset(mtimeUtc).ToUnixTimeMilliseconds();
-        return eventMs is long e && e > 0 ? Math.Max(e, mtimeMs) : mtimeMs;
+        return eventMs is long e && e > 0 ? e : mtimeMs;
     }
 
     /// <summary>Newest activity among several optional event timestamps, with

@@ -19,11 +19,7 @@ public sealed class CodexSession
 
     public CodexSession()
     {
-        var configured = Environment.GetEnvironmentVariable("CODEX_HOME");
-        var home = string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex")
-            : configured;
-        _sessionsDir = Path.Combine(home, "sessions");
+        _sessionsDir = Path.Combine(CodexPaths.ResolveHome(), "sessions");
     }
 
     public SessionInfo? Scan()

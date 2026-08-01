@@ -123,6 +123,9 @@ public sealed class CodexUsage : IDisposable
                 },
             };
             process.StartInfo.ArgumentList.Add("app-server");
+            // Match macOS: point app-server at the same home CodexSession uses
+            // so a custom CODEX_HOME is honored for credentials too.
+            process.StartInfo.Environment["CODEX_HOME"] = CodexPaths.ResolveHome();
             if (!process.Start())
             {
                 HandleFailure();
@@ -279,8 +282,7 @@ public sealed class CodexUsage : IDisposable
     {
         try
         {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var path = Path.Combine(home, ".codex", "auth.json");
+            var path = Path.Combine(CodexPaths.ResolveHome(), "auth.json");
             using var doc = JsonDocument.Parse(File.ReadAllText(path));
             if (!doc.RootElement.TryGetProperty("tokens", out var tokens)
                 || tokens.ValueKind != JsonValueKind.Object)

@@ -97,22 +97,34 @@ public sealed class SessionActivityDetectionTests
         Directory.CreateDirectory(transcripts);
         var transcript = Path.Combine(transcripts, "abc123.jsonl");
 
-        var local = DateTimeOffset.Now.AddSeconds(-25);
+        // Cursor embeds wall-clock stamps at minute resolution (no seconds).
+        // Stamp "now" and use an idle window wider than one minute so truncating
+        // seconds cannot push a fresh stamp outside the active window on CI.
+        var local = DateTimeOffset.Now;
         var stamp = local.ToString("dddd, MMM d, yyyy, h:mm tt", CultureInfo.GetCultureInfo("en-US"));
-        var offset = local.Offset;
-        var offsetLabel = FormatUtcOffset(offset);
+        var offsetLabel = FormatUtcOffset(local.Offset);
+        var updatedAtMs = DateTimeOffset.UtcNow.AddSeconds(-20).ToUnixTimeMilliseconds();
 
         File.WriteAllText(transcript,
             "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi <timestamp>" +
             stamp + " (UTC" + offsetLabel + ")</timestamp>\"}]}}\n");
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddHours(-2));
 
-        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
+        // Precise activity signal via chat meta (also exercised by NormalizeMs).
+        var chatDir = Path.Combine(dir.Root, "chats", "workspace", "abc123");
+        Directory.CreateDirectory(chatDir);
+        File.WriteAllText(Path.Combine(chatDir, "meta.json"),
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"createdAtMs\":" + (updatedAtMs - 60_000) +
+            ",\"updatedAtMs\":" + updatedAtMs + "}");
+
+        const double windowSeconds = 180;
+        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = windowSeconds };
         var info = scanner.Scan();
 
         Assert.NotNull(info);
         Assert.Equal(AgentKind.Cursor, info!.Agent);
-        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 60));
+        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, windowSeconds));
+        Assert.True(info.LastModifiedMs >= updatedAtMs);
     }
 
     private static string FormatUtcOffset(TimeSpan offset)

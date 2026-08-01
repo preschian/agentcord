@@ -15,11 +15,15 @@
 //
 // Everything is best-effort: any failure (no token, expired token, rate limit,
 // endpoint change) keeps the last disk-cached snapshot so the popover stays
-// filled instead of showing "Waiting for Claude usage…".
+// filled instead of showing "Waiting for Claude usage…". The cache is bound to
+// a fingerprint of the local refresh token so a logout or account switch cannot
+// keep showing another account's numbers.
 
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace AgentCord;
@@ -58,18 +62,34 @@ public sealed class ClaudeUsage : IDisposable
     private DateTime _planFetchedAt = DateTime.MinValue;
     private string? _planName;
     private string? _lastProfileAccessToken;
+    private string? _accountKey;
     private System.Threading.Timer? _timer;
 
     public ClaudeUsage()
     {
         // Restore a still-usable snapshot before the first network round-trip so
         // the popover isn't empty while we wait (or while the API rate-limits).
-        if (LoadCache() is { } cached
+        // Require a matching account fingerprint so a prior login cannot leak.
+        var key = CurrentAccountKey();
+        if (key is null)
+        {
+            ClearCache();
+            return;
+        }
+
+        var cached = LoadCache();
+        if (cached is not null
+            && cached.AccountKey == key
             && DateTime.UtcNow - cached.FetchedAt <= MaxStaleness)
         {
             Current = cached.Info;
             _lastSuccess = cached.FetchedAt;
             _planName = cached.Info.PlanName;
+            _accountKey = key;
+        }
+        else if (cached is not null)
+        {
+            ClearCache();
         }
     }
 
@@ -106,18 +126,19 @@ public sealed class ClaudeUsage : IDisposable
 
         try
         {
+            var key = CurrentAccountKey();
             var token = ReadAccessToken();
-            if (token is null)
+            if (key is null || token is null)
             {
-                lock (_lock)
-                {
-                    _lastProfileAccessToken = null;
-                    _planFetchedAt = DateTime.MinValue;
-                }
-                AccountEmail = null;
-                HandleFailure();
+                // Logout / missing credentials: drop identity-bound state immediately
+                // rather than serving another account for up to MaxStaleness.
+                InvalidateIdentity();
                 return;
             }
+
+            if (_accountKey is not null && _accountKey != key)
+                InvalidateIdentity();
+            _accountKey = key;
 
             await FetchPlanIfStaleAsync(token);
 
@@ -135,7 +156,7 @@ public sealed class ClaudeUsage : IDisposable
             }
             if (plan is not null) info = info with { PlanName = plan };
             Current = info;
-            SaveCache(info, _lastSuccess);
+            SaveCache(info, _lastSuccess, key);
         }
         catch
         {
@@ -192,8 +213,8 @@ public sealed class ClaudeUsage : IDisposable
             {
                 Current = updated;
                 // Keep the disk cache in step so a relaunch shows the new plan.
-                if (fetchedAt != DateTime.MinValue)
-                    SaveCache(updated, fetchedAt);
+                if (fetchedAt != DateTime.MinValue && _accountKey is { } key)
+                    SaveCache(updated, fetchedAt, key);
             }
         }
         catch
@@ -252,16 +273,34 @@ public sealed class ClaudeUsage : IDisposable
         lock (_lock)
         {
             if (DateTime.UtcNow - _lastSuccess > MaxStaleness)
-            {
-                Current = null;
-                ClearCache();
-            }
+                InvalidateIdentityUnlocked();
         }
+    }
+
+    /// <summary>Drop in-memory and on-disk usage after logout or account switch.</summary>
+    private void InvalidateIdentity()
+    {
+        lock (_lock) InvalidateIdentityUnlocked();
+    }
+
+    private void InvalidateIdentityUnlocked()
+    {
+        Current = null;
+        AccountEmail = null;
+        _planName = null;
+        _accountKey = null;
+        _lastSuccess = DateTime.MinValue;
+        _lastProfileAccessToken = null;
+        _planFetchedAt = DateTime.MinValue;
+        ClearCache();
     }
 
     // --- Disk cache
 
-    private sealed record CachePayload(DateTime FetchedAt, UsageInfo Info);
+    /// <summary>AccountKey is a SHA-256 fingerprint of the local refresh token —
+    /// stable across access-token rotation, changes on re-login / account switch.
+    /// The raw token is never written to disk.</summary>
+    private sealed record CachePayload(DateTime FetchedAt, string AccountKey, UsageInfo Info);
 
     private static string CachePath
     {
@@ -285,13 +324,15 @@ public sealed class ClaudeUsage : IDisposable
         }
     }
 
-    private static void SaveCache(UsageInfo info, DateTime fetchedAt)
+    private static void SaveCache(UsageInfo info, DateTime fetchedAt, string accountKey)
     {
         try
         {
             var path = CachePath;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, JsonSerializer.Serialize(new CachePayload(fetchedAt, info)));
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(new CachePayload(fetchedAt, accountKey, info)));
+            File.Move(tmp, path, overwrite: true);
         }
         catch
         {
@@ -303,6 +344,32 @@ public sealed class ClaudeUsage : IDisposable
     {
         try { File.Delete(CachePath); }
         catch { }
+        try { File.Delete(CachePath + ".tmp"); }
+        catch { }
+    }
+
+    /// <summary>Stable local account fingerprint from Claude Code's refresh
+    /// token. Prefer refresh over access — access rotates frequently and would
+    /// thrash the cache on every Claude Code refresh.</summary>
+    private static string? CurrentAccountKey()
+    {
+        try
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var path = Path.Combine(home, ".claude", ".credentials.json");
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            var oauth = doc.RootElement.GetProperty("claudeAiOauth");
+            var refresh = oauth.TryGetProperty("refreshToken", out var rt) ? rt.GetString() : null;
+            var material = !string.IsNullOrEmpty(refresh)
+                ? refresh
+                : oauth.GetProperty("accessToken").GetString();
+            if (string.IsNullOrEmpty(material)) return null;
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Reads Claude Code's OAuth access token from

@@ -30,26 +30,30 @@ public sealed class CursorSession
     private readonly string _projectsDir;
     private readonly string _chatsDir;
     private readonly string _acpDir;
+    private readonly bool _enableT3;
     private readonly T3CursorSession _t3Scanner = new();
     private readonly Dictionary<string, string> _metaBySessionId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _repoNameCache = [];
     private readonly Dictionary<string, (DateTime? Stamp, string? Model)> _modelCache = [];
     private readonly Dictionary<string, TranscriptCacheEntry> _transcriptCache = [];
 
-    public CursorSession()
+    public CursorSession(string? cursorHome = null, bool enableT3 = true)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var cursorHome = Path.Combine(home, ".cursor");
-        _projectsDir = Path.Combine(cursorHome, "projects");
-        _chatsDir = Path.Combine(cursorHome, "chats");
-        _acpDir = Path.Combine(cursorHome, "acp-sessions");
+        var resolved = cursorHome ?? Path.Combine(home, ".cursor");
+        _projectsDir = Path.Combine(resolved, "projects");
+        _chatsDir = Path.Combine(resolved, "chats");
+        _acpDir = Path.Combine(resolved, "acp-sessions");
+        _enableT3 = enableT3;
     }
 
     /// <summary>Newest live Cursor session across CLI transcripts, T3 Code, and ACP.</summary>
     public SessionInfo? Scan()
     {
         _t3Scanner.ActiveWindowSeconds = ActiveWindowSeconds;
-        return new[] { ScanTranscripts(), _t3Scanner.Scan(), ScanAcp() }
+        var candidates = new List<SessionInfo?> { ScanTranscripts(), ScanAcp() };
+        if (_enableT3) candidates.Add(_t3Scanner.Scan());
+        return candidates
             .Where(s => s is not null)
             .MaxBy(s => s!.LastModifiedMs);
     }
@@ -75,34 +79,51 @@ public sealed class CursorSession
 
         if (files.Count == 0) return null;
 
-        var newest = files.MaxBy(f => f.Mtime);
-        if ((DateTime.UtcNow - newest.Mtime).TotalSeconds > ActiveWindowSeconds) return null;
-
         RebuildMetaIndex();
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var cutoffMs = nowMs - LookbackMs;
-        var cutoffUtc = DateTimeOffset.FromUnixTimeMilliseconds(cutoffMs).UtcDateTime;
-        var recent = files.Where(f => f.Mtime >= cutoffUtc).ToList();
 
         long totalActiveMs = 0;
+        string? bestPath = null;
+        long bestActivityMs = long.MinValue;
         long? activeLastMs = null;
-        foreach (var file in recent)
+
+        foreach (var file in files)
         {
             var entry = TranscriptAggregate(file.Path, file.Mtime);
+            var lastStamp = entry.ConversationalStampsMs.Count > 0
+                ? entry.ConversationalStampsMs[^1]
+                : (long?)null;
+            var activityMs = SessionActivity.NormalizeMs(file.Mtime, lastStamp, entry.UpdatedAtMs);
+
             var (activeMs, lastMs) = ActiveDuration(
                 entry.ConversationalStampsMs,
                 entry.CreatedAtMs,
                 entry.UpdatedAtMs,
                 cutoffMs,
                 nowMs);
-            totalActiveMs += activeMs;
-            if (file.Path == newest.Path) activeLastMs = lastMs;
+
+            // Include duration for anything whose activity (or mtime fallback)
+            // touched the lookback window — stale mtime alone must not exclude
+            // a transcript with recent embedded timestamps.
+            if (activityMs >= cutoffMs)
+                totalActiveMs += activeMs;
+
+            if (bestPath is null || activityMs >= bestActivityMs)
+            {
+                bestPath = file.Path;
+                bestActivityMs = activityMs;
+                activeLastMs = lastMs ?? lastStamp ?? entry.UpdatedAtMs;
+            }
         }
 
-        var recentPaths = recent.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var stale in _transcriptCache.Keys.Where(k => !recentPaths.Contains(k)).ToList())
+        var livePaths = files.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var stale in _transcriptCache.Keys.Where(k => !livePaths.Contains(k)).ToList())
             _transcriptCache.Remove(stale);
+
+        if (bestPath is null) return null;
+        if (!SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds)) return null;
 
         var elapsedMs = totalActiveMs;
         if (activeLastMs is long last)
@@ -111,13 +132,10 @@ public sealed class CursorSession
             if (tail > 0 && tail <= ActiveGapToleranceMs) elapsedMs += tail;
         }
 
-        var sessionId = Path.GetFileNameWithoutExtension(newest.Path);
+        var sessionId = Path.GetFileNameWithoutExtension(bestPath);
         var meta = ReadMeta(sessionId, includeModel: true);
-        var activityMs = meta?.UpdatedAtMs is long updated && updated > 0
-            ? Math.Max(updated, new DateTimeOffset(newest.Mtime).ToUnixTimeMilliseconds())
-            : new DateTimeOffset(newest.Mtime).ToUnixTimeMilliseconds();
 
-        var projectName = ResolveProjectName(meta?.Cwd, newest.Path);
+        var projectName = ResolveProjectName(meta?.Cwd, bestPath);
         if (string.IsNullOrWhiteSpace(projectName)) projectName = "Cursor";
 
         return new SessionInfo
@@ -126,7 +144,7 @@ public sealed class CursorSession
             Model = meta?.Model is { Length: > 0 } model ? PrettyModel(model) : null,
             StartEpochMs = nowMs - elapsedMs,
             TotalTokens = 0,
-            LastModifiedMs = activityMs,
+            LastModifiedMs = bestActivityMs,
             Agent = AgentKind.Cursor,
         };
     }
@@ -153,7 +171,8 @@ public sealed class CursorSession
             }
 
             if (bestDir is null) return null;
-            if ((DateTime.UtcNow - bestMtime).TotalSeconds > ActiveWindowSeconds) return null;
+            var activityMs = new DateTimeOffset(bestMtime).ToUnixTimeMilliseconds();
+            if (!SessionActivity.IsWithinWindow(activityMs, ActiveWindowSeconds)) return null;
 
             string? cwd = null;
             var metaPath = Path.Combine(bestDir, "meta.json");
@@ -175,7 +194,6 @@ public sealed class CursorSession
             }
 
             var project = string.IsNullOrWhiteSpace(cwd) ? "Cursor" : RepoName(cwd!);
-            var activityMs = new DateTimeOffset(bestMtime).ToUnixTimeMilliseconds();
             var createdMs = new DateTimeOffset(Directory.GetCreationTimeUtc(bestDir)).ToUnixTimeMilliseconds();
 
             return new SessionInfo

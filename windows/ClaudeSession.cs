@@ -29,10 +29,10 @@ public sealed class ClaudeSession
     private readonly Dictionary<string, CacheEntry> _aggregateCache = [];
     private readonly Dictionary<string, string> _repoNameCache = [];
 
-    public ClaudeSession()
+    public ClaudeSession(string? projectsDir = null)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        _projectsDir = Path.Combine(home, ".claude", "projects");
+        _projectsDir = projectsDir ?? Path.Combine(home, ".claude", "projects");
     }
 
     /// <summary>Scan the transcript tree and return the active session, or null
@@ -53,24 +53,32 @@ public sealed class ClaudeSession
         }
         if (files.Count == 0) return null;
 
-        var newest = files.MaxBy(f => f.Mtime);
-        if ((DateTime.UtcNow - newest.Mtime).TotalSeconds > ActiveWindowSeconds) return null;
-
         // The presence shows daily totals: tokens summed across every transcript
         // touched today, and an elapsed timer that reflects the combined working
         // time of all of today's sessions (idle gaps between sessions excluded).
         // "Today" is the local calendar day, so the totals reset at midnight.
+        // Activity (idle + LastModifiedMs) prefers parsed event timestamps over
+        // filesystem mtime so a stale mtime cannot hide a live session.
         var dayStartMs = new DateTimeOffset(DateTime.Today).ToUnixTimeMilliseconds();
 
         long totalTokensToday = 0;
         long totalActiveMs = 0;
-        var activeAgg = new DayAggregate();
+        string? bestPath = null;
+        DayAggregate bestAgg = new();
+        long bestActivityMs = long.MinValue;
         foreach (var file in files)
         {
             var agg = Aggregate(file.Path, file.Mtime, dayStartMs);
             totalTokensToday += agg.TokensToday;
             totalActiveMs += agg.ActiveMsToday;
-            if (file.Path == newest.Path) activeAgg = agg;
+
+            var activityMs = SessionActivity.NormalizeMs(agg.LastEventMs, file.Mtime);
+            if (bestPath is null || activityMs >= bestActivityMs)
+            {
+                bestPath = file.Path;
+                bestAgg = agg;
+                bestActivityMs = activityMs;
+            }
         }
 
         // Drop cache entries for transcripts that no longer exist.
@@ -78,7 +86,10 @@ public sealed class ClaudeSession
         foreach (var stale in _aggregateCache.Keys.Where(k => !live.Contains(k)).ToList())
             _aggregateCache.Remove(stale);
 
-        return MakeSessionInfo(newest.Path, newest.Mtime, activeAgg, totalTokensToday, totalActiveMs);
+        if (bestPath is null) return null;
+        if (!SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds)) return null;
+
+        return MakeSessionInfo(bestPath, bestActivityMs, bestAgg, totalTokensToday, totalActiveMs);
     }
 
     // --- Parsing
@@ -88,6 +99,9 @@ public sealed class ClaudeSession
     {
         public string? Cwd;
         public string? Model;
+        /// <summary>Newest parseable event timestamp in the transcript (any day),
+        /// used for idle detection and LastModifiedMs.</summary>
+        public long? LastEventMs;
         /// <summary>Timestamp (epoch ms) of the last message recorded today, used
         /// to extend the active session's working time up to "now".</summary>
         public long? LastTodayMs;
@@ -140,6 +154,8 @@ public sealed class ClaudeSession
                     long? lineMs = null;
                     if (root.TryGetProperty("timestamp", out var ts) && ts.ValueKind == JsonValueKind.String)
                         lineMs = EpochMsFromIso(ts.GetString());
+                    if (lineMs is long anyMs)
+                        agg.LastEventMs = Math.Max(agg.LastEventMs ?? anyMs, anyMs);
                     var isToday = (lineMs ?? long.MinValue) >= dayStartMs;
 
                     if (root.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.Object)
@@ -185,7 +201,7 @@ public sealed class ClaudeSession
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : 0;
 
     private SessionInfo MakeSessionInfo(
-        string newestPath, DateTime newestMtime, DayAggregate active, long totalTokensToday, long totalActiveMs)
+        string newestPath, long activityMs, DayAggregate active, long totalTokensToday, long totalActiveMs)
     {
         var projectName = DeriveProjectName(Path.GetFileName(Path.GetDirectoryName(newestPath)) ?? "");
         if (active.Cwd is not null) projectName = RepoName(active.Cwd);
@@ -209,7 +225,7 @@ public sealed class ClaudeSession
             Model = active.Model is null ? null : PrettyModel(active.Model),
             StartEpochMs = nowMs - elapsedMs,
             TotalTokens = totalTokensToday,
-            LastModifiedMs = new DateTimeOffset(newestMtime).ToUnixTimeMilliseconds(),
+            LastModifiedMs = activityMs,
             Agent = AgentKind.Claude,
         };
     }

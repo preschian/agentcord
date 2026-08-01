@@ -17,9 +17,9 @@ public sealed class CodexSession
     private readonly Dictionary<string, CacheEntry> _cache = [];
     private readonly Dictionary<string, string> _repoNameCache = [];
 
-    public CodexSession()
+    public CodexSession(string? sessionsDir = null)
     {
-        _sessionsDir = Path.Combine(CodexPaths.ResolveHome(), "sessions");
+        _sessionsDir = sessionsDir ?? Path.Combine(CodexPaths.ResolveHome(), "sessions");
     }
 
     public SessionInfo? Scan()
@@ -39,31 +39,41 @@ public sealed class CodexSession
         }
 
         if (files.Count == 0) return null;
-        var newest = files[0];
-        if ((DateTime.UtcNow - newest.Mtime).TotalSeconds > ActiveWindowSeconds) return null;
 
-        var state = ReadTranscript(newest.Path, newest.Mtime);
+        // Prefer parsed event timestamps over filesystem mtime for idle and
+        // selection. Every transcript must be inspected because an active
+        // session can have a stale mtime; the per-file cache keeps re-scans of
+        // unchanged files cheap.
+        SessionInfo? best = null;
+        foreach (var file in files)
+        {
+            var state = ReadTranscript(file.Path, file.Mtime);
+            var activityMs = SessionActivity.NormalizeMs(state.LastEventAtMs, file.Mtime);
+            if (!SessionActivity.IsWithinWindow(activityMs, ActiveWindowSeconds)) continue;
 
-        // Keep the cache bounded even when years of Codex history are present.
-        var retained = files.Take(100).Select(file => file.Path).ToHashSet();
-        foreach (var stale in _cache.Keys.Where(path => !retained.Contains(path)).ToList())
+            var project = state.Cwd is { Length: > 0 } cwd
+                ? RepoName(cwd)
+                : Path.GetFileName(Path.GetDirectoryName(file.Path));
+            if (string.IsNullOrWhiteSpace(project)) project = "Codex";
+
+            var info = new SessionInfo
+            {
+                ProjectName = project,
+                Model = state.Model is null ? null : PrettyModel(state.Model),
+                StartEpochMs = state.StartedAtMs ?? activityMs,
+                TotalTokens = state.TotalTokens,
+                LastModifiedMs = activityMs,
+                Agent = AgentKind.Codex,
+            };
+            if (best is null || info.LastModifiedMs > best.LastModifiedMs)
+                best = info;
+        }
+
+        var livePaths = files.Select(file => file.Path).ToHashSet();
+        foreach (var stale in _cache.Keys.Where(path => !livePaths.Contains(path)).ToList())
             _cache.Remove(stale);
 
-        var project = state.Cwd is { Length: > 0 } cwd
-            ? RepoName(cwd)
-            : Path.GetFileName(Path.GetDirectoryName(newest.Path));
-        if (string.IsNullOrWhiteSpace(project)) project = "Codex";
-
-        var mtimeMs = new DateTimeOffset(newest.Mtime).ToUnixTimeMilliseconds();
-        return new SessionInfo
-        {
-            ProjectName = project,
-            Model = state.Model is null ? null : PrettyModel(state.Model),
-            StartEpochMs = state.StartedAtMs ?? mtimeMs,
-            TotalTokens = state.TotalTokens,
-            LastModifiedMs = Math.Max(mtimeMs, state.LastEventAtMs ?? 0),
-            Agent = AgentKind.Codex,
-        };
+        return best;
     }
 
     private sealed class TranscriptState

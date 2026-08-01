@@ -24,7 +24,16 @@
     <Using Remove="System.Drawing" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Remove="AgentCord.Tests/**" />
+    <EmbeddedResource Remove="AgentCord.Tests/**" />
+    <None Remove="AgentCord.Tests/**" />
+    <Page Remove="AgentCord.Tests/**" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentCord.Tests" />
   </ItemGroup>
 
 </Project>

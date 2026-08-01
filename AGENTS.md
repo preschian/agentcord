@@ -26,6 +26,10 @@ fix(windows): handle missing Discord IPC socket
 docs: clarify one-time Discord setup
 ```
 
+## GitHub
+
+For all GitHub needs (issues, PRs, checks, releases, reviews, etc.), use the local `gh` CLI as much as possible. Prefer `gh` over the GitHub web UI, browser automation, or other APIs when `gh` can do the job.
+
 ## Merging pull requests
 
 Always **squash merge** PRs (`gh pr merge --squash`). Merge commits and rebase merges are disabled on this repo. The squash commit message should follow Conventional Commits — usually the PR title is enough.

@@ -26,6 +26,10 @@ fix(windows): handle missing Discord IPC socket
 docs: clarify one-time Discord setup
 ```
 
+## Merging pull requests
+
+Always **squash merge** PRs (`gh pr merge --squash`). Merge commits and rebase merges are disabled on this repo. The squash commit message should follow Conventional Commits — usually the PR title is enough.
+
 ## Relaunch the app after every change
 
 After every change under `macos/` or `windows/`, rebuild and relaunch the app so the change is actually running. Other trees build differently — `web/` (bun), `native/` (zig); see each directory's `README.md`.

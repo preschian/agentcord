@@ -232,12 +232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let elapsedMs = Int64(Date().timeIntervalSince1970 * 1000) - info.startEpochMs
         parts.append(formatElapsed(elapsedMs))
 
-        if settings.showTokens {
-            if info.agent == .muse, (info.inputTokens > 0 || info.outputTokens > 0) {
-                parts.append("\(PresenceController.formatTokens(info.inputTokens)) in · \(PresenceController.formatTokens(info.outputTokens)) out")
-            } else if info.totalTokens > 0 {
-                parts.append("\(PresenceController.formatTokens(info.totalTokens)) tokens")
-            }
+        if settings.showTokens, info.totalTokens > 0 {
+            parts.append("\(PresenceController.formatTokens(info.totalTokens)) tokens")
         }
         return parts.joined(separator: " · ")
     }
@@ -1042,13 +1038,8 @@ struct MenuContentView: View {
         guard let session else { return [] }
         var bits: [String] = []
         if settings.showModel, let model = session.model { bits.append(model) }
-        if settings.showTokens {
-            if session.agent == .muse, (session.inputTokens > 0 || session.outputTokens > 0) {
-                bits.append("\(PresenceController.formatTokens(session.inputTokens)) in · \(PresenceController.formatTokens(session.outputTokens)) out")
-                bits.append("\(PresenceController.formatTokens(session.totalTokens)) total")
-            } else if session.totalTokens > 0 {
-                bits.append("\(PresenceController.formatTokens(session.totalTokens)) tokens")
-            }
+        if settings.showTokens, session.totalTokens > 0 {
+            bits.append("\(PresenceController.formatTokens(session.totalTokens)) tokens")
         }
         return bits
     }

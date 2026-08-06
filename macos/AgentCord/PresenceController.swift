@@ -190,13 +190,8 @@ final class PresenceController: ObservableObject {
         if settings.showProject {
             stateParts.append("Working on: \(info.projectName)")
         }
-        if settings.showTokens {
-            if info.agent == .muse, (info.inputTokens > 0 || info.outputTokens > 0) {
-                // Muse: show split input/output + total from session.jsonl
-                stateParts.append("\(Self.formatTokens(info.inputTokens)) in · \(Self.formatTokens(info.outputTokens)) out (\(Self.formatTokens(info.totalTokens)) total)")
-            } else if info.totalTokens > 0 {
-                stateParts.append("\(Self.formatTokens(info.totalTokens)) tokens")
-            }
+        if settings.showTokens, info.totalTokens > 0 {
+            stateParts.append("\(Self.formatTokens(info.totalTokens)) tokens")
         }
         let state = stateParts.isEmpty ? nil : stateParts.joined(separator: " · ")
 

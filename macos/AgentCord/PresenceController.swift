@@ -22,6 +22,7 @@ final class PresenceController: ObservableObject {
     let codexSession = CodexSession()
     let cursorSession = CursorSession()
     let grokSession = GrokSession()
+    let museSession = MuseSession()
     let settings: SettingsStore
 
     private let ipc = DiscordIPC()
@@ -61,6 +62,11 @@ final class PresenceController: ObservableObject {
             .sink { [weak self] _ in self?.selectActiveSession() }
             .store(in: &cancellables)
 
+        museSession.$current
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.selectActiveSession() }
+            .store(in: &cancellables)
+
         // Display-affecting settings (toggles, DND, image keys) only need a
         // rebuild. Deferred to the next runloop tick so the new value is set.
         settings.objectWillChange
@@ -87,10 +93,12 @@ final class PresenceController: ObservableObject {
         codexSession.activeWindowSeconds = settings.idleWindowSeconds
         cursorSession.activeWindowSeconds = settings.idleWindowSeconds
         grokSession.activeWindowSeconds = settings.idleWindowSeconds
+        museSession.activeWindowSeconds = settings.idleWindowSeconds
         session.start()
         codexSession.start()
         cursorSession.start()
         grokSession.start()
+        museSession.start()
         selectActiveSession()
         connectIfPossible()
     }
@@ -101,6 +109,7 @@ final class PresenceController: ObservableObject {
         codexSession.stop()
         cursorSession.stop()
         grokSession.stop()
+        museSession.stop()
         ipc.disconnect()
     }
 
@@ -136,6 +145,7 @@ final class PresenceController: ObservableObject {
         codexSession.activeWindowSeconds = settings.idleWindowSeconds
         cursorSession.activeWindowSeconds = settings.idleWindowSeconds
         grokSession.activeWindowSeconds = settings.idleWindowSeconds
+        museSession.activeWindowSeconds = settings.idleWindowSeconds
         selectActiveSession()
         rebuild()
     }
@@ -146,6 +156,7 @@ final class PresenceController: ObservableObject {
         if settings.agentCodexEnabled, let codex = codexSession.current { candidates.append(codex) }
         if settings.agentCursorEnabled, let cursor = cursorSession.current { candidates.append(cursor) }
         if settings.agentGrokEnabled, let grok = grokSession.current { candidates.append(grok) }
+        if settings.agentMuseEnabled, let muse = museSession.current { candidates.append(muse) }
         let selected = candidates.max { $0.lastModified < $1.lastModified }
         if currentSession != selected { currentSession = selected }
         let agent = selected?.agent
@@ -179,8 +190,13 @@ final class PresenceController: ObservableObject {
         if settings.showProject {
             stateParts.append("Working on: \(info.projectName)")
         }
-        if settings.showTokens, info.totalTokens > 0 {
-            stateParts.append("\(Self.formatTokens(info.totalTokens)) tokens")
+        if settings.showTokens {
+            if info.agent == .muse, (info.inputTokens > 0 || info.outputTokens > 0) {
+                // Muse: show split input/output + total from session.jsonl
+                stateParts.append("\(Self.formatTokens(info.inputTokens)) in · \(Self.formatTokens(info.outputTokens)) out (\(Self.formatTokens(info.totalTokens)) total)")
+            } else if info.totalTokens > 0 {
+                stateParts.append("\(Self.formatTokens(info.totalTokens)) tokens")
+            }
         }
         let state = stateParts.isEmpty ? nil : stateParts.joined(separator: " · ")
 
@@ -212,6 +228,7 @@ final class PresenceController: ObservableObject {
         case .claude: return "logo-claude"
         case .cursor: return "logo-cursor"
         case .grok: return "logo-grok"
+        case .muse: return "logo-muse"
         }
     }
 

@@ -225,6 +225,34 @@ final class MuseSession: ObservableObject {
             }
         }
 
+        // Include subagent sessions under this main session's subagent/ dir
+        // — they hold the reminder/judge/tool work that still counts toward
+        // the user's spend. Summing them brings main(19.1M) + sub(4M) ≈ 24M
+        // for the active session, and main+sub across all sessions ≈ 42M
+        // which matches the expected ~40M total.
+        let subagentDir = url.deletingLastPathComponent().appendingPathComponent("subagent", isDirectory: true)
+        if let subEnum = FileManager.default.enumerator(at: subagentDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for case let subURL as URL in subEnum where subURL.lastPathComponent == "session.jsonl" {
+                guard let subContent = try? String(contentsOf: subURL, encoding: .utf8) else { continue }
+                subContent.enumerateLines { line, _ in
+                    guard let data = line.data(using: .utf8),
+                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let payloadType = obj["payload_type"] as? String,
+                          payloadType == "runtime.session",
+                          let payload = obj["payload"] as? [String: Any],
+                          payload["kind"] as? String == "run",
+                          let event = payload["event"] as? [String: Any],
+                          event["kind"] as? String == "model_completed",
+                          let usage = event["usage"] as? [String: Any]
+                    else { return }
+                    let input = (usage["input_tokens"] as? Int) ?? (usage["input_tokens"] as? Double).map(Int.init) ?? 0
+                    let output = (usage["output_tokens"] as? Int) ?? (usage["output_tokens"] as? Double).map(Int.init) ?? 0
+                    inputTokens += input
+                    outputTokens += output
+                }
+            }
+        }
+
         let projectCwd = workspaceRoot ?? cwd
         let projectName: String
         if let c = projectCwd, !c.isEmpty {

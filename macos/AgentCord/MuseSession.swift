@@ -126,15 +126,16 @@ final class MuseSession: ObservableObject {
             return
         }
 
-        var files: [(url: URL, date: Date)] = []
+        var mainFiles: [(url: URL, date: Date)] = []
+        var allFiles: [URL] = []
         var newest: (url: URL, date: Date)?
         for case let url as URL in enumerator {
             guard url.lastPathComponent == "session.jsonl" else { continue }
-            // Skip subagent transcripts and tool outputs
-            if url.pathComponents.contains("subagent") { continue }
             if url.pathComponents.contains("tool-outputs") { continue }
+            allFiles.append(url)
+            guard !url.pathComponents.contains("subagent") else { continue }
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            files.append((url, date))
+            mainFiles.append((url, date))
             if newest == nil || date > newest!.date {
                 newest = (url, date)
             }
@@ -149,7 +150,9 @@ final class MuseSession: ObservableObject {
             return
         }
 
-        let info = parseSession(url: newest.url, mtime: newest.date)
+        // Total across ALL sessions (main + subagent) — matches expected ~40M
+        let totals = Self.sumTokens(in: allFiles)
+        let info = parseSession(url: newest.url, mtime: newest.date, totals: totals)
         publish(installed: true, session: info)
     }
 
@@ -163,7 +166,30 @@ final class MuseSession: ObservableObject {
 
     // MARK: Parsing
 
-    private func parseSession(url: URL, mtime: Date) -> SessionInfo? {
+    private static func sumTokens(in urls: [URL]) -> (input: Int, output: Int) {
+        var input = 0
+        var output = 0
+        for url in urls {
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            content.enumerateLines { line, _ in
+                guard let data = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let payloadType = obj["payload_type"] as? String,
+                      payloadType == "runtime.session",
+                      let payload = obj["payload"] as? [String: Any],
+                      payload["kind"] as? String == "run",
+                      let event = payload["event"] as? [String: Any],
+                      event["kind"] as? String == "model_completed",
+                      let usage = event["usage"] as? [String: Any]
+                else { return }
+                input += (usage["input_tokens"] as? Int) ?? (usage["input_tokens"] as? Double).map(Int.init) ?? 0
+                output += (usage["output_tokens"] as? Int) ?? (usage["output_tokens"] as? Double).map(Int.init) ?? 0
+            }
+        }
+        return (input, output)
+    }
+
+    private func parseSession(url: URL, mtime: Date, totals: (input: Int, output: Int)? = nil) -> SessionInfo? {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
 
         var workspaceRoot: String?
@@ -225,34 +251,6 @@ final class MuseSession: ObservableObject {
             }
         }
 
-        // Include subagent sessions under this main session's subagent/ dir
-        // — they hold the reminder/judge/tool work that still counts toward
-        // the user's spend. Summing them brings main(19.1M) + sub(4M) ≈ 24M
-        // for the active session, and main+sub across all sessions ≈ 42M
-        // which matches the expected ~40M total.
-        let subagentDir = url.deletingLastPathComponent().appendingPathComponent("subagent", isDirectory: true)
-        if let subEnum = FileManager.default.enumerator(at: subagentDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-            for case let subURL as URL in subEnum where subURL.lastPathComponent == "session.jsonl" {
-                guard let subContent = try? String(contentsOf: subURL, encoding: .utf8) else { continue }
-                subContent.enumerateLines { line, _ in
-                    guard let data = line.data(using: .utf8),
-                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let payloadType = obj["payload_type"] as? String,
-                          payloadType == "runtime.session",
-                          let payload = obj["payload"] as? [String: Any],
-                          payload["kind"] as? String == "run",
-                          let event = payload["event"] as? [String: Any],
-                          event["kind"] as? String == "model_completed",
-                          let usage = event["usage"] as? [String: Any]
-                    else { return }
-                    let input = (usage["input_tokens"] as? Int) ?? (usage["input_tokens"] as? Double).map(Int.init) ?? 0
-                    let output = (usage["output_tokens"] as? Int) ?? (usage["output_tokens"] as? Double).map(Int.init) ?? 0
-                    inputTokens += input
-                    outputTokens += output
-                }
-            }
-        }
-
         let projectCwd = workspaceRoot ?? cwd
         let projectName: String
         if let c = projectCwd, !c.isEmpty {
@@ -276,7 +274,18 @@ final class MuseSession: ObservableObject {
             lastModified = mtime
         }
 
-        let totalTokens = inputTokens + outputTokens
+        // If totals from all sessions are provided, use them (main+sub ≈ 42M).
+        // Otherwise fall back to this file's own total.
+        let finalInput: Int
+        let finalOutput: Int
+        if let totals {
+            finalInput = totals.input
+            finalOutput = totals.output
+        } else {
+            finalInput = inputTokens
+            finalOutput = outputTokens
+        }
+        let totalTokens = finalInput + finalOutput
         return SessionInfo(
             projectName: projectName.isEmpty ? "Muse" : projectName,
             model: modelID.map(Self.prettyModel),
@@ -284,8 +293,8 @@ final class MuseSession: ObservableObject {
             totalTokens: totalTokens,
             lastModified: lastModified,
             agent: .muse,
-            inputTokens: inputTokens,
-            outputTokens: outputTokens
+            inputTokens: finalInput,
+            outputTokens: finalOutput
         )
     }
 

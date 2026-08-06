@@ -52,6 +52,8 @@ extension AgentKind {
             return .statuspage(URL(string: "https://status.cursor.com/api/v2/summary.json")!)
         case .grok:
             return .xaiFeed(URL(string: "https://status.x.ai/feed.xml")!)
+        case .muse:
+            return .statuspage(URL(string: "https://metastatus.com/api/v2/summary.json")!)
         }
     }
 
@@ -62,6 +64,7 @@ extension AgentKind {
         case .codex: return URL(string: "https://status.openai.com")!
         case .cursor: return URL(string: "https://status.cursor.com")!
         case .grok: return URL(string: "https://status.x.ai")!
+        case .muse: return URL(string: "https://metastatus.com")!
         }
     }
 
@@ -74,6 +77,7 @@ extension AgentKind {
         case .codex: return "OpenAI"
         case .cursor: return "Cursor"
         case .grok: return "xAI"
+        case .muse: return "Meta"
         }
     }
 }

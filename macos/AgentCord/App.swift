@@ -117,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller.cursorSession)
             .environmentObject(grokUsage)
             .environmentObject(controller.grokSession)
+            .environmentObject(controller.museSession)
             .environmentObject(providerStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
@@ -471,6 +472,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var cursorSession: CursorSession
     @EnvironmentObject private var grokUsage: GrokUsage
     @EnvironmentObject private var grokSession: GrokSession
+    @EnvironmentObject private var museSession: MuseSession
     @EnvironmentObject private var providerStatus: ProviderStatusHub
 
     @State private var showSettings = false
@@ -500,6 +502,7 @@ struct MenuContentView: View {
         case .codex:
             return codexUsage.isAuthenticated || codexUsage.current != nil || codexSession.isInstalled
         case .grok: return grokUsage.isAuthenticated || grokSession.isAuthenticated
+        case .muse: return museSession.isInstalled
         }
     }
 
@@ -510,6 +513,7 @@ struct MenuContentView: View {
         case .cursor: return cursorSession.current
         case .codex: return codexSession.current
         case .grok: return grokSession.current
+        case .muse: return museSession.current
         }
     }
 
@@ -840,6 +844,7 @@ struct MenuContentView: View {
         case .cursor: return cursorUsage.accountEmail
         case .codex: return codexUsage.accountEmail
         case .grok: return grokUsage.accountEmail
+        case .muse: return nil
         }
     }
 
@@ -876,6 +881,7 @@ struct MenuContentView: View {
         case .cursor: return cursorUsage.current?.planName
         case .codex: return codexUsage.current?.planType
         case .grok: return nil
+        case .muse: return nil
         }
     }
 
@@ -948,6 +954,7 @@ struct MenuContentView: View {
         case .cursor: urlString = "https://cursor.com"
         case .codex: urlString = "https://developers.openai.com/codex/auth"
         case .grok: urlString = "https://grok.x.ai"
+        case .muse: urlString = "https://www.meta.ai"
         }
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
@@ -1106,6 +1113,8 @@ struct MenuContentView: View {
             return (agent.displayName, codexUsage.current?.primary)
         case .grok:
             return (agent.displayName, grokUsage.current?.weekly)
+        case .muse:
+            return (agent.displayName, nil)
         }
     }
 
@@ -1121,6 +1130,7 @@ struct MenuContentView: View {
             case .cursor: cursorUsageRows
             case .codex: codexUsageRows
             case .grok: grokUsageRows
+            case .muse: museUsageRows
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1195,6 +1205,11 @@ struct MenuContentView: View {
         } else {
             usagePlaceholder("Not signed in — run grok login")
         }
+    }
+
+    @ViewBuilder
+    private var museUsageRows: some View {
+        usagePlaceholder("Muse usage coming soon")
     }
 
     private func usagePlaceholder(_ text: String) -> some View {

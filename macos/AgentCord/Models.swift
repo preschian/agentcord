@@ -90,6 +90,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     case codex
     case cursor
     case grok
+    case muse
 
     var id: String { rawValue }
 
@@ -99,6 +100,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .codex: return "Codex"
         case .cursor: return "Cursor"
         case .grok: return "Grok"
+        case .muse: return "Muse"
         }
     }
 
@@ -108,6 +110,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .codex: return "OpenAI"
         case .cursor: return "Cursor"
         case .grok: return "xAI"
+        case .muse: return "Meta"
         }
     }
 
@@ -118,6 +121,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .codex: return (0.063, 0.639, 0.498)  // #10a37f
         case .cursor: return (0.0, 0.0, 0.0)        // #000000
         case .grok: return (0.114, 0.114, 0.122)   // #1d1d1f
+        case .muse: return (0.02, 0.404, 0.875)    // #0467df (Meta blue)
         }
     }
 }
@@ -136,6 +140,10 @@ struct SessionInfo: Equatable {
     var contextWindowTokens: Int? = nil
     /// Provider that owns this session, used to label Discord presence.
     var agent: AgentKind = .claude
+    /// Detailed Muse token breakdown from `session.jsonl` (model_completed).
+    /// Kept 0 for other agents; `totalTokens` stays as sum for compatibility.
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
 }
 
 // MARK: - Cursor subscription usage

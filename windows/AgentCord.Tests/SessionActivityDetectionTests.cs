@@ -168,6 +168,122 @@ public sealed class SessionActivityDetectionTests
         Assert.True(info.LastModifiedMs >= updatedAtMs);
     }
 
+    [Fact]
+    public void Antigravity_detects_active_session_from_transcript_and_history()
+    {
+        using var dir = TempDir.Create();
+        var convId = "cf7143f8-3342-4012-a7f7-f0db72843250";
+        var logsDir = Path.Combine(dir.Root, "brain", convId, ".system_generated", "logs");
+        Directory.CreateDirectory(logsDir);
+
+        var eventAt = DateTimeOffset.UtcNow.AddSeconds(-15);
+        var iso = eventAt.ToString("yyyy-MM-ddTHH:mm:ssZ");
+        var transcript = Path.Combine(logsDir, "transcript.jsonl");
+        File.WriteAllText(transcript,
+            "{\"step_index\":0,\"source\":\"USER_EXPLICIT\",\"type\":\"USER_INPUT\",\"created_at\":\"" + iso + "\",\"content\":\"The user changed setting `Model Selection` from None to Gemini 3.7 Flash (High).\"}\n" +
+            "{\"step_index\":1,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"" + iso + "\",\"tool_calls\":[{\"name\":\"list_dir\",\"args\":{\"DirectoryPath\":\"D:\\\\Workspace\\\\agentcord\"}}]}\n");
+
+        var history = Path.Combine(dir.Root, "history.jsonl");
+        File.WriteAllText(history,
+            "{\"display\":\"test prompt\",\"timestamp\":" + eventAt.ToUnixTimeMilliseconds() + ",\"workspace\":\"D:\\\\Workspace\\\\agentcord\",\"conversationId\":\"" + convId + "\"}\n");
+
+        var scanner = new AntigravitySession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        Assert.Equal(AgentKind.Antigravity, info!.Agent);
+        Assert.Equal("Gemini 3.7 Flash", info.Model);
+        Assert.Equal("agentcord", info.ProjectName);
+        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 60));
+    }
+
+    [Fact]
+    public void Antigravity_detects_active_session_from_presence_lock()
+    {
+        using var dir = TempDir.Create();
+        var convId = "test-conv-123";
+        var logsDir = Path.Combine(dir.Root, "brain", convId, ".system_generated", "logs");
+        Directory.CreateDirectory(logsDir);
+
+        var oldEvent = DateTimeOffset.UtcNow.AddHours(-1);
+        var transcript = Path.Combine(logsDir, "transcript.jsonl");
+        File.WriteAllText(transcript,
+            "{\"step_index\":0,\"source\":\"USER_EXPLICIT\",\"type\":\"USER_INPUT\",\"created_at\":\"" + oldEvent.ToString("yyyy-MM-ddTHH:mm:ssZ") + "\",\"content\":\"[URI] -> [CorpusName]\\nD:\\\\Workspace\\\\agentcord -> preschian/agentcord\"}\n");
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddHours(-1));
+
+        var presenceDir = Path.Combine(dir.Root, "presence");
+        Directory.CreateDirectory(presenceDir);
+        var lockFile = Path.Combine(presenceDir, convId + ".lock");
+        File.WriteAllText(lockFile, "");
+        File.SetLastWriteTimeUtc(lockFile, DateTime.UtcNow.AddSeconds(-5));
+
+        var scanner = new AntigravitySession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        Assert.Equal(AgentKind.Antigravity, info!.Agent);
+        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 60));
+    }
+
+    [Fact]
+    public void Antigravity_ignores_idle_session()
+    {
+        using var dir = TempDir.Create();
+        var convId = "idle-conv";
+        var logsDir = Path.Combine(dir.Root, "brain", convId, ".system_generated", "logs");
+        Directory.CreateDirectory(logsDir);
+
+        var oldEvent = DateTimeOffset.UtcNow.AddHours(-2);
+        var transcript = Path.Combine(logsDir, "transcript.jsonl");
+        File.WriteAllText(transcript,
+            "{\"step_index\":0,\"source\":\"USER_EXPLICIT\",\"type\":\"USER_INPUT\",\"created_at\":\"" + oldEvent.ToString("yyyy-MM-ddTHH:mm:ssZ") + "\",\"content\":\"hello\"}\n");
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddHours(-2));
+
+        var scanner = new AntigravitySession(dir.Root) { ActiveWindowSeconds = 60 };
+        Assert.Null(scanner.Scan());
+    }
+
+    [Theory]
+    [InlineData("Gemini 3.7 Flash (High)", "Gemini 3.7 Flash")]
+    [InlineData("gemini-3.7-flash", "Gemini 3.7 Flash")]
+    [InlineData("gemini-2.5-pro", "Gemini 2.5 Pro")]
+    [InlineData("gemini-2.0-flash-thinking", "Gemini 2.0 Flash Thinking")]
+    [InlineData("Gemini 1.5 Pro", "Gemini 1.5 Pro")]
+    [InlineData("gemini", "Gemini")]
+    public void Antigravity_PrettyModel_formats_correctly(string raw, string expected)
+    {
+        Assert.Equal(expected, AntigravitySession.PrettyModel(raw));
+    }
+
+    [Fact]
+    public void Antigravity_detects_workspace_from_tool_call_args()
+    {
+        using var dir = TempDir.Create();
+        var convId = "tool-call-conv";
+        var logsDir = Path.Combine(dir.Root, "brain", convId, ".system_generated", "logs");
+        Directory.CreateDirectory(logsDir);
+
+        var eventAt = DateTimeOffset.UtcNow.AddSeconds(-5);
+        var iso = eventAt.ToString("yyyy-MM-ddTHH:mm:ssZ");
+        var transcript = Path.Combine(logsDir, "transcript.jsonl");
+        File.WriteAllText(transcript,
+            "{\"step_index\":0,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"created_at\":\"" + iso + "\",\"tool_calls\":[{\"name\":\"run_command\",\"args\":{\"Cwd\":\"D:\\\\Workspace\\\\agentcord\"}}]}\n");
+
+        var scanner = new AntigravitySession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        Assert.Equal(AgentKind.Antigravity, info!.Agent);
+        Assert.Equal("agentcord", info.ProjectName);
+    }
+
+    [Fact]
+    public void Antigravity_ResolveBaseDir_respects_custom_dir()
+    {
+        var custom = @"C:\Custom\Antigravity";
+        Assert.Equal(custom, AntigravitySession.ResolveBaseDir(custom));
+    }
+
     private static string FormatUtcOffset(TimeSpan offset)
     {
         var sign = offset < TimeSpan.Zero ? "-" : "+";

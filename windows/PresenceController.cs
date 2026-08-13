@@ -21,6 +21,7 @@ public sealed class PresenceController : IDisposable
     public SessionInfo? ClaudeSession { get; private set; }
     public SessionInfo? CodexSession { get; private set; }
     public SessionInfo? CursorSession { get; private set; }
+    public SessionInfo? AntigravitySession { get; private set; }
 
     public event Action? Changed;
 
@@ -30,6 +31,7 @@ public sealed class PresenceController : IDisposable
     private readonly ClaudeSession _claudeScanner = new();
     private readonly CodexSession _codexScanner = new();
     private readonly CursorSession _cursorScanner = new();
+    private readonly AntigravitySession _antigravityScanner = new();
     private readonly DiscordIpc _ipc = new();
     private System.Threading.Timer? _timer;
     private int _ticking;
@@ -80,11 +82,13 @@ public sealed class PresenceController : IDisposable
             _claudeScanner.ActiveWindowSeconds = activeWindow;
             _codexScanner.ActiveWindowSeconds = activeWindow;
             _cursorScanner.ActiveWindowSeconds = activeWindow;
+            _antigravityScanner.ActiveWindowSeconds = activeWindow;
             ClaudeSession = _claudeScanner.Scan();
             CodexSession = _codexScanner.Scan();
             CursorSession = _cursorScanner.Scan();
+            AntigravitySession = _antigravityScanner.Scan();
 
-            var info = new[] { ClaudeSession, CodexSession, CursorSession }
+            var info = new[] { ClaudeSession, CodexSession, CursorSession, AntigravitySession }
                 .Where(session => session is not null && _settings.IsAgentEnabled(session.Agent))
                 .MaxBy(session => session!.LastModifiedMs);
             var changed = !Equals(info, CurrentSession);
@@ -144,6 +148,7 @@ public sealed class PresenceController : IDisposable
     {
         AgentKind.Codex => CodexSession,
         AgentKind.Cursor => CursorSession,
+        AgentKind.Antigravity => AntigravitySession,
         _ => ClaudeSession,
     };
 
@@ -151,6 +156,7 @@ public sealed class PresenceController : IDisposable
     {
         AgentKind.Codex => "logo-chatgpt",
         AgentKind.Cursor => "logo-cursor",
+        AgentKind.Antigravity => "logo-antigravity",
         _ => "logo-claude",
     };
 

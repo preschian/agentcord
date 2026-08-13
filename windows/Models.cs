@@ -56,6 +56,7 @@ public enum AgentKind
     Claude,
     Codex,
     Cursor,
+    Antigravity,
 }
 
 public static class AgentKindExtensions
@@ -64,6 +65,7 @@ public static class AgentKindExtensions
     {
         AgentKind.Codex => "Codex",
         AgentKind.Cursor => "Cursor",
+        AgentKind.Antigravity => "Antigravity",
         _ => "Claude",
     };
 
@@ -71,6 +73,7 @@ public static class AgentKindExtensions
     {
         AgentKind.Codex => "OpenAI",
         AgentKind.Cursor => "Cursor",
+        AgentKind.Antigravity => "Google",
         _ => "Anthropic",
     };
 }

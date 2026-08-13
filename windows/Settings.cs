@@ -28,6 +28,7 @@ public sealed class Settings
     [JsonPropertyName("agent_claude_enabled")] public bool AgentClaudeEnabled { get; set; } = true;
     [JsonPropertyName("agent_codex_enabled")] public bool AgentCodexEnabled { get; set; } = true;
     [JsonPropertyName("agent_cursor_enabled")] public bool AgentCursorEnabled { get; set; } = true;
+    [JsonPropertyName("agent_antigravity_enabled")] public bool AgentAntigravityEnabled { get; set; } = true;
 
     /// <summary>Discord activity type: 0 Playing, 2 Listening, 3 Watching, 5 Competing.</summary>
     [JsonPropertyName("activity_type")] public int ActivityType { get; set; }
@@ -52,6 +53,7 @@ public sealed class Settings
     {
         AgentKind.Codex => AgentCodexEnabled,
         AgentKind.Cursor => AgentCursorEnabled,
+        AgentKind.Antigravity => AgentAntigravityEnabled,
         _ => AgentClaudeEnabled,
     };
 
@@ -60,10 +62,11 @@ public sealed class Settings
     {
         get
         {
-            var list = new List<AgentKind>(3);
+            var list = new List<AgentKind>(4);
             if (AgentClaudeEnabled) list.Add(AgentKind.Claude);
             if (AgentCodexEnabled) list.Add(AgentKind.Codex);
             if (AgentCursorEnabled) list.Add(AgentKind.Cursor);
+            if (AgentAntigravityEnabled) list.Add(AgentKind.Antigravity);
             return list;
         }
     }
@@ -74,6 +77,7 @@ public sealed class Settings
         {
             case AgentKind.Codex: AgentCodexEnabled = enabled; break;
             case AgentKind.Cursor: AgentCursorEnabled = enabled; break;
+            case AgentKind.Antigravity: AgentAntigravityEnabled = enabled; break;
             default: AgentClaudeEnabled = enabled; break;
         }
 
@@ -86,6 +90,7 @@ public sealed class Settings
         if (AgentClaudeEnabled) return AgentKind.Claude;
         if (AgentCodexEnabled) return AgentKind.Codex;
         if (AgentCursorEnabled) return AgentKind.Cursor;
+        if (AgentAntigravityEnabled) return AgentKind.Antigravity;
         return AgentKind.Claude;
     }
 

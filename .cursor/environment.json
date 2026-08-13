@@ -1,0 +1,17 @@
+{
+  "name": "AgentCord web",
+  "install": "./.cursor/install.sh",
+  "terminals": [
+    {
+      "name": "web dev server",
+      "command": "cd web && bun run dev",
+      "description": "Astro landing page dev server on http://localhost:4321"
+    }
+  ],
+  "ports": [
+    {
+      "name": "web dev",
+      "port": 4321
+    }
+  ]
+}

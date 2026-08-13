@@ -30,7 +30,7 @@
     <Page Remove="AgentCord.Tests/**" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="AgentCord.Tests" />

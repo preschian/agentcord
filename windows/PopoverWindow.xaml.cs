@@ -564,8 +564,8 @@ public partial class PopoverWindow : Window
                 return [("Waiting for Antigravity usage…", null)];
             return
             [
-                ("Current session", usage.FiveHour),
-                ("All models", usage.Weekly),
+                ("Five-hour limit", usage.FiveHour),
+                ("Weekly limit", usage.Weekly),
             ];
         }
 

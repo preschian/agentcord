@@ -255,6 +255,15 @@
             </DockPanel>
             <Rectangle Height="1" Fill="#0D000000"/>
             <DockPanel Margin="0,5">
+              <ToggleButton x:Name="GrokAgentSwitch" DockPanel.Dock="Right"
+                            Style="{StaticResource Switch}" Click="OnGrokAgentSwitch"/>
+              <StackPanel Orientation="Horizontal">
+                <Ellipse Width="6" Height="6" Fill="#FF1D1D1F" VerticalAlignment="Center"/>
+                <TextBlock Text="Grok" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
+              </StackPanel>
+            </DockPanel>
+            <Rectangle Height="1" Fill="#0D000000"/>
+            <DockPanel Margin="0,5">
               <ToggleButton x:Name="AntigravityAgentSwitch" DockPanel.Dock="Right"
                             Style="{StaticResource Switch}" Click="OnAntigravityAgentSwitch"/>
               <StackPanel Orientation="Horizontal">

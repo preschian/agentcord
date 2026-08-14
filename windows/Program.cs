@@ -1,6 +1,7 @@
 // Tray entry point. No window and no taskbar entry — the app lives entirely
 // in the notification area, mirroring the macOS menu bar app (LSUIElement).
 
+using System.IO;
 using System.Windows.Forms;
 
 namespace AgentCord;
@@ -11,6 +12,9 @@ internal static class Program
     private static void Main(string[] args)
     {
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => LogCrash("ThreadException", e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            LogCrash("UnhandledException", e.ExceptionObject as Exception);
 
         // A second instance would fight over the Discord pipe and the tray
         // icon; quietly defer to the one already running.
@@ -32,7 +36,16 @@ internal static class Program
 
         // --popover opens the status popover immediately (handy for debugging
         // the UI without reaching for the tray icon).
-        Application.Run(new TrayApplicationContext(showPopoverOnStart: args.Contains("--popover")));
+        try
+        {
+            LogCrash("Startup", null);
+            Application.Run(new TrayApplicationContext(showPopoverOnStart: args.Contains("--popover")));
+            LogCrash("Application.Run returned", null);
+        }
+        catch (Exception ex)
+        {
+            LogCrash("Main", ex);
+        }
     }
 
     private static void Screenshot(string path)
@@ -43,12 +56,14 @@ internal static class Program
         using var codexUsage = new CodexUsage();
         using var cursorUsage = new CursorUsage();
         using var antigravityUsage = new AntigravityUsage();
+        using var grokUsage = new GrokUsage();
         using var status = new AnthropicStatus();
         controller.Start();
         usage.Start();
         codexUsage.Start();
         cursorUsage.Start();
         antigravityUsage.Start();
+        grokUsage.Start();
         status.Start();
 
         // Let the first session scan, usage fetch, and status fetch land so
@@ -61,8 +76,26 @@ internal static class Program
         }
 
         var window = new PopoverWindow(
-            settings, controller, usage, codexUsage, cursorUsage, antigravityUsage, status, new SleepGuard(), () => { });
+            settings, controller, usage, codexUsage, cursorUsage, antigravityUsage, grokUsage, status, new SleepGuard(), () => { });
         window.CaptureForDebug(path);
         controller.Shutdown();
+    }
+
+    internal static void LogCrash(string kind, Exception? ex)
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "AgentCord");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(
+                Path.Combine(dir, "crash.log"),
+                $"{DateTime.Now:O} {kind}: {ex?.ToString() ?? "ok"}\n");
+        }
+        catch
+        {
+            // Logging must never take the app down.
+        }
     }
 }

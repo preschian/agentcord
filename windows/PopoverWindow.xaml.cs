@@ -26,6 +26,7 @@ public partial class PopoverWindow : Window
     private readonly CodexUsage _codexUsage;
     private readonly CursorUsage _cursorUsage;
     private readonly AntigravityUsage _antigravityUsage;
+    private readonly GrokUsage _grokUsage;
     private readonly AnthropicStatus _status;
     private readonly SleepGuard _sleepGuard;
     private readonly Action _quit;
@@ -69,7 +70,8 @@ public partial class PopoverWindow : Window
 
     public PopoverWindow(
         Settings settings, PresenceController controller, ClaudeUsage usage, CodexUsage codexUsage,
-        CursorUsage cursorUsage, AntigravityUsage antigravityUsage, AnthropicStatus status, SleepGuard sleepGuard, Action quit)
+        CursorUsage cursorUsage, AntigravityUsage antigravityUsage, GrokUsage grokUsage,
+        AnthropicStatus status, SleepGuard sleepGuard, Action quit)
     {
         _settings = settings;
         _controller = controller;
@@ -77,6 +79,7 @@ public partial class PopoverWindow : Window
         _codexUsage = codexUsage;
         _cursorUsage = cursorUsage;
         _antigravityUsage = antigravityUsage;
+        _grokUsage = grokUsage;
         _status = status;
         _sleepGuard = sleepGuard;
         _quit = quit;
@@ -104,6 +107,7 @@ public partial class PopoverWindow : Window
         _codexUsage.Refresh();
         _cursorUsage.Refresh();
         _antigravityUsage.Refresh();
+        _grokUsage.Refresh();
         _status.Refresh();
         ShowMainScreen();
         UpdateUi();
@@ -270,6 +274,9 @@ public partial class PopoverWindow : Window
     private void OnAntigravityAgentSwitch(object sender, RoutedEventArgs e) =>
         SaveAgentToggle(AgentKind.Antigravity, AntigravityAgentSwitch);
 
+    private void OnGrokAgentSwitch(object sender, RoutedEventArgs e) =>
+        SaveAgentToggle(AgentKind.Grok, GrokAgentSwitch);
+
     private void SaveAgentToggle(AgentKind agent, ToggleButton toggle)
     {
         _settings.SetAgentEnabled(agent, toggle.IsChecked == true);
@@ -431,6 +438,7 @@ public partial class PopoverWindow : Window
         ClaudeAgentSwitch.IsChecked = _settings.AgentClaudeEnabled;
         CodexAgentSwitch.IsChecked = _settings.AgentCodexEnabled;
         CursorAgentSwitch.IsChecked = _settings.AgentCursorEnabled;
+        GrokAgentSwitch.IsChecked = _settings.AgentGrokEnabled;
         AntigravityAgentSwitch.IsChecked = _settings.AgentAntigravityEnabled;
 
         var displayCount = new[]
@@ -521,6 +529,7 @@ public partial class PopoverWindow : Window
         AgentKind.Codex => _codexUsage.Current?.Primary,
         AgentKind.Cursor => _cursorUsage.Current?.Included,
         AgentKind.Antigravity => _antigravityUsage.Current?.FiveHour,
+        AgentKind.Grok => _grokUsage.Current?.Weekly,
         _ => _usage.Current?.FiveHour,
     };
 
@@ -535,6 +544,8 @@ public partial class PopoverWindow : Window
             || _antigravityUsage.AccountEmail is not null
             || _controller.AntigravityAccountEmail is not null
             || AntigravitySession.IsInstalled() || _controller.SessionFor(agent) is not null,
+        AgentKind.Grok => _grokUsage.IsAuthenticated || _grokUsage.Current is not null
+            || _controller.GrokAuthenticated || _controller.SessionFor(agent) is not null,
         _ => _usage.AccountEmail is not null || _usage.Current is not null
             || _controller.SessionFor(agent) is not null,
     };
@@ -544,6 +555,7 @@ public partial class PopoverWindow : Window
         AgentKind.Codex => _codexUsage.AccountEmail,
         AgentKind.Cursor => _cursorUsage.AccountEmail,
         AgentKind.Antigravity => _antigravityUsage.AccountEmail ?? _controller.AntigravityAccountEmail,
+        AgentKind.Grok => _grokUsage.AccountEmail,
         _ => _usage.AccountEmail,
     };
 
@@ -552,11 +564,29 @@ public partial class PopoverWindow : Window
         AgentKind.Codex => _codexUsage.Current?.PlanType,
         AgentKind.Cursor => _cursorUsage.Current?.PlanName,
         AgentKind.Antigravity => _antigravityUsage.Current?.PlanName ?? _controller.AntigravityPlanType,
+        AgentKind.Grok => null,
         _ => _usage.Current?.PlanName,
     };
 
     private List<(string Label, UsageWindow? Window)> UsageRowsFor(AgentKind agent)
     {
+        if (agent == AgentKind.Grok)
+        {
+            var usage = _grokUsage.Current;
+            if (usage is null)
+            {
+                return _grokUsage.IsAuthenticated || _controller.GrokAuthenticated
+                    ? [("Waiting for Grok usage…", null)]
+                    : [("Not signed in — run grok login", null)];
+            }
+            var rows = new List<(string Label, UsageWindow? Window)>
+            {
+                ("Weekly credits", usage.Weekly),
+            };
+            if (usage.OnDemand is not null) rows.Add(("On-demand", usage.OnDemand));
+            return rows;
+        }
+
         if (agent == AgentKind.Antigravity)
         {
             var usage = _antigravityUsage.Current;

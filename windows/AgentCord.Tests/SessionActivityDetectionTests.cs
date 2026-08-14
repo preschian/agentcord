@@ -367,11 +367,11 @@ public sealed class SessionActivityDetectionTests
         Assert.Equal("preschian27@gmail.com", usageTracker.AccountEmail);
         Assert.Equal("Google AI Pro", usage.PlanName);
 
-        // 5-hour: 40000 chars / 4 = 10000 tokens => 10000 / 250000 = 4%
-        Assert.Equal(4, usage.FiveHour.Percent);
+        // 5-hour: 40000 chars / 4 = 10000 tokens => 10000 / 500000 = 2%
+        Assert.Equal(2, usage.FiveHour.Percent);
         Assert.NotNull(usage.FiveHour.ResetsAtMs);
 
-        // Weekly: (40000 + 80000) / 4 = 30000 tokens => 30000 / 2500000 = 1%
+        // Weekly: (40000 + 80000) / 4 = 30000 tokens => 30000 / 4500000 = 1%
         Assert.Equal(1, usage.Weekly.Percent);
         Assert.NotNull(usage.Weekly.ResetsAtMs);
     }

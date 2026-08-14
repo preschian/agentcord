@@ -21,9 +21,9 @@ public sealed class AntigravityUsage : IDisposable
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
 
-    // Google AI Pro estimated baseline capacities for rolling window percentages
-    public const int DefaultFiveHourCapacity = 250_000;
-    public const int DefaultWeeklyCapacity = 2_500_000;
+    // Google AI Pro calibrated baseline capacities for rolling window percentages (used %)
+    public const int DefaultFiveHourCapacity = 500_000;
+    public const int DefaultWeeklyCapacity = 4_500_000;
 
     private readonly string _baseDir;
     private readonly object _lock = new();

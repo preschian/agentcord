@@ -25,6 +25,7 @@ public partial class PopoverWindow : Window
     private readonly ClaudeUsage _usage;
     private readonly CodexUsage _codexUsage;
     private readonly CursorUsage _cursorUsage;
+    private readonly AntigravityUsage _antigravityUsage;
     private readonly AnthropicStatus _status;
     private readonly SleepGuard _sleepGuard;
     private readonly Action _quit;
@@ -68,13 +69,14 @@ public partial class PopoverWindow : Window
 
     public PopoverWindow(
         Settings settings, PresenceController controller, ClaudeUsage usage, CodexUsage codexUsage,
-        CursorUsage cursorUsage, AnthropicStatus status, SleepGuard sleepGuard, Action quit)
+        CursorUsage cursorUsage, AntigravityUsage antigravityUsage, AnthropicStatus status, SleepGuard sleepGuard, Action quit)
     {
         _settings = settings;
         _controller = controller;
         _usage = usage;
         _codexUsage = codexUsage;
         _cursorUsage = cursorUsage;
+        _antigravityUsage = antigravityUsage;
         _status = status;
         _sleepGuard = sleepGuard;
         _quit = quit;
@@ -101,6 +103,7 @@ public partial class PopoverWindow : Window
         _usage.Refresh();
         _codexUsage.Refresh();
         _cursorUsage.Refresh();
+        _antigravityUsage.Refresh();
         _status.Refresh();
         ShowMainScreen();
         UpdateUi();
@@ -517,7 +520,7 @@ public partial class PopoverWindow : Window
     {
         AgentKind.Codex => _codexUsage.Current?.Primary,
         AgentKind.Cursor => _cursorUsage.Current?.Included,
-        AgentKind.Antigravity => null,
+        AgentKind.Antigravity => _antigravityUsage.Current?.FiveHour,
         _ => _usage.Current?.FiveHour,
     };
 
@@ -528,7 +531,9 @@ public partial class PopoverWindow : Window
             || _controller.SessionFor(agent) is not null,
         AgentKind.Cursor => _cursorUsage.IsAuthenticated || _cursorUsage.Current is not null
             || _controller.SessionFor(agent) is not null,
-        AgentKind.Antigravity => _controller.AntigravityAccountEmail is not null
+        AgentKind.Antigravity => _antigravityUsage.Current is not null
+            || _antigravityUsage.AccountEmail is not null
+            || _controller.AntigravityAccountEmail is not null
             || AntigravitySession.IsInstalled() || _controller.SessionFor(agent) is not null,
         _ => _usage.AccountEmail is not null || _usage.Current is not null
             || _controller.SessionFor(agent) is not null,
@@ -538,7 +543,7 @@ public partial class PopoverWindow : Window
     {
         AgentKind.Codex => _codexUsage.AccountEmail,
         AgentKind.Cursor => _cursorUsage.AccountEmail,
-        AgentKind.Antigravity => _controller.AntigravityAccountEmail,
+        AgentKind.Antigravity => _antigravityUsage.AccountEmail ?? _controller.AntigravityAccountEmail,
         _ => _usage.AccountEmail,
     };
 
@@ -546,7 +551,7 @@ public partial class PopoverWindow : Window
     {
         AgentKind.Codex => _codexUsage.Current?.PlanType,
         AgentKind.Cursor => _cursorUsage.Current?.PlanName,
-        AgentKind.Antigravity => _controller.AntigravityPlanType,
+        AgentKind.Antigravity => _antigravityUsage.Current?.PlanName ?? _controller.AntigravityPlanType,
         _ => _usage.Current?.PlanName,
     };
 
@@ -554,13 +559,14 @@ public partial class PopoverWindow : Window
     {
         if (agent == AgentKind.Antigravity)
         {
-            var session = _controller.AntigravitySession;
-            if (session is not null)
-            {
-                var model = session.Model ?? "Gemini";
-                return [($"{model} session", null)];
-            }
-            return [("Waiting for Antigravity session…", null)];
+            var usage = _antigravityUsage.Current;
+            if (usage is null)
+                return [("Waiting for Antigravity usage…", null)];
+            return
+            [
+                ("Current session", usage.FiveHour),
+                ("All models", usage.Weekly),
+            ];
         }
 
         if (agent == AgentKind.Codex)

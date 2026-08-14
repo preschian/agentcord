@@ -154,6 +154,18 @@ public sealed record CodexUsageInfo
     public IReadOnlyList<NamedUsageWindow> AdditionalWindows { get; init; } = [];
 }
 
+// --- Antigravity subscription usage
+
+public sealed record AntigravityUsageInfo
+{
+    /// <summary>The rolling 5-hour session usage.</summary>
+    public required UsageWindow FiveHour { get; init; }
+    /// <summary>The weekly (all-models) usage.</summary>
+    public required UsageWindow Weekly { get; init; }
+    /// <summary>Subscription plan label, e.g. "Google AI Pro".</summary>
+    public string? PlanName { get; init; }
+}
+
 // --- Anthropic status page
 
 /// <summary>One status-page component, e.g. "Claude API" (Statuspage

@@ -42,11 +42,13 @@ internal static class Program
         using var usage = new ClaudeUsage();
         using var codexUsage = new CodexUsage();
         using var cursorUsage = new CursorUsage();
+        using var antigravityUsage = new AntigravityUsage();
         using var status = new AnthropicStatus();
         controller.Start();
         usage.Start();
         codexUsage.Start();
         cursorUsage.Start();
+        antigravityUsage.Start();
         status.Start();
 
         // Let the first session scan, usage fetch, and status fetch land so
@@ -59,7 +61,7 @@ internal static class Program
         }
 
         var window = new PopoverWindow(
-            settings, controller, usage, codexUsage, cursorUsage, status, new SleepGuard(), () => { });
+            settings, controller, usage, codexUsage, cursorUsage, antigravityUsage, status, new SleepGuard(), () => { });
         window.CaptureForDebug(path);
         controller.Shutdown();
     }

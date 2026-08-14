@@ -336,6 +336,46 @@ public sealed class SessionActivityDetectionTests
         Assert.Equal(63, TrayStatusText.MaxLength);
     }
 
+    [Fact]
+    public void AntigravityUsage_computes_rolling_five_hour_and_weekly_usage()
+    {
+        using var dir = TempDir.Create();
+        var brainDir = Path.Combine(dir.Root, "brain", "test-conv", ".system_generated", "logs");
+        Directory.CreateDirectory(brainDir);
+
+        var now = DateTime.UtcNow;
+        var twoHoursAgo = now.AddHours(-2).ToString("O");
+        var twoDaysAgo = now.AddDays(-2).ToString("O");
+        var tenDaysAgo = now.AddDays(-10).ToString("O");
+
+        var transcript = Path.Combine(brainDir, "transcript.jsonl");
+        File.WriteAllText(transcript,
+            $"{{\"step_index\":0,\"source\":\"USER_EXPLICIT\",\"type\":\"USER_INPUT\",\"created_at\":\"{twoHoursAgo}\",\"content\":\"{new string('x', 40000)}\"}}\n" +
+            $"{{\"step_index\":1,\"source\":\"USER_EXPLICIT\",\"type\":\"USER_INPUT\",\"created_at\":\"{twoDaysAgo}\",\"content\":\"{new string('y', 80000)}\"}}\n" +
+            $"{{\"step_index\":2,\"source\":\"USER_EXPLICIT\",\"type\":\"USER_INPUT\",\"created_at\":\"{tenDaysAgo}\",\"content\":\"{new string('z', 200000)}\"}}\n");
+
+        var logDir = Path.Combine(dir.Root, "log");
+        Directory.CreateDirectory(logDir);
+        var logFile = Path.Combine(logDir, "cli-test.log");
+        File.WriteAllText(logFile, "applyAuthResult: email=preschian27@gmail.com, authMethod=consumer, quotaProject=\n");
+
+        using var usageTracker = new AntigravityUsage(dir.Root);
+        usageTracker.Fetch();
+
+        var usage = usageTracker.Current;
+        Assert.NotNull(usage);
+        Assert.Equal("preschian27@gmail.com", usageTracker.AccountEmail);
+        Assert.Equal("Google AI Pro", usage.PlanName);
+
+        // 5-hour: 40000 chars / 4 = 10000 tokens => 10000 / 250000 = 4%
+        Assert.Equal(4, usage.FiveHour.Percent);
+        Assert.NotNull(usage.FiveHour.ResetsAtMs);
+
+        // Weekly: (40000 + 80000) / 4 = 30000 tokens => 30000 / 2500000 = 1%
+        Assert.Equal(1, usage.Weekly.Percent);
+        Assert.NotNull(usage.Weekly.ResetsAtMs);
+    }
+
     private static string FormatUtcOffset(TimeSpan offset)
     {
         var sign = offset < TimeSpan.Zero ? "-" : "+";

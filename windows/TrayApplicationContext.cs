@@ -96,11 +96,15 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void RefreshTooltip()
     {
-        // Mirrors the macOS menu bar line: session bits + compact usage.
-        // NotifyIcon.Text is plain text (multi-line via \n) and capped at 127 chars.
-        var text = TrayStatusText.Build(
-            _settings, _controller, _usage.Current, _codexUsage.Current, _cursorUsage.Current);
-        if (_notifyIcon.Text != text) _notifyIcon.Text = text;
+        try
+        {
+            // Mirrors the macOS menu bar line: session bits + compact usage.
+            // NotifyIcon.Text is plain text (multi-line via \n) and capped at 63 chars.
+            var text = TrayStatusText.Build(
+                _settings, _controller, _usage.Current, _codexUsage.Current, _cursorUsage.Current);
+            if (_notifyIcon.Text != text) _notifyIcon.Text = text;
+        }
+        catch { }
     }
 
     private static Icon LoadIcon()

@@ -528,7 +528,8 @@ public partial class PopoverWindow : Window
             || _controller.SessionFor(agent) is not null,
         AgentKind.Cursor => _cursorUsage.IsAuthenticated || _cursorUsage.Current is not null
             || _controller.SessionFor(agent) is not null,
-        AgentKind.Antigravity => AntigravitySession.IsInstalled() || _controller.SessionFor(agent) is not null,
+        AgentKind.Antigravity => _controller.AntigravityAccountEmail is not null
+            || AntigravitySession.IsInstalled() || _controller.SessionFor(agent) is not null,
         _ => _usage.AccountEmail is not null || _usage.Current is not null
             || _controller.SessionFor(agent) is not null,
     };
@@ -537,7 +538,7 @@ public partial class PopoverWindow : Window
     {
         AgentKind.Codex => _codexUsage.AccountEmail,
         AgentKind.Cursor => _cursorUsage.AccountEmail,
-        AgentKind.Antigravity => null,
+        AgentKind.Antigravity => _controller.AntigravityAccountEmail,
         _ => _usage.AccountEmail,
     };
 
@@ -545,7 +546,7 @@ public partial class PopoverWindow : Window
     {
         AgentKind.Codex => _codexUsage.Current?.PlanType,
         AgentKind.Cursor => _cursorUsage.Current?.PlanName,
-        AgentKind.Antigravity => null,
+        AgentKind.Antigravity => _controller.AntigravityPlanType,
         _ => _usage.Current?.PlanName,
     };
 

@@ -17,6 +17,9 @@ public sealed class AntigravitySession
     /// events longer than this is treated as an idle break.</summary>
     private const long ActiveGapToleranceMs = 5 * 60 * 1000;
 
+    public string? AccountEmail { get; private set; }
+    public string? PlanType { get; private set; }
+
     private readonly string _baseDir;
     private readonly Dictionary<string, CacheEntry> _cache = [];
     private readonly Dictionary<string, string> _repoNameCache = [];
@@ -60,6 +63,7 @@ public sealed class AntigravitySession
         if (!Directory.Exists(_baseDir)) return null;
 
         RefreshHistory();
+        RefreshAccountInfo();
 
         var brainDir = Path.Combine(_baseDir, "brain");
         var presenceDir = Path.Combine(_baseDir, "presence");
@@ -193,6 +197,77 @@ public sealed class AntigravitySession
             _historyCacheMtime = mtime;
         }
         catch { }
+    }
+
+    private void RefreshAccountInfo()
+    {
+        if (AccountEmail is not null && PlanType is not null) return;
+
+        var logFiles = new List<string>();
+        var cliLog = Path.Combine(_baseDir, "cli.log");
+        if (File.Exists(cliLog)) logFiles.Add(cliLog);
+
+        var logDir = Path.Combine(_baseDir, "log");
+        if (Directory.Exists(logDir))
+        {
+            try
+            {
+                var files = Directory.EnumerateFiles(logDir, "cli-*.log")
+                    .Select(p => (Path: p, Mtime: File.GetLastWriteTimeUtc(p)))
+                    .OrderByDescending(f => f.Mtime)
+                    .Select(f => f.Path);
+                logFiles.AddRange(files);
+            }
+            catch { }
+        }
+
+        foreach (var logFile in logFiles)
+        {
+            try
+            {
+                using var stream = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                while (reader.ReadLine() is { } line)
+                {
+                    if (AccountEmail is null)
+                    {
+                        var m = Regex.Match(line, @"(?:applyAuthResult:\s*email=|authenticated successfully as\s+|email=)([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)");
+                        if (m.Success) AccountEmail = m.Groups[1].Value;
+                    }
+                    if (PlanType is null)
+                    {
+                        var m = Regex.Match(line, @"(?:authMethod|tier|plan)=([a-zA-Z0-9_-]+)");
+                        if (m.Success) PlanType = FormatPlan(m.Groups[1].Value);
+                    }
+                }
+            }
+            catch { }
+
+            if (AccountEmail is not null && PlanType is not null) break;
+        }
+
+        if (AccountEmail is not null && PlanType is null)
+        {
+            PlanType = "Google AI Pro";
+        }
+    }
+
+    /// <summary>Formats raw authMethod/tier names like "consumer" into clean display labels.</summary>
+    public static string FormatPlan(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "Google AI Pro";
+        var lower = raw.Trim().ToLowerInvariant();
+        return lower switch
+        {
+            "consumer" => "Google AI Pro",
+            "pro" => "Google AI Pro",
+            "ultra" or "advanced" => "Google AI Ultra",
+            "enterprise" => "Gemini Enterprise",
+            "workforce" => "Google Workspace",
+            "gcp" or "cloud" => "Google Cloud",
+            "api_key" => "API Key",
+            _ => char.ToUpperInvariant(raw[0]) + (raw.Length > 1 ? raw[1..] : "")
+        };
     }
 
     private sealed class TranscriptState

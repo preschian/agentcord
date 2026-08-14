@@ -284,6 +284,58 @@ public sealed class SessionActivityDetectionTests
         Assert.Equal(custom, AntigravitySession.ResolveBaseDir(custom));
     }
 
+    [Fact]
+    public void Antigravity_extracts_account_email_and_plan_from_cli_logs()
+    {
+        using var dir = TempDir.Create();
+        var logDir = Path.Combine(dir.Root, "log");
+        Directory.CreateDirectory(logDir);
+
+        var logFile = Path.Combine(logDir, "cli-20260814_003501.log");
+        File.WriteAllText(logFile,
+            "ERROR: logging before google.Init: I0814 00:35:01.556027 197 server_oauth.go:189] applyAuthResult: email=preschian27@gmail.com, authMethod=consumer, quotaProject=\n" +
+            "ERROR: logging before google.Init: I0814 00:35:01.556027 197 server_oauth.go:194] OAuth: authenticated successfully as preschian27@gmail.com\n");
+
+        var scanner = new AntigravitySession(dir.Root);
+        scanner.Scan();
+
+        Assert.Equal("preschian27@gmail.com", scanner.AccountEmail);
+        Assert.Equal("Google AI Pro", scanner.PlanType);
+    }
+
+    [Theory]
+    [InlineData("consumer", "Google AI Pro")]
+    [InlineData("pro", "Google AI Pro")]
+    [InlineData("ultra", "Google AI Ultra")]
+    [InlineData("enterprise", "Gemini Enterprise")]
+    [InlineData("workforce", "Google Workspace")]
+    [InlineData("gcp", "Google Cloud")]
+    [InlineData("api_key", "API Key")]
+    public void Antigravity_FormatPlan_formats_correctly(string raw, string expected)
+    {
+        Assert.Equal(expected, AntigravitySession.FormatPlan(raw));
+    }
+
+    [Fact]
+    public void TrayStatusText_does_not_exceed_max_length_for_winforms()
+    {
+        var settings = new Settings { ShowProject = true, ShowModel = true, ShowTokens = true };
+        using var controller = new PresenceController(settings);
+        var longSession = new SessionInfo
+        {
+            Agent = AgentKind.Antigravity,
+            ProjectName = "a-very-long-project-name-that-would-exceed-the-limit-if-not-truncated",
+            Model = "Gemini 3.7 Flash Thinking (Experimental)",
+            StartEpochMs = DateTimeOffset.UtcNow.AddMinutes(-42).ToUnixTimeMilliseconds(),
+            TotalTokens = 1234567,
+            LastModifiedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+
+        var text = TrayStatusText.Build(settings, controller, null, null, null);
+        Assert.True(text.Length <= 63, $"Text length {text.Length} exceeded 63 chars: '{text}'");
+        Assert.Equal(63, TrayStatusText.MaxLength);
+    }
+
     private static string FormatUtcOffset(TimeSpan offset)
     {
         var sign = offset < TimeSpan.Zero ? "-" : "+";

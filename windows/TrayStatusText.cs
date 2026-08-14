@@ -1,12 +1,12 @@
 // Builds the tray tooltip string, mirroring the macOS menu bar status line
 // (session bits + compact multi-agent usage). NotifyIcon.Text is capped at
-// 127 characters, so the builder keeps the most useful parts and truncates.
+// 63 characters by WinForms, so the builder keeps the most useful parts and truncates.
 
 namespace AgentCord;
 
 public static class TrayStatusText
 {
-    public const int MaxLength = 127;
+    public const int MaxLength = 63;
 
     public static string Build(
         Settings settings,

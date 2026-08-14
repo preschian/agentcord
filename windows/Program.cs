@@ -10,6 +10,8 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+
         // A second instance would fight over the Discord pipe and the tray
         // icon; quietly defer to the one already running.
         using var mutex = new Mutex(initiallyOwned: true, "AgentCord.SingleInstance", out var isFirst);

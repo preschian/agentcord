@@ -57,6 +57,8 @@ public enum AgentKind
     Codex,
     Cursor,
     Antigravity,
+    /// <summary>Appended last so existing settings.json numeric values stay valid.</summary>
+    Grok,
 }
 
 public static class AgentKindExtensions
@@ -66,6 +68,7 @@ public static class AgentKindExtensions
         AgentKind.Codex => "Codex",
         AgentKind.Cursor => "Cursor",
         AgentKind.Antigravity => "Antigravity",
+        AgentKind.Grok => "Grok",
         _ => "Claude",
     };
 
@@ -74,6 +77,7 @@ public static class AgentKindExtensions
         AgentKind.Codex => "OpenAI",
         AgentKind.Cursor => "Cursor",
         AgentKind.Antigravity => "Google",
+        AgentKind.Grok => "xAI",
         _ => "Anthropic",
     };
 }
@@ -152,6 +156,17 @@ public sealed record CodexUsageInfo
     public string? SecondaryLabel { get; init; }
     public string? PlanType { get; init; }
     public IReadOnlyList<NamedUsageWindow> AdditionalWindows { get; init; } = [];
+}
+
+// --- Grok / SuperGrok weekly credits
+
+/// <summary>Grok weekly subscription credit usage (CLI / SuperGrok billing).</summary>
+public sealed record GrokUsageInfo
+{
+    /// <summary>Weekly included credits window (<c>creditUsagePercent</c>).</summary>
+    public required UsageWindow Weekly { get; init; }
+    /// <summary>On-demand window when a cap is set.</summary>
+    public UsageWindow? OnDemand { get; init; }
 }
 
 // --- Antigravity subscription usage

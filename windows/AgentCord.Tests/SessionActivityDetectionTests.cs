@@ -317,6 +317,155 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Grok_detects_active_session_from_live_pid_and_summary()
+    {
+        using var dir = TempDir.Create();
+        var sessionId = "019f880e-19ae-75c3-98d9-e6d29feb4b70";
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var sessionDir = Path.Combine(dir.Root, "sessions", encoded, sessionId);
+        Directory.CreateDirectory(sessionDir);
+
+        var openedAt = DateTimeOffset.UtcNow.AddMinutes(-12);
+        File.WriteAllText(Path.Combine(dir.Root, "active_sessions.json"),
+            "[{ \"session_id\":\"" + sessionId + "\",\"pid\":" + Environment.ProcessId +
+            ",\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"opened_at\":\"" +
+            openedAt.ToString("o") + "\"}]");
+        File.WriteAllText(Path.Combine(dir.Root, "auth.json"),
+            "{\"acct\":{\"key\":\"test\",\"email\":\"user@x.ai\"}}");
+
+        var lastActive = DateTimeOffset.UtcNow.AddSeconds(-8);
+        File.WriteAllText(Path.Combine(sessionDir, "summary.json"),
+            "{\"info\":{\"cwd\":\"D:\\\\Workspace\\\\agentcord\"},\"current_model_id\":\"grok-4.5\"," +
+            "\"last_active_at\":\"" + lastActive.ToString("o") + "\"," +
+            "\"git_remotes\":[\"git@github.com:preschian/agentcord.git\"]}");
+        File.WriteAllText(Path.Combine(sessionDir, "signals.json"),
+            "{\"contextTokensUsed\":42221,\"contextWindowTokens\":500000,\"contextWindowUsage\":8," +
+            "\"primaryModelId\":\"grok-4.5\"}");
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        Assert.Equal(AgentKind.Grok, info!.Agent);
+        Assert.Equal("Grok 4.5", info.Model);
+        Assert.Equal("agentcord", info.ProjectName);
+        Assert.Equal(42221, info.TotalTokens);
+        Assert.True(scanner.IsAuthenticated);
+        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 60));
+        Assert.Equal(openedAt.ToUnixTimeMilliseconds(), info.StartEpochMs);
+    }
+
+    [Fact]
+    public void Grok_falls_back_to_recent_summary_when_pid_is_dead()
+    {
+        using var dir = TempDir.Create();
+        var sessionId = "dead-session";
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var sessionDir = Path.Combine(dir.Root, "sessions", encoded, sessionId);
+        Directory.CreateDirectory(sessionDir);
+
+        File.WriteAllText(Path.Combine(dir.Root, "active_sessions.json"),
+            "[{ \"session_id\":\"" + sessionId + "\",\"pid\":2000000000,\"cwd\":\"D:\\\\Workspace\\\\agentcord\"," +
+            "\"opened_at\":\"2026-01-01T00:00:00Z\"}]");
+
+        var lastActive = DateTimeOffset.UtcNow.AddSeconds(-10);
+        File.WriteAllText(Path.Combine(sessionDir, "summary.json"),
+            "{\"info\":{\"cwd\":\"D:\\\\Workspace\\\\agentcord\"},\"current_model_id\":\"grok-4.5\"," +
+            "\"last_active_at\":\"" + lastActive.ToString("o") + "\"," +
+            "\"git_remotes\":[\"https://github.com/preschian/agentcord.git\"]}");
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        Assert.Equal(AgentKind.Grok, info!.Agent);
+        Assert.Equal("agentcord", info.ProjectName);
+        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 60));
+    }
+
+    [Fact]
+    public void Grok_ignores_idle_session_with_dead_pid()
+    {
+        using var dir = TempDir.Create();
+        var sessionId = "idle-session";
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var sessionDir = Path.Combine(dir.Root, "sessions", encoded, sessionId);
+        Directory.CreateDirectory(sessionDir);
+
+        File.WriteAllText(Path.Combine(sessionDir, "summary.json"),
+            "{\"current_model_id\":\"grok-4.5\",\"last_active_at\":\"2026-01-01T00:00:00Z\"}");
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
+        Assert.Null(scanner.Scan());
+    }
+
+    [Theory]
+    [InlineData("grok-4.5", "Grok 4.5")]
+    [InlineData("grok-", "Grok")]
+    [InlineData("Grok 4", "Grok 4")]
+    public void Grok_PrettyModel_formats_correctly(string raw, string expected)
+    {
+        Assert.Equal(expected, GrokSession.PrettyModel(raw));
+    }
+
+    [Fact]
+    public void Grok_RepoNameFromRemote_strips_git_suffix()
+    {
+        Assert.Equal("agentcord", GrokSession.RepoNameFromRemote("git@github.com:preschian/agentcord.git"));
+        Assert.Equal("agentcord", GrokSession.RepoNameFromRemote("https://github.com/preschian/agentcord.git"));
+    }
+
+    [Fact]
+    public void GrokUsage_parses_weekly_credits_and_on_demand()
+    {
+        var json = """
+        {
+          "config": {
+            "creditUsagePercent": 42.4,
+            "currentPeriod": {
+              "type": "week",
+              "start": "2026-07-15T00:00:00Z",
+              "end": "2026-07-22T00:00:00Z"
+            },
+            "onDemandCap": { "val": 20 },
+            "onDemandUsed": { "val": 5 }
+          }
+        }
+        """;
+
+        var info = GrokUsage.ParseBilling(json);
+        Assert.NotNull(info);
+        Assert.Equal(42, info!.Weekly.Percent);
+        Assert.Equal("normal", info.Weekly.Severity);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-22T00:00:00Z").ToUnixTimeMilliseconds(), info.Weekly.ResetsAtMs);
+        Assert.NotNull(info.OnDemand);
+        Assert.Equal(25, info.OnDemand!.Percent);
+    }
+
+    [Fact]
+    public void GrokUsage_treats_missing_percent_as_zero_when_period_present()
+    {
+        var json = """
+        {
+          "config": {
+            "currentPeriod": {
+              "type": "week",
+              "end": "2026-07-22T00:00:00Z"
+            }
+          }
+        }
+        """;
+
+        var info = GrokUsage.ParseBilling(json);
+        Assert.NotNull(info);
+        Assert.Equal(0, info!.Weekly.Percent);
+        Assert.Null(info.OnDemand);
+    }
+
+    [Fact]
     public void TrayStatusText_does_not_exceed_max_length_for_winforms()
     {
         var settings = new Settings { ShowProject = true, ShowModel = true, ShowTokens = true };

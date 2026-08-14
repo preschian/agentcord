@@ -31,6 +31,7 @@ public sealed class AntigravityUsage : IDisposable
     private readonly Dictionary<string, (DateTime Mtime, List<StepRecord> Steps)> _fileStepsCache = [];
     private DateTime _lastSuccess = DateTime.MinValue;
     private DateTime _lastAttempt = DateTime.MinValue;
+    private int _fetching;
     private System.Threading.Timer? _timer;
 
     public sealed record StepRecord(long EpochMs, int EstTokens);
@@ -60,7 +61,9 @@ public sealed class AntigravityUsage : IDisposable
         {
             if (DateTime.UtcNow - _lastAttempt < MinFetchInterval) return;
         }
-        Fetch();
+        // agy /usage can take several seconds. Never run it on the tray click
+        // path — Claude/Codex/Cursor/Grok already refresh off-thread.
+        _ = Task.Run(Fetch);
     }
 
     public void Dispose()
@@ -70,6 +73,7 @@ public sealed class AntigravityUsage : IDisposable
 
     public void Fetch()
     {
+        if (Interlocked.Exchange(ref _fetching, 1) == 1) return;
         lock (_lock) _lastAttempt = DateTime.UtcNow;
 
         try
@@ -116,6 +120,10 @@ public sealed class AntigravityUsage : IDisposable
         catch
         {
             // Keep last valid snapshot
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _fetching, 0);
         }
     }
 

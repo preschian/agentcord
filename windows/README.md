@@ -1,7 +1,7 @@
 # AgentCord for Windows (C# / .NET)
 
 A native Windows port of the macOS menu bar app, written in C# on .NET 10. Same
-idea: while a Claude Code, Codex, Cursor, or Antigravity session is running, your Discord
+idea: while a Claude Code, Codex, Cursor, Grok, or Antigravity session is running, your Discord
 profile shows what you're working on, and it clears itself when the session
 goes quiet or you quit. Cursor covers both the Cursor CLI and Cursor sessions
 driven through T3 Code. If several agents are active, the most recently updated
@@ -23,9 +23,9 @@ Discord IPC client is hand-written.
 |---|---|---|
 | Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` (`DiscordIpc.cs`) |
 | IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
-| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.cursor\projects/**/agent-transcripts`, and `%USERPROFILE%\.gemini\antigravity-cli\brain` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `AntigravitySession.cs`) |
+| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.cursor\projects/**/agent-transcripts`, `%USERPROFILE%\.grok\active_sessions.json`, and `%USERPROFILE%\.gemini\antigravity-cli\brain` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`, `AntigravitySession.cs`) |
 | Presence controller | `PresenceController.swift` | `PresenceController.cs` |
-| Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs`, `CodexUsage.cs` (`codex app-server`), and `CursorUsage.cs` (`auth.json` / dashboard API) |
+| Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs`, `CodexUsage.cs` (`codex app-server`), `CursorUsage.cs` (`auth.json` / dashboard API), and `GrokUsage.cs` (`~/.grok/auth.json` / SuperGrok billing API) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
 | Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` (`Settings.cs`) |
 | UI | `NSStatusItem` + SwiftUI popover | `NotifyIcon` (`TrayApplicationContext.cs`) + WPF popover (`PopoverWindow.xaml`) |
@@ -96,12 +96,15 @@ exponential backoff capped at 30s, and the current activity is re-sent on
 every READY.
 
 **Session detection.** `ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`,
-and `AntigravitySession.cs` re-scan their transcript trees on the controller's 3-second
-tick and parse each `.jsonl` defensively. Claude's totals cover the local
+`GrokSession.cs`, and `AntigravitySession.cs` re-scan their data on the
+controller's 3-second tick and parse defensively. Claude's totals cover the local
 calendar day; Codex reports the current transcript's model, latest context
 token count, and start time; Cursor sums working time over the last 24 hours
-and enriches from `~/.cursor/chats/**/meta.json`; Antigravity detects active sessions,
-models (e.g. Gemini 3.7 Flash), workspaces, and presence locks under `%USERPROFILE%\.gemini\antigravity-cli`.
+and enriches from `~/.cursor/chats/**/meta.json`; Grok treats a live PID in
+`~/.grok/active_sessions.json` as authoritative and reads
+`summary.json` / `signals.json` for project, model, and context tokens;
+Antigravity detects active sessions, models (e.g. Gemini 3.7 Flash), workspaces,
+and presence locks under `%USERPROFILE%\.gemini\antigravity-cli`.
 Per-file aggregates are memoized by mtime so re-scans stay cheap. Repo names come from `git`
 (remote origin, then toplevel, then the directory name), spawned with
 `CreateNoWindow` so nothing flashes a console.
@@ -114,7 +117,9 @@ minutes (opening the menu triggers a throttled refresh); a failed poll keeps
 the last good snapshot for up to 30 minutes before showing a dash. Per-model
 weekly windows (e.g. a separate Fable limit) are shown when the plan has them.
 Codex usage is requested through Codex's local `app-server` JSONL protocol, so
-AgentCord does not read or refresh ChatGPT credentials itself.
+AgentCord does not read or refresh ChatGPT credentials itself. Grok weekly
+credits come from `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`
+using the OIDC tokens in `%USERPROFILE%\.grok\auth.json` (refreshed on 401).
 
 **UI.** WinForms owns the tray icon and the message loop; the popover is a WPF
 window (`PopoverWindow.xaml`) on that same thread, which is what makes the

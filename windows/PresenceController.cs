@@ -1,8 +1,9 @@
-// Observes active Claude Code, Codex, and Cursor sessions, selects the most
-// recently active enabled agent, builds the Rich Presence payload from the
-// user's settings, and drives DiscordIpc. Clears the presence when the session
-// goes idle or the app quits. Port of AgentCord/PresenceController.swift.
-// Cursor covers both the Cursor CLI and Cursor sessions driven via T3 Code.
+// Observes active Claude Code, Codex, Cursor, Grok, and Antigravity sessions,
+// selects the most recently active enabled agent, builds the Rich Presence
+// payload from the user's settings, and drives DiscordIpc. Clears the presence
+// when the session goes idle or the app quits. Port of
+// AgentCord/PresenceController.swift. Cursor covers both the Cursor CLI and
+// Cursor sessions driven via T3 Code.
 //
 // A 3-second tick both re-scans the session (cheap, thanks to the per-file
 // aggregate cache) and serves as the update throttle — Discord rate-limits
@@ -24,8 +25,10 @@ public sealed class PresenceController : IDisposable
     public SessionInfo? CodexSession { get; private set; }
     public SessionInfo? CursorSession { get; private set; }
     public SessionInfo? AntigravitySession { get; private set; }
+    public SessionInfo? GrokSession { get; private set; }
     public string? AntigravityAccountEmail => _antigravityScanner.AccountEmail;
     public string? AntigravityPlanType => _antigravityScanner.PlanType;
+    public bool GrokAuthenticated => _grokScanner.IsAuthenticated;
 
     public event Action? Changed;
 
@@ -36,6 +39,7 @@ public sealed class PresenceController : IDisposable
     private readonly CodexSession _codexScanner = new();
     private readonly CursorSession _cursorScanner = new();
     private readonly AntigravitySession _antigravityScanner = new();
+    private readonly GrokSession _grokScanner = new();
     private readonly DiscordIpc _ipc = new();
     private System.Threading.Timer? _timer;
     private int _ticking;
@@ -87,12 +91,14 @@ public sealed class PresenceController : IDisposable
             _codexScanner.ActiveWindowSeconds = activeWindow;
             _cursorScanner.ActiveWindowSeconds = activeWindow;
             _antigravityScanner.ActiveWindowSeconds = activeWindow;
+            _grokScanner.ActiveWindowSeconds = activeWindow;
             ClaudeSession = _claudeScanner.Scan();
             CodexSession = _codexScanner.Scan();
             CursorSession = _cursorScanner.Scan();
             AntigravitySession = _antigravityScanner.Scan();
+            GrokSession = _grokScanner.Scan();
 
-            var info = new[] { ClaudeSession, CodexSession, CursorSession, AntigravitySession }
+            var info = new[] { ClaudeSession, CodexSession, CursorSession, AntigravitySession, GrokSession }
                 .Where(session => session is not null && _settings.IsAgentEnabled(session.Agent))
                 .MaxBy(session => session!.LastModifiedMs);
             var changed = !Equals(info, CurrentSession);
@@ -157,6 +163,7 @@ public sealed class PresenceController : IDisposable
         AgentKind.Codex => CodexSession,
         AgentKind.Cursor => CursorSession,
         AgentKind.Antigravity => AntigravitySession,
+        AgentKind.Grok => GrokSession,
         _ => ClaudeSession,
     };
 
@@ -165,6 +172,7 @@ public sealed class PresenceController : IDisposable
         AgentKind.Codex => "logo-chatgpt",
         AgentKind.Cursor => "logo-cursor",
         AgentKind.Antigravity => "logo-antigravity",
+        AgentKind.Grok => "logo-grok",
         _ => "logo-claude",
     };
 

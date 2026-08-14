@@ -55,7 +55,8 @@ Run the built `WinExe` directly — do **not** use `dotnet run`, which opens a c
 ```powershell
 Get-Process -Name AgentCord -ErrorAction SilentlyContinue | Stop-Process -Force
 dotnet build windows -c Debug --nologo
-Start-Process "windows\bin\Debug\net10.0-windows\AgentCord.exe"
+# Launch via explorer so the process is not killed with the agent job object.
+Start-Process explorer.exe -ArgumentList "`"$((Resolve-Path 'windows\bin\Debug\net10.0-windows\AgentCord.exe').Path)`""
 ```
 
 The app lives in the system tray (no taskbar entry) — check the tray to confirm it relaunched.

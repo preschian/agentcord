@@ -125,16 +125,12 @@ using the OIDC tokens in `%USERPROFILE%\.grok\auth.json` (refreshed on 401).
 window (`PopoverWindow.xaml`) on that same thread, which is what makes the
 macOS look reachable — rounded cards, drop shadow, capsule pills, custom
 toggle switches, accordion agent rows, the unified usage card, and progress
-bars whose fill is a star-sized grid column. It is borderless, transparent,
-topmost, and absent from the taskbar; it anchors itself to the bottom-right
-work-area corner and re-anchors whenever a section expands, so it grows upward
-like the macOS popover hangs off its status item.
+bars whose fill is a star-sized grid column. It is borderless and transparent, shows on the taskbar like a normal window,
+and stays open when you click elsewhere (Escape or a second tray click hides
+it). It anchors itself to the bottom-right work-area corner on open and
+re-anchors whenever a section expands, so it grows upward.
 
-Two quirks worth knowing. `Show()` can be followed by a `Deactivated` before
-activation ever lands (the message loop may not be pumping yet), which would
-hide the popover the instant it opens — so it only dismisses on a deactivation
-that follows a real activation (a `seen_focus` guard).
-And the folder glyph (`E8B7`) is a real folder only in Segoe Fluent Icons
+The folder glyph (`E8B7`) is a real folder only in Segoe Fluent Icons
 (Windows 11); the style falls back to Segoe MDL2 Assets on Windows 10.
 
 **Quit behavior.** The presence is cleared synchronously (best-effort, 500ms

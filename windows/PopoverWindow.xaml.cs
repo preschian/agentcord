@@ -25,6 +25,7 @@ public partial class PopoverWindow : Window
     private readonly ClaudeUsage _usage;
     private readonly CodexUsage _codexUsage;
     private readonly CursorUsage _cursorUsage;
+    private readonly AntigravityUsage _antigravityUsage;
     private readonly AnthropicStatus _status;
     private readonly SleepGuard _sleepGuard;
     private readonly Action _quit;
@@ -51,7 +52,7 @@ public partial class PopoverWindow : Window
     /// activation.</summary>
     private bool _seenActivation;
 
-    private static readonly int[] IdleSteps = [5, 10, 15, 20, 25, 30];
+    private static readonly int[] IdleSteps = [0, 5, 10, 15, 20, 25, 30];
 
     // Palette (matches the macOS popover design spec).
     private static readonly Color TextColor = Rgb(0x1D, 0x1D, 0x1F);
@@ -68,13 +69,14 @@ public partial class PopoverWindow : Window
 
     public PopoverWindow(
         Settings settings, PresenceController controller, ClaudeUsage usage, CodexUsage codexUsage,
-        CursorUsage cursorUsage, AnthropicStatus status, SleepGuard sleepGuard, Action quit)
+        CursorUsage cursorUsage, AntigravityUsage antigravityUsage, AnthropicStatus status, SleepGuard sleepGuard, Action quit)
     {
         _settings = settings;
         _controller = controller;
         _usage = usage;
         _codexUsage = codexUsage;
         _cursorUsage = cursorUsage;
+        _antigravityUsage = antigravityUsage;
         _status = status;
         _sleepGuard = sleepGuard;
         _quit = quit;
@@ -101,6 +103,7 @@ public partial class PopoverWindow : Window
         _usage.Refresh();
         _codexUsage.Refresh();
         _cursorUsage.Refresh();
+        _antigravityUsage.Refresh();
         _status.Refresh();
         ShowMainScreen();
         UpdateUi();
@@ -264,6 +267,9 @@ public partial class PopoverWindow : Window
     private void OnCursorAgentSwitch(object sender, RoutedEventArgs e) =>
         SaveAgentToggle(AgentKind.Cursor, CursorAgentSwitch);
 
+    private void OnAntigravityAgentSwitch(object sender, RoutedEventArgs e) =>
+        SaveAgentToggle(AgentKind.Antigravity, AntigravityAgentSwitch);
+
     private void SaveAgentToggle(AgentKind agent, ToggleButton toggle)
     {
         _settings.SetAgentEnabled(agent, toggle.IsChecked == true);
@@ -425,6 +431,7 @@ public partial class PopoverWindow : Window
         ClaudeAgentSwitch.IsChecked = _settings.AgentClaudeEnabled;
         CodexAgentSwitch.IsChecked = _settings.AgentCodexEnabled;
         CursorAgentSwitch.IsChecked = _settings.AgentCursorEnabled;
+        AntigravityAgentSwitch.IsChecked = _settings.AgentAntigravityEnabled;
 
         var displayCount = new[]
         {
@@ -513,6 +520,7 @@ public partial class PopoverWindow : Window
     {
         AgentKind.Codex => _codexUsage.Current?.Primary,
         AgentKind.Cursor => _cursorUsage.Current?.Included,
+        AgentKind.Antigravity => _antigravityUsage.Current?.FiveHour,
         _ => _usage.Current?.FiveHour,
     };
 
@@ -523,6 +531,10 @@ public partial class PopoverWindow : Window
             || _controller.SessionFor(agent) is not null,
         AgentKind.Cursor => _cursorUsage.IsAuthenticated || _cursorUsage.Current is not null
             || _controller.SessionFor(agent) is not null,
+        AgentKind.Antigravity => _antigravityUsage.Current is not null
+            || _antigravityUsage.AccountEmail is not null
+            || _controller.AntigravityAccountEmail is not null
+            || AntigravitySession.IsInstalled() || _controller.SessionFor(agent) is not null,
         _ => _usage.AccountEmail is not null || _usage.Current is not null
             || _controller.SessionFor(agent) is not null,
     };
@@ -531,6 +543,7 @@ public partial class PopoverWindow : Window
     {
         AgentKind.Codex => _codexUsage.AccountEmail,
         AgentKind.Cursor => _cursorUsage.AccountEmail,
+        AgentKind.Antigravity => _antigravityUsage.AccountEmail ?? _controller.AntigravityAccountEmail,
         _ => _usage.AccountEmail,
     };
 
@@ -538,11 +551,24 @@ public partial class PopoverWindow : Window
     {
         AgentKind.Codex => _codexUsage.Current?.PlanType,
         AgentKind.Cursor => _cursorUsage.Current?.PlanName,
+        AgentKind.Antigravity => _antigravityUsage.Current?.PlanName ?? _controller.AntigravityPlanType,
         _ => _usage.Current?.PlanName,
     };
 
     private List<(string Label, UsageWindow? Window)> UsageRowsFor(AgentKind agent)
     {
+        if (agent == AgentKind.Antigravity)
+        {
+            var usage = _antigravityUsage.Current;
+            if (usage is null)
+                return [("Waiting for Antigravity usage…", null)];
+            return
+            [
+                ("Five-hour limit", usage.FiveHour),
+                ("Weekly limit", usage.Weekly),
+            ];
+        }
+
         if (agent == AgentKind.Codex)
         {
             var usage = _codexUsage.Current;

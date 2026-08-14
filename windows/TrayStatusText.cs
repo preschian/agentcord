@@ -1,19 +1,20 @@
 // Builds the tray tooltip string, mirroring the macOS menu bar status line
 // (session bits + compact multi-agent usage). NotifyIcon.Text is capped at
-// 127 characters, so the builder keeps the most useful parts and truncates.
+// 63 characters by WinForms, so the builder keeps the most useful parts and truncates.
 
 namespace AgentCord;
 
 public static class TrayStatusText
 {
-    public const int MaxLength = 127;
+    public const int MaxLength = 63;
 
     public static string Build(
         Settings settings,
         PresenceController controller,
         UsageInfo? claudeUsage,
         CodexUsageInfo? codexUsage,
-        CursorUsageInfo? cursorUsage)
+        CursorUsageInfo? cursorUsage,
+        AntigravityUsageInfo? antigravityUsage = null)
     {
         var lines = new List<string>();
 
@@ -22,7 +23,7 @@ public static class TrayStatusText
         else
             lines.Add(IdleLine(controller));
 
-        var usage = UsageLine(settings, claudeUsage, codexUsage, cursorUsage);
+        var usage = UsageLine(settings, claudeUsage, codexUsage, cursorUsage, antigravityUsage);
         if (usage is not null) lines.Add(usage);
 
         return Fit(string.Join("\n", lines));
@@ -58,16 +59,19 @@ public static class TrayStatusText
         Settings settings,
         UsageInfo? claudeUsage,
         CodexUsageInfo? codexUsage,
-        CursorUsageInfo? cursorUsage)
+        CursorUsageInfo? cursorUsage,
+        AntigravityUsageInfo? antigravityUsage)
     {
         var claude = settings.IsAgentEnabled(AgentKind.Claude) ? claudeUsage : null;
         var codex = settings.IsAgentEnabled(AgentKind.Codex) ? codexUsage : null;
         var cursor = settings.IsAgentEnabled(AgentKind.Cursor) ? cursorUsage : null;
+        var antigravity = settings.IsAgentEnabled(AgentKind.Antigravity) ? antigravityUsage : null;
 
         var contributing =
             (claude is not null ? 1 : 0)
             + (codex is not null ? 1 : 0)
-            + (cursor is not null ? 1 : 0);
+            + (cursor is not null ? 1 : 0)
+            + (antigravity is not null ? 1 : 0);
         if (contributing == 0) return null;
 
         var multi = contributing > 1;
@@ -75,6 +79,7 @@ public static class TrayStatusText
         if (claude is not null) parts.Add(ClaudeUsage(claude, multi));
         if (codex is not null) parts.Add(CodexUsage(codex, multi));
         if (cursor is not null) parts.Add(CursorUsage(cursor, multi));
+        if (antigravity is not null) parts.Add(AntigravityUsageLine(antigravity, multi));
         return string.Join(" · ", parts);
     }
 
@@ -104,6 +109,14 @@ public static class TrayStatusText
     {
         var window = usage.Included;
         var text = $"Cursor {window.Percent}%";
+        if (!labeled && ResetSuffix(window) is { } reset) text += $" ({reset})";
+        return text;
+    }
+
+    private static string AntigravityUsageLine(AntigravityUsageInfo usage, bool labeled)
+    {
+        var window = usage.FiveHour;
+        var text = labeled ? $"Antigravity {window.Percent}%" : $"5h {window.Percent}%";
         if (!labeled && ResetSuffix(window) is { } reset) text += $" ({reset})";
         return text;
     }

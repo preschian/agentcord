@@ -56,6 +56,7 @@ public enum AgentKind
     Claude,
     Codex,
     Cursor,
+    Antigravity,
 }
 
 public static class AgentKindExtensions
@@ -64,6 +65,7 @@ public static class AgentKindExtensions
     {
         AgentKind.Codex => "Codex",
         AgentKind.Cursor => "Cursor",
+        AgentKind.Antigravity => "Antigravity",
         _ => "Claude",
     };
 
@@ -71,6 +73,7 @@ public static class AgentKindExtensions
     {
         AgentKind.Codex => "OpenAI",
         AgentKind.Cursor => "Cursor",
+        AgentKind.Antigravity => "Google",
         _ => "Anthropic",
     };
 }
@@ -149,6 +152,18 @@ public sealed record CodexUsageInfo
     public string? SecondaryLabel { get; init; }
     public string? PlanType { get; init; }
     public IReadOnlyList<NamedUsageWindow> AdditionalWindows { get; init; } = [];
+}
+
+// --- Antigravity subscription usage
+
+public sealed record AntigravityUsageInfo
+{
+    /// <summary>The rolling 5-hour session usage.</summary>
+    public required UsageWindow FiveHour { get; init; }
+    /// <summary>The weekly (all-models) usage.</summary>
+    public required UsageWindow Weekly { get; init; }
+    /// <summary>Subscription plan label, e.g. "Google AI Pro".</summary>
+    public string? PlanName { get; init; }
 }
 
 // --- Anthropic status page

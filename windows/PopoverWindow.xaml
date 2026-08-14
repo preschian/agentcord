@@ -253,6 +253,15 @@
                 <TextBlock Text="Cursor" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
               </StackPanel>
             </DockPanel>
+            <Rectangle Height="1" Fill="#0D000000"/>
+            <DockPanel Margin="0,5">
+              <ToggleButton x:Name="AntigravityAgentSwitch" DockPanel.Dock="Right"
+                            Style="{StaticResource Switch}" Click="OnAntigravityAgentSwitch"/>
+              <StackPanel Orientation="Horizontal">
+                <Ellipse Width="6" Height="6" Fill="#FF4285F4" VerticalAlignment="Center"/>
+                <TextBlock Text="Antigravity" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
+              </StackPanel>
+            </DockPanel>
           </StackPanel>
         </Border>
 
@@ -327,10 +336,11 @@
                            Foreground="{StaticResource SecStrong}"/>
                 <TextBlock Text="Idle window" FontSize="12.5"/>
               </DockPanel>
-              <Slider x:Name="IdleSlider" Minimum="0" Maximum="5" TickFrequency="1"
+              <Slider x:Name="IdleSlider" Minimum="0" Maximum="6" TickFrequency="1"
                       IsSnapToTickEnabled="True" ValueChanged="OnIdleChanged" Margin="0,4,0,0"/>
-              <UniformGrid Columns="6" Margin="2,1,2,0">
-                <TextBlock Text="5" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Left"/>
+              <UniformGrid Columns="7" Margin="2,1,2,0">
+                <TextBlock Text="0" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Left"/>
+                <TextBlock Text="5" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>
                 <TextBlock Text="10" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>
                 <TextBlock Text="15" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>
                 <TextBlock Text="20" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>

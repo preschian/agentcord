@@ -376,6 +376,55 @@ public sealed class SessionActivityDetectionTests
         Assert.NotNull(usage.Weekly.ResetsAtMs);
     }
 
+    [Fact]
+    public void AntigravityUsage_parses_official_agy_usage_json_correctly()
+    {
+        var sampleJson = """
+        {
+          "command": {
+            "name": "usage",
+            "data": {
+              "groups": [
+                {
+                  "name": "Gemini Models",
+                  "buckets": [
+                    {
+                      "id": "gemini-weekly",
+                      "name": "Weekly Limit Remaining",
+                      "window": "weekly",
+                      "remaining_fraction": 0.955259,
+                      "reset_time": "2026-08-21T00:13:00Z"
+                    },
+                    {
+                      "id": "gemini-5h",
+                      "name": "Five Hour Limit Remaining",
+                      "window": "5h",
+                      "remaining_fraction": 0.778164,
+                      "reset_time": "2026-08-14T05:13:00Z"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+        """;
+
+        var info = AntigravityUsage.ParseAgyUsageJson(sampleJson, "Google AI Pro");
+        Assert.NotNull(info);
+        Assert.Equal("Google AI Pro", info.PlanName);
+
+        // 1 - 0.778164 = 0.221836 => 22%
+        Assert.Equal(22, info.FiveHour.Percent);
+        Assert.Equal("normal", info.FiveHour.Severity);
+        Assert.NotNull(info.FiveHour.ResetsAtMs);
+
+        // 1 - 0.955259 = 0.044741 => 4%
+        Assert.Equal(4, info.Weekly.Percent);
+        Assert.Equal("normal", info.Weekly.Severity);
+        Assert.NotNull(info.Weekly.ResetsAtMs);
+    }
+
     private static string FormatUtcOffset(TimeSpan offset)
     {
         var sign = offset < TimeSpan.Zero ? "-" : "+";

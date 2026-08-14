@@ -1,7 +1,7 @@
-// Tracks Google Antigravity / Gemini usage across rolling 5-hour and weekly
-// (7-day) windows by scanning local conversation transcripts in
-// %USERPROFILE%\.gemini\antigravity-cli\brain and parsing rate-limit / quota
-// reset signals from cli logs.
+// Tracks Google Antigravity / Gemini usage across 5-hour and weekly limits
+// by querying the official CLI (`agy -p "/usage" --output-format json`) for
+// exact server-reported remaining percentages and reset timestamps, with a
+// local transcript rolling-window fallback.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -21,11 +21,12 @@ public sealed class AntigravityUsage : IDisposable
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
 
-    // Google AI Pro calibrated baseline capacities for rolling window percentages (used %)
+    // Fallback baseline capacities when agy CLI output is unavailable
     public const int DefaultFiveHourCapacity = 500_000;
     public const int DefaultWeeklyCapacity = 4_500_000;
 
     private readonly string _baseDir;
+    private readonly bool _isCustomDir;
     private readonly object _lock = new();
     private readonly Dictionary<string, (DateTime Mtime, List<StepRecord> Steps)> _fileStepsCache = [];
     private DateTime _lastSuccess = DateTime.MinValue;
@@ -36,6 +37,7 @@ public sealed class AntigravityUsage : IDisposable
 
     public AntigravityUsage(string? customBaseDir = null)
     {
+        _isCustomDir = !string.IsNullOrEmpty(customBaseDir);
         _baseDir = AntigravitySession.ResolveBaseDir(customBaseDir);
         if (LoadCache() is { } cached
             && DateTime.UtcNow - cached.FetchedAt <= MaxStaleness)
@@ -81,88 +83,253 @@ public sealed class AntigravityUsage : IDisposable
             var (email, plan) = ScanAccountAndPlan();
             if (email is not null) AccountEmail = email;
 
-            var (exhausted, exhaustResetsAtMs) = ScanQuotaExhaustion();
-
-            var now = DateTime.UtcNow;
-            var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
-            var fiveHoursAgoMs = new DateTimeOffset(now.AddHours(-5)).ToUnixTimeMilliseconds();
-            var sevenDaysAgoMs = new DateTimeOffset(now.AddDays(-7)).ToUnixTimeMilliseconds();
-
-            var allSteps = ScanAllSteps();
-
-            var fiveHourTokens = 0;
-            long? oldestInFiveHour = null;
-
-            var weeklyTokens = 0;
-            long? oldestInWeekly = null;
-
-            foreach (var step in allSteps)
-            {
-                if (step.EpochMs >= fiveHoursAgoMs)
-                {
-                    fiveHourTokens += step.EstTokens;
-                    if (oldestInFiveHour is null || step.EpochMs < oldestInFiveHour)
-                        oldestInFiveHour = step.EpochMs;
-                }
-
-                if (step.EpochMs >= sevenDaysAgoMs)
-                {
-                    weeklyTokens += step.EstTokens;
-                    if (oldestInWeekly is null || step.EpochMs < oldestInWeekly)
-                        oldestInWeekly = step.EpochMs;
-                }
-            }
-
-            // 5-Hour rolling window
-            var fiveHourPercent = Math.Clamp((int)Math.Round((double)fiveHourTokens / DefaultFiveHourCapacity * 100), 0, 100);
-            var fiveHourResetsAtMs = oldestInFiveHour is long o5
-                ? o5 + (5 * 3600 * 1000)
-                : nowMs + (5 * 3600 * 1000);
-
-            var fiveHourWindow = new UsageWindow
-            {
-                Percent = fiveHourPercent,
-                Severity = SeverityFor(fiveHourPercent),
-                ResetsAtMs = fiveHourResetsAtMs,
-            };
-
-            // Weekly rolling window
-            var weeklyPercent = exhausted
-                ? 100
-                : Math.Clamp((int)Math.Round((double)weeklyTokens / DefaultWeeklyCapacity * 100), 0, 100);
-
-            var weeklyResetsAtMs = exhaustResetsAtMs ?? (oldestInWeekly is long ow
-                ? ow + (7 * 24 * 3600 * 1000)
-                : nowMs + (7 * 24 * 3600 * 1000));
-
-            var weeklyWindow = new UsageWindow
-            {
-                Percent = weeklyPercent,
-                Severity = exhausted ? "critical" : SeverityFor(weeklyPercent),
-                ResetsAtMs = weeklyResetsAtMs,
-            };
-
             var planLabel = plan ?? "Google AI Pro";
 
-            var info = new AntigravityUsageInfo
+            // 1. First attempt: Query live official usage directly from agy CLI (when not in custom test dir)
+            if (!_isCustomDir)
             {
-                FiveHour = fiveHourWindow,
-                Weekly = weeklyWindow,
-                PlanName = planLabel,
-            };
-
-            lock (_lock)
-            {
-                Current = info;
-                _lastSuccess = DateTime.UtcNow;
+                var officialInfo = QueryOfficialAgyUsage(planLabel);
+                if (officialInfo is not null)
+                {
+                    lock (_lock)
+                    {
+                        Current = officialInfo;
+                        _lastSuccess = DateTime.UtcNow;
+                    }
+                    SaveCache(officialInfo, _lastSuccess, AccountEmail);
+                    return;
+                }
             }
 
-            SaveCache(info, _lastSuccess, AccountEmail);
+            // 2. Fallback: Local transcript rolling-window calculation
+            var fallbackInfo = ComputeFallbackUsage(planLabel);
+            if (fallbackInfo is not null)
+            {
+                lock (_lock)
+                {
+                    Current = fallbackInfo;
+                    _lastSuccess = DateTime.UtcNow;
+                }
+                SaveCache(fallbackInfo, _lastSuccess, AccountEmail);
+            }
         }
         catch
         {
             // Keep last valid snapshot
         }
+    }
+
+    public static string? FindAgyExecutable()
+    {
+        var localApp = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "agy", "bin", "agy.exe");
+        if (File.Exists(localApp)) return localApp;
+
+        var geminiBin = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".gemini", "antigravity-cli", "bin", "agy.exe");
+        if (File.Exists(geminiBin)) return geminiBin;
+
+        var pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrEmpty(pathEnv))
+        {
+            foreach (var p in pathEnv.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var candidate = Path.Combine(p, "agy.exe");
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+
+        return "agy";
+    }
+
+    private static AntigravityUsageInfo? QueryOfficialAgyUsage(string planLabel)
+    {
+        var agyExe = FindAgyExecutable();
+        if (string.IsNullOrEmpty(agyExe)) return null;
+
+        try
+        {
+            var psi = new ProcessStartInfo(agyExe)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add("-p");
+            psi.ArgumentList.Add("/usage");
+            psi.ArgumentList.Add("--output-format");
+            psi.ArgumentList.Add("json");
+
+            using var process = Process.Start(psi);
+            if (process is null) return null;
+
+            var output = process.StandardOutput.ReadToEnd().Trim();
+            if (!process.WaitForExit(7000))
+            {
+                process.Kill();
+                return null;
+            }
+
+            if (process.ExitCode == 0 && output.Length > 0)
+            {
+                return ParseAgyUsageJson(output, planLabel);
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
+    public static AntigravityUsageInfo? ParseAgyUsageJson(string json, string planLabel = "Google AI Pro")
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("command", out var cmd) || cmd.ValueKind != JsonValueKind.Object)
+                return null;
+            if (!cmd.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+                return null;
+            if (!data.TryGetProperty("groups", out var groups) || groups.ValueKind != JsonValueKind.Array)
+                return null;
+
+            UsageWindow? fiveHour = null;
+            UsageWindow? weekly = null;
+
+            foreach (var group in groups.EnumerateArray())
+            {
+                var groupName = group.TryGetProperty("name", out var gName) ? gName.GetString() : null;
+                if (!group.TryGetProperty("buckets", out var buckets) || buckets.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                foreach (var bucket in buckets.EnumerateArray())
+                {
+                    var window = bucket.TryGetProperty("window", out var w) ? w.GetString() : null;
+                    var remainingFraction = bucket.TryGetProperty("remaining_fraction", out var rf) && rf.ValueKind == JsonValueKind.Number
+                        ? rf.GetDouble() : 1.0;
+                    var resetTime = bucket.TryGetProperty("reset_time", out var rt) ? rt.GetString() : null;
+
+                    // Convert remaining fraction to used percentage (e.g. 0.78 remaining -> 22% used)
+                    var usedFraction = Math.Clamp(1.0 - remainingFraction, 0.0, 1.0);
+                    var percent = (int)Math.Round(usedFraction * 100);
+
+                    long? resetMs = null;
+                    if (!string.IsNullOrEmpty(resetTime)
+                        && DateTime.TryParse(resetTime, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var dt))
+                    {
+                        resetMs = new DateTimeOffset(dt).ToUnixTimeMilliseconds();
+                    }
+
+                    var usageWindow = new UsageWindow
+                    {
+                        Percent = percent,
+                        Severity = SeverityFor(percent),
+                        ResetsAtMs = resetMs,
+                    };
+
+                    // Prioritize "Gemini Models" group
+                    if (groupName?.Contains("Gemini", StringComparison.OrdinalIgnoreCase) == true || fiveHour is null)
+                    {
+                        var bucketId = bucket.TryGetProperty("id", out var id) ? id.GetString() : "";
+                        if (window == "5h" || bucketId?.Contains("5h", StringComparison.OrdinalIgnoreCase) == true)
+                        {
+                            fiveHour = usageWindow;
+                        }
+                        else if (window == "weekly" || bucketId?.Contains("weekly", StringComparison.OrdinalIgnoreCase) == true)
+                        {
+                            weekly = usageWindow;
+                        }
+                    }
+                }
+            }
+
+            if (fiveHour is null && weekly is null) return null;
+
+            return new AntigravityUsageInfo
+            {
+                FiveHour = fiveHour ?? new UsageWindow { Percent = 0, Severity = "normal" },
+                Weekly = weekly ?? new UsageWindow { Percent = 0, Severity = "normal" },
+                PlanName = planLabel,
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private AntigravityUsageInfo? ComputeFallbackUsage(string planLabel)
+    {
+        var (exhausted, exhaustResetsAtMs) = ScanQuotaExhaustion();
+
+        var now = DateTime.UtcNow;
+        var nowMs = new DateTimeOffset(now).ToUnixTimeMilliseconds();
+        var fiveHoursAgoMs = new DateTimeOffset(now.AddHours(-5)).ToUnixTimeMilliseconds();
+        var sevenDaysAgoMs = new DateTimeOffset(now.AddDays(-7)).ToUnixTimeMilliseconds();
+
+        var allSteps = ScanAllSteps();
+
+        var fiveHourTokens = 0;
+        long? oldestInFiveHour = null;
+
+        var weeklyTokens = 0;
+        long? oldestInWeekly = null;
+
+        foreach (var step in allSteps)
+        {
+            if (step.EpochMs >= fiveHoursAgoMs)
+            {
+                fiveHourTokens += step.EstTokens;
+                if (oldestInFiveHour is null || step.EpochMs < oldestInFiveHour)
+                    oldestInFiveHour = step.EpochMs;
+            }
+
+            if (step.EpochMs >= sevenDaysAgoMs)
+            {
+                weeklyTokens += step.EstTokens;
+                if (oldestInWeekly is null || step.EpochMs < oldestInWeekly)
+                    oldestInWeekly = step.EpochMs;
+            }
+        }
+
+        // 5-Hour rolling window
+        var fiveHourPercent = Math.Clamp((int)Math.Round((double)fiveHourTokens / DefaultFiveHourCapacity * 100), 0, 100);
+        var fiveHourResetsAtMs = oldestInFiveHour is long o5
+            ? o5 + (5 * 3600 * 1000)
+            : nowMs + (5 * 3600 * 1000);
+
+        var fiveHourWindow = new UsageWindow
+        {
+            Percent = fiveHourPercent,
+            Severity = SeverityFor(fiveHourPercent),
+            ResetsAtMs = fiveHourResetsAtMs,
+        };
+
+        // Weekly rolling window
+        var weeklyPercent = exhausted
+            ? 100
+            : Math.Clamp((int)Math.Round((double)weeklyTokens / DefaultWeeklyCapacity * 100), 0, 100);
+
+        var weeklyResetsAtMs = exhaustResetsAtMs ?? (oldestInWeekly is long ow
+            ? ow + (7 * 24 * 3600 * 1000)
+            : nowMs + (7 * 24 * 3600 * 1000));
+
+        var weeklyWindow = new UsageWindow
+        {
+            Percent = weeklyPercent,
+            Severity = exhausted ? "critical" : SeverityFor(weeklyPercent),
+            ResetsAtMs = weeklyResetsAtMs,
+        };
+
+        return new AntigravityUsageInfo
+        {
+            FiveHour = fiveHourWindow,
+            Weekly = weeklyWindow,
+            PlanName = planLabel,
+        };
     }
 
     private static string SeverityFor(int percent) => percent switch

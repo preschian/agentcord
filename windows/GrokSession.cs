@@ -3,10 +3,10 @@
 //   %USERPROFILE%\.grok\sessions\<url-encoded-cwd>\<session-id>\summary.json
 //   sibling signals.json                      (context tokens / model)
 //
-// A live PID in the active-sessions list is authoritative. Summary timestamps
-// and signals enrich project, model, and token fields. After the list clears
-// (quit), the last-known session stays visible for the idle window. Port of
-// AgentCord/GrokSession.swift.
+// A live PID only means the TUI is open. Activity comes from summary
+// last_active_at plus event-log mtimes, so an idle prompt is not treated as
+// working. After the list clears (quit), the last-known session stays visible
+// for the idle window. Port of AgentCord/GrokSession.swift.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -56,9 +56,8 @@ public sealed class GrokSession
         {
             var summaryPath = FindSummary(entry.SessionId, entry.Cwd);
             var summary = summaryPath is null ? null : ReadSummary(summaryPath);
-            var activityMs = summary?.LastActiveMs
-                ?? (summaryPath is not null ? FileTimeMs(summaryPath) : null)
-                ?? entry.OpenedAtMs;
+            var activityMs = ActivityMs(summary, summaryPath) ?? entry.OpenedAtMs;
+            if (!SessionActivity.IsWithinWindow(activityMs, ActiveWindowSeconds)) continue;
             var signals = summaryPath is null
                 ? null
                 : ReadSignals(Path.GetDirectoryName(summaryPath)!);
@@ -228,6 +227,36 @@ public sealed class GrokSession
         {
             return null;
         }
+    }
+
+    private static readonly string[] ActivityFiles = ["events.jsonl", "updates.jsonl", "chat_history.jsonl"];
+
+    private long? ActivityMs(SummaryMeta? summary, string? summaryPath)
+    {
+        if (summary?.LastActiveMs is long last
+            && SessionActivity.IsWithinWindow(last, ActiveWindowSeconds))
+        {
+            return last;
+        }
+
+        long? best = summary?.LastActiveMs;
+        void Consider(long? value)
+        {
+            if (value is not long candidate) return;
+            best = best is long current ? Math.Max(current, candidate) : candidate;
+        }
+
+        if (summaryPath is not null)
+        {
+            Consider(FileTimeMs(summaryPath));
+            var dir = Path.GetDirectoryName(summaryPath);
+            if (dir is not null)
+            {
+                foreach (var name in ActivityFiles)
+                    Consider(FileTimeMs(Path.Combine(dir, name)));
+            }
+        }
+        return best;
     }
 
     private static SignalsMeta? ReadSignals(string sessionDir)

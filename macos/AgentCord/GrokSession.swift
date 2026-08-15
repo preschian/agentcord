@@ -5,8 +5,8 @@
 //  Detects the currently active Grok (xAI) coding session by watching
 //  ~/.grok/active_sessions.json and per-session summary/signals files under
 //  ~/.grok/sessions/. Grok stores sessions grouped by URL-encoded cwd rather
-//  than a single transcript, so activity comes from the live PID list plus
-//  summary.json last_active_at / updated_at.
+//  than a single transcript, so activity comes from summary.json last_active_at
+//  plus event-log mtimes. A live PID is not enough: an idle TUI stays idle.
 //
 
 import Foundation
@@ -133,16 +133,16 @@ final class GrokSession: ObservableObject {
         let live = readActiveSessions().filter { processIsAlive($0.pid) }
 
         var best: (info: SessionInfo, activity: Date)?
+        let now = Date()
 
-        // A live PID in active_sessions.json means the Grok TUI is open. Prefer
-        // the most recently touched open session; don't drop it solely because
-        // last_active_at lagged during a long tool run.
+        // A live PID only means the TUI is open. Require recent last_active_at
+        // or event-log writes so an idle prompt is not treated as working, while
+        // a long tool run that keeps appending events stays active.
         for entry in live {
             let summaryURL = findSummary(sessionID: entry.sessionID)
             let summary = summaryURL.flatMap { readSummary($0) }
-            let activity = summary?.lastActive
-                ?? summaryURL?.resourceModificationDate
-                ?? entry.openedAt
+            let activity = activityDate(summary: summary, summaryURL: summaryURL, fallback: entry.openedAt)
+            if now.timeIntervalSince(activity) > activeWindowSeconds { continue }
             let signals = summaryURL.flatMap { readSignals($0.deletingLastPathComponent()) }
             let tokens = signals?.contextTokensUsed ?? 0
             let modelRaw = summary?.modelID ?? signals?.primaryModelID
@@ -167,7 +167,6 @@ final class GrokSession: ObservableObject {
         // is cleared mid-quit. On first launch, discover the newest recent
         // summary once; subsequent timer ticks reuse the in-memory snapshot.
         if best == nil {
-            let now = Date()
             if let known = lastKnownSession,
                now.timeIntervalSince(known.activity) <= activeWindowSeconds {
                 best = known
@@ -304,6 +303,27 @@ final class GrokSession: ObservableObject {
         else if let n = obj["contextWindowTokens"] as? Double { meta.contextWindowTokens = Int(n) }
         meta.primaryModelID = obj["primaryModelId"] as? String
         return meta
+    }
+
+    private static let activityFiles = ["events.jsonl", "updates.jsonl", "chat_history.jsonl"]
+
+    private func activityDate(summary: SummaryMeta?, summaryURL: URL?, fallback: Date?) -> Date {
+        if let last = summary?.lastActive, Date().timeIntervalSince(last) <= activeWindowSeconds {
+            return last
+        }
+        var best: Date?
+        func consider(_ date: Date?) {
+            guard let date else { return }
+            if best == nil || date > best! { best = date }
+        }
+        consider(summary?.lastActive)
+        consider(summaryURL?.resourceModificationDate)
+        if let dir = summaryURL?.deletingLastPathComponent() {
+            for name in Self.activityFiles {
+                consider(dir.appendingPathComponent(name).resourceModificationDate)
+            }
+        }
+        return best ?? fallback ?? .distantPast
     }
 
     private func newestRecentSession(within window: TimeInterval) -> (SessionInfo, Date)? {

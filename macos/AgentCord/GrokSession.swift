@@ -7,6 +7,8 @@
 //  ~/.grok/sessions/. Grok stores sessions grouped by URL-encoded cwd rather
 //  than a single transcript, so activity comes from summary.json last_active_at
 //  plus event-log mtimes. A live PID is not enough: an idle TUI stays idle.
+//  Elapsed time is the summed working duration across sessions that touched
+//  the last 24 hours (idle gaps excluded).
 //
 
 import Foundation
@@ -38,6 +40,9 @@ final class GrokSession: ObservableObject {
     /// Preserves the just-closed session during the configured idle grace
     /// period without rescanning every historical summary.
     private var lastKnownSession: (info: SessionInfo, activity: Date)?
+    /// Incremental event-log stamps per session dir, reused while mtime is
+    /// unchanged so the 24h duration sum stays cheap.
+    private var durationCache: [URL: DurationCacheEntry] = [:]
 
     init(grokHome: URL? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -147,12 +152,10 @@ final class GrokSession: ObservableObject {
             let tokens = signals?.contextTokensUsed ?? 0
             let modelRaw = summary?.modelID ?? signals?.primaryModelID
             let project = repoName(forCwd: entry.cwd)
-            let startMs = Int64(entry.openedAt.timeIntervalSince1970 * 1000)
-
             let info = SessionInfo(
                 projectName: project.isEmpty ? "Grok" : project,
                 model: modelRaw.map(Self.prettyModel),
-                startEpochMs: startMs,
+                startEpochMs: 0,
                 totalTokens: tokens,
                 lastModified: activity,
                 contextWindowTokens: signals?.contextWindowTokens,
@@ -176,10 +179,16 @@ final class GrokSession: ObservableObject {
             }
         }
 
-        if let best { lastKnownSession = best }
+        if var best {
+            best.info = withRollingStart(best.info)
+            lastKnownSession = best
+            guard monitoring else { return }
+            publish(authenticated: auth, session: best.info)
+            return
+        }
 
         guard monitoring else { return }
-        publish(authenticated: auth, session: best?.info)
+        publish(authenticated: auth, session: nil)
     }
 
     private func publish(authenticated: Bool, session: SessionInfo?) {
@@ -230,7 +239,17 @@ final class GrokSession: ObservableObject {
     private struct SummaryMeta {
         var modelID: String?
         var lastActive: Date?
+        var createdAt: Date?
         var cwd: String?
+    }
+
+    private struct DurationCacheEntry {
+        var eventsMtime: Date?
+        var summaryMtime: Date?
+        var cursor = JSONLCursor()
+        var stampsMs: [Int64] = []
+        var createdAtMs: Int64?
+        var lastActiveMs: Int64?
     }
 
     private struct SignalsMeta {
@@ -284,6 +303,7 @@ final class GrokSession: ObservableObject {
         meta.modelID = obj["current_model_id"] as? String
         meta.lastActive = parseISO(obj["last_active_at"] as? String)
             ?? parseISO(obj["updated_at"] as? String)
+        meta.createdAt = parseISO(obj["created_at"] as? String)
         if let info = obj["info"] as? [String: Any] {
             meta.cwd = info["cwd"] as? String
         }
@@ -345,7 +365,7 @@ final class GrokSession: ObservableObject {
             let info = SessionInfo(
                 projectName: project.isEmpty ? "Grok" : project,
                 model: (summary?.modelID ?? signals?.primaryModelID).map(Self.prettyModel),
-                startEpochMs: Int64(activity.timeIntervalSince1970 * 1000),
+                startEpochMs: 0,
                 totalTokens: signals?.contextTokensUsed ?? 0,
                 lastModified: activity,
                 contextWindowTokens: signals?.contextWindowTokens,
@@ -361,6 +381,94 @@ final class GrokSession: ObservableObject {
     /// Session group folders are URL-encoded cwds, e.g. `%2FUsers%2F…`.
     private func decodeCwd(fromEncoded encoded: String) -> String {
         encoded.removingPercentEncoding ?? encoded
+    }
+
+    // MARK: 24h duration
+
+    private func withRollingStart(_ info: SessionInfo) -> SessionInfo {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let (activeMs, lastMs) = rollingActive(nowMs: nowMs)
+        var copy = info
+        copy.startEpochMs = SessionDuration.startMs(totalActiveMs: activeMs, lastMs: lastMs, nowMs: nowMs)
+        return copy
+    }
+
+    /// Combined working time across every Grok session that touched the last
+    /// 24 hours. Summaries are stat'd first so historical dirs are skipped
+    /// without opening their event logs.
+    private func rollingActive(nowMs: Int64) -> (Int64, Int64?) {
+        if !hasBuiltSummaryIndex { rebuildSummaryIndex() }
+
+        let cutoffMs = nowMs - SessionDuration.lookbackMs
+        let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoffMs) / 1000)
+        var total: Int64 = 0
+        var newestLast: Int64?
+        var liveDirs = Set<URL>()
+
+        for summaryURL in summaryURLsBySessionID.values {
+            let dir = summaryURL.deletingLastPathComponent()
+            liveDirs.insert(dir)
+
+            let eventsURL = dir.appendingPathComponent("events.jsonl")
+            let eventsMtime = eventsURL.resourceModificationDate
+            let summaryMtime = summaryURL.resourceModificationDate
+            var entry = durationCache[dir] ?? DurationCacheEntry()
+
+            if entry.summaryMtime != summaryMtime {
+                let summary = readSummary(summaryURL)
+                entry.createdAtMs = summary?.createdAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+                entry.lastActiveMs = summary?.lastActive.map { Int64($0.timeIntervalSince1970 * 1000) }
+                entry.summaryMtime = summaryMtime
+            }
+
+            let hint = [eventsMtime, summaryMtime]
+                .compactMap { $0 }
+                .max()
+                ?? (entry.lastActiveMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) } ?? .distantPast)
+            if hint < cutoffDate {
+                durationCache[dir] = entry
+                continue
+            }
+
+            if FileManager.default.fileExists(atPath: eventsURL.path),
+               entry.eventsMtime != eventsMtime {
+                let pulled = entry.cursor.pullLines(from: eventsURL)
+                if pulled.didReset { entry.stampsMs.removeAll(keepingCapacity: true) }
+                for line in pulled.lines {
+                    if let ms = Self.eventTimestamp(inJSONLLine: line) {
+                        entry.stampsMs.append(ms)
+                    }
+                }
+                entry.eventsMtime = eventsMtime
+            }
+            durationCache[dir] = entry
+
+            let (activeMs, lastMs) = SessionDuration.activeMs(
+                stamps: entry.stampsMs,
+                createdAtMs: entry.createdAtMs,
+                updatedAtMs: entry.lastActiveMs,
+                cutoffMs: cutoffMs,
+                nowMs: nowMs
+            )
+            total += activeMs
+            if let lastMs, newestLast == nil || lastMs > newestLast! {
+                newestLast = lastMs
+            }
+        }
+
+        durationCache = durationCache.filter { liveDirs.contains($0.key) }
+        return (total, newestLast)
+    }
+
+    private static func eventTimestamp(inJSONLLine line: String) -> Int64? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = trimmed.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ts = obj["ts"] as? String
+        else { return nil }
+        let parsed = isoWithFraction.date(from: ts) ?? isoPlain.date(from: ts)
+        return parsed.map { Int64($0.timeIntervalSince1970 * 1000) }
     }
 
     // MARK: Project name

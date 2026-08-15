@@ -2,7 +2,10 @@
 // %USERPROFILE%\.claude\projects for the most recently modified .jsonl
 // transcript. Port of AgentCord/ClaudeSession.swift.
 //
-// The transcript schema is undocumented, so all parsing is defensive:
+// Tokens are summed across transcripts touched today (local calendar day).
+// Elapsed time is the summed working duration across transcripts that
+// touched the last 24 hours (idle gaps excluded), matching Grok / Codex /
+// Cursor. The transcript schema is undocumented, so all parsing is defensive:
 // malformed or unexpected lines are skipped, never fatal. Scans are driven by
 // the presence controller's tick (the macOS FSEvents watcher becomes a plain
 // re-scan here; the per-file cache keeps that cheap).
@@ -18,12 +21,6 @@ public sealed class ClaudeSession
 {
     /// <summary>A transcript counts as active if modified within this window.</summary>
     public double ActiveWindowSeconds { get; set; } = 60;
-
-    /// <summary>When summing the day's working time, a gap between two consecutive
-    /// messages longer than this is treated as a break (idle), not work, so a
-    /// session left open does not inflate the total. This also excludes the gaps
-    /// between separate sessions.</summary>
-    private const long ActiveGapToleranceMs = 5 * 60 * 1000;
 
     private readonly string _projectsDir;
     private readonly Dictionary<string, CacheEntry> _aggregateCache = [];
@@ -53,16 +50,17 @@ public sealed class ClaudeSession
         }
         if (files.Count == 0) return null;
 
-        // The presence shows daily totals: tokens summed across every transcript
-        // touched today, and an elapsed timer that reflects the combined working
-        // time of all of today's sessions (idle gaps between sessions excluded).
-        // "Today" is the local calendar day, so the totals reset at midnight.
+        // Tokens stay on the local calendar day. Elapsed time is a rolling 24h
+        // sum of working gaps, same window as Grok / Codex / Cursor.
         // Activity (idle + LastModifiedMs) prefers parsed event timestamps over
         // filesystem mtime so a stale mtime cannot hide a live session.
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var cutoffMs = nowMs - SessionActivity.LookbackMs;
         var dayStartMs = new DateTimeOffset(DateTime.Today).ToUnixTimeMilliseconds();
 
         long totalTokensToday = 0;
         long totalActiveMs = 0;
+        long? newestLast = null;
         string? bestPath = null;
         DayAggregate bestAgg = new();
         long bestActivityMs = long.MinValue;
@@ -70,7 +68,11 @@ public sealed class ClaudeSession
         {
             var agg = Aggregate(file.Path, file.Mtime, dayStartMs);
             totalTokensToday += agg.TokensToday;
-            totalActiveMs += agg.ActiveMsToday;
+            var (activeMs, lastMs) = SessionActivity.ActiveDuration(
+                agg.StampsMs, null, null, cutoffMs, nowMs);
+            totalActiveMs += activeMs;
+            if (lastMs is long last && (newestLast is null || last > newestLast))
+                newestLast = last;
 
             var activityMs = SessionActivity.NormalizeMs(agg.LastEventMs, file.Mtime);
             if (bestPath is null || activityMs >= bestActivityMs)
@@ -89,12 +91,12 @@ public sealed class ClaudeSession
         if (bestPath is null) return null;
         if (!SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds)) return null;
 
-        return MakeSessionInfo(bestPath, bestActivityMs, bestAgg, totalTokensToday, totalActiveMs);
+        return MakeSessionInfo(bestPath, bestActivityMs, bestAgg, totalTokensToday, totalActiveMs, newestLast, nowMs);
     }
 
     // --- Parsing
 
-    /// <summary>Per-transcript figures restricted to today, from one .jsonl.</summary>
+    /// <summary>Per-transcript figures from one .jsonl.</summary>
     private sealed class DayAggregate
     {
         public string? Cwd;
@@ -102,12 +104,8 @@ public sealed class ClaudeSession
         /// <summary>Newest parseable event timestamp in the transcript (any day),
         /// used for idle detection and LastModifiedMs.</summary>
         public long? LastEventMs;
-        /// <summary>Timestamp (epoch ms) of the last message recorded today, used
-        /// to extend the active session's working time up to "now".</summary>
-        public long? LastTodayMs;
-        /// <summary>Working time today: the sum of gaps between consecutive
-        /// messages, counting only gaps short enough to be continuous work.</summary>
-        public long ActiveMsToday;
+        /// <summary>Event timestamps used to sum working time inside the 24h window.</summary>
+        public List<long> StampsMs = [];
         public long TokensToday;
     }
 
@@ -116,7 +114,7 @@ public sealed class ClaudeSession
     /// <summary>Parsing every transcript on each scan would be wasteful, so
     /// results are memoized per file. An entry is reused only while the file is
     /// unmodified and we are still on the same calendar day (the day boundary
-    /// changes which lines count as "today").</summary>
+    /// changes which lines count toward today's token total).</summary>
     private DayAggregate Aggregate(string path, DateTime mtime, long dayStartMs)
     {
         if (_aggregateCache.TryGetValue(path, out var entry)
@@ -126,7 +124,7 @@ public sealed class ClaudeSession
         }
 
         var agg = new DayAggregate();
-        long? prevTodayMs = null;
+        var stampFloorMs = dayStartMs - SessionActivity.LookbackMs;
         try
         {
             foreach (var line in File.ReadLines(path))
@@ -155,7 +153,10 @@ public sealed class ClaudeSession
                     if (root.TryGetProperty("timestamp", out var ts) && ts.ValueKind == JsonValueKind.String)
                         lineMs = EpochMsFromIso(ts.GetString());
                     if (lineMs is long anyMs)
+                    {
                         agg.LastEventMs = Math.Max(agg.LastEventMs ?? anyMs, anyMs);
+                        if (anyMs >= stampFloorMs) agg.StampsMs.Add(anyMs);
+                    }
                     var isToday = (lineMs ?? long.MinValue) >= dayStartMs;
 
                     if (root.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.Object)
@@ -171,19 +172,6 @@ public sealed class ClaudeSession
                         {
                             agg.TokensToday += IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
                         }
-                    }
-
-                    if (isToday && lineMs is long ms)
-                    {
-                        // Add the gap from the previous message only if it is short
-                        // enough to count as continuous work (idle breaks excluded).
-                        if (prevTodayMs is long prev)
-                        {
-                            var delta = ms - prev;
-                            if (delta > 0 && delta <= ActiveGapToleranceMs) agg.ActiveMsToday += delta;
-                        }
-                        prevTodayMs = ms;
-                        agg.LastTodayMs = ms;
                     }
                 }
             }
@@ -201,29 +189,17 @@ public sealed class ClaudeSession
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : 0;
 
     private SessionInfo MakeSessionInfo(
-        string newestPath, long activityMs, DayAggregate active, long totalTokensToday, long totalActiveMs)
+        string newestPath, long activityMs, DayAggregate active, long totalTokensToday,
+        long totalActiveMs, long? newestLast, long nowMs)
     {
         var projectName = DeriveProjectName(Path.GetFileName(Path.GetDirectoryName(newestPath)) ?? "");
         if (active.Cwd is not null) projectName = RepoName(active.Cwd);
-
-        // totalActiveMs covers work up to each session's last logged message.
-        // The active session is ongoing, so extend it from its last message to
-        // "now" (while that gap stays within the work tolerance). Backdating
-        // start by the total makes Discord's elapsed timer show the combined
-        // working time of all of today's sessions.
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var elapsedMs = totalActiveMs;
-        if (active.LastTodayMs is long last)
-        {
-            var tail = nowMs - last;
-            if (tail > 0 && tail <= ActiveGapToleranceMs) elapsedMs += tail;
-        }
 
         return new SessionInfo
         {
             ProjectName = projectName.Length == 0 ? "Claude Code" : projectName,
             Model = active.Model is null ? null : PrettyModel(active.Model),
-            StartEpochMs = nowMs - elapsedMs,
+            StartEpochMs = SessionActivity.ElapsedStartMs(totalActiveMs, newestLast, nowMs),
             TotalTokens = totalTokensToday,
             LastModifiedMs = activityMs,
             Agent = AgentKind.Claude,

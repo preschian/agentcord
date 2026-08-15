@@ -6,6 +6,8 @@
 //  authoritative source for runtime thread status. Standalone CLI processes do
 //  not share that runtime, so recent ~/.codex/sessions transcripts are used as
 //  a defensive fallback and to enrich runtime threads with model/token data.
+//  Elapsed time is the summed working duration across transcripts that
+//  touched the last 24 hours (idle gaps excluded).
 //
 
 import Foundation
@@ -59,6 +61,7 @@ final class CodexSession: ObservableObject {
         var startedAt: Date?
         var lastEventAt: Date?
         var totalTokens = 0
+        var stampsMs: [Int64] = []
     }
 
     private struct CacheEntry {
@@ -363,7 +366,8 @@ final class CodexSession: ObservableObject {
             publish(makeSessionInfo(
                 url: runtimeFile?.url ?? runtime.path,
                 mtime: runtimeFile?.date ?? runtime.updatedAt,
-                runtime: runtime
+                runtime: runtime,
+                files: files
             ))
             return
         }
@@ -378,30 +382,86 @@ final class CodexSession: ObservableObject {
             publish(nil)
             return
         }
-        publish(makeSessionInfo(url: newest.url, mtime: newest.date, runtime: nil))
+        publish(makeSessionInfo(url: newest.url, mtime: newest.date, runtime: nil, files: files))
 
         // Avoid retaining cache entries forever as Codex history grows.
         let live = Set(files.prefix(100).map(\.url))
         transcriptCache = transcriptCache.filter { live.contains($0.key) }
     }
 
-    private func makeSessionInfo(url: URL?, mtime: Date, runtime: RuntimeThread?) -> SessionInfo {
+    private func makeSessionInfo(
+        url: URL?,
+        mtime: Date,
+        runtime: RuntimeThread?,
+        files: [(url: URL, date: Date)]
+    ) -> SessionInfo {
         let state = url.map { transcriptState(at: $0, mtime: mtime) } ?? TranscriptState()
         let cwd = state.cwd ?? runtime?.cwd
         let project = cwd.map(repoName(forCwd:))
             ?? url?.deletingLastPathComponent().lastPathComponent
             ?? "Codex"
-        let started = state.startedAt ?? runtime?.createdAt ?? mtime
         let activity = max(state.lastEventAt ?? .distantPast, runtime?.updatedAt ?? mtime)
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let (activeMs, lastMs) = rollingActive(files: files, runtime: runtime, nowMs: nowMs)
 
         return SessionInfo(
             projectName: project.isEmpty ? "Codex" : project,
             model: state.model.map(Self.prettyModel),
-            startEpochMs: Int64(started.timeIntervalSince1970 * 1000),
+            startEpochMs: SessionDuration.startMs(totalActiveMs: activeMs, lastMs: lastMs, nowMs: nowMs),
             totalTokens: state.totalTokens,
             lastModified: activity,
             agent: .codex
         )
+    }
+
+    /// Combined working time across transcripts that touched the last 24 hours.
+    /// Files older than the lookback are skipped unless they are the live one.
+    private func rollingActive(
+        files: [(url: URL, date: Date)],
+        runtime: RuntimeThread?,
+        nowMs: Int64
+    ) -> (Int64, Int64?) {
+        let cutoffMs = nowMs - SessionDuration.lookbackMs
+        let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoffMs) / 1000)
+        let runtimeURL = runtime?.path?.standardizedFileURL
+        var total: Int64 = 0
+        var newestLast: Int64?
+
+        for file in files {
+            let isLive = runtimeURL.map { file.url.standardizedFileURL == $0 } ?? false
+            if !isLive && file.date < cutoffDate { continue }
+
+            let state = transcriptState(at: file.url, mtime: file.date)
+            let createdMs = state.startedAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+                ?? (isLive ? runtime.flatMap { Int64($0.createdAt.timeIntervalSince1970 * 1000) } : nil)
+            let updatedMs = state.lastEventAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+                ?? (isLive ? runtime.flatMap { Int64($0.updatedAt.timeIntervalSince1970 * 1000) } : nil)
+            let (activeMs, lastMs) = SessionDuration.activeMs(
+                stamps: state.stampsMs,
+                createdAtMs: createdMs,
+                updatedAtMs: updatedMs,
+                cutoffMs: cutoffMs,
+                nowMs: nowMs
+            )
+            total += activeMs
+            if let lastMs, newestLast == nil || lastMs > newestLast! {
+                newestLast = lastMs
+            }
+        }
+
+        if files.isEmpty, let runtime {
+            let createdMs = Int64(runtime.createdAt.timeIntervalSince1970 * 1000)
+            let updatedMs = Int64(runtime.updatedAt.timeIntervalSince1970 * 1000)
+            let (activeMs, lastMs) = SessionDuration.activeMs(
+                stamps: [],
+                createdAtMs: createdMs,
+                updatedAtMs: updatedMs,
+                cutoffMs: cutoffMs,
+                nowMs: nowMs
+            )
+            return (activeMs, lastMs)
+        }
+        return (total, newestLast)
     }
 
     private func transcriptState(at url: URL, mtime: Date) -> TranscriptState {
@@ -426,6 +486,7 @@ final class CodexSession: ObservableObject {
         if let timestamp = object["timestamp"] as? String,
            let date = Self.date(fromISO: timestamp) {
             state.lastEventAt = max(state.lastEventAt ?? .distantPast, date)
+            state.stampsMs.append(Int64(date.timeIntervalSince1970 * 1000))
         }
         guard let type = object["type"] as? String,
               let payload = object["payload"] as? [String: Any] else { return }

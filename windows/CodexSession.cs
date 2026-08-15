@@ -1,7 +1,8 @@
 // Detects active Codex sessions by scanning the local transcript tree under
 // %USERPROFILE%\.codex\sessions (or %CODEX_HOME%\sessions). Codex owns these
 // records; AgentCord only reads session metadata, turn context, timestamps,
-// and token counts defensively.
+// and token counts defensively. Elapsed time is the summed working duration
+// across transcripts that touched the last 24 hours (idle gaps excluded).
 
 using System.Diagnostics;
 using System.IO;
@@ -60,7 +61,7 @@ public sealed class CodexSession
             {
                 ProjectName = project,
                 Model = state.Model is null ? null : PrettyModel(state.Model),
-                StartEpochMs = state.StartedAtMs ?? activityMs,
+                StartEpochMs = 0,
                 TotalTokens = state.TotalTokens,
                 LastModifiedMs = activityMs,
                 Agent = AgentKind.Codex,
@@ -73,7 +74,30 @@ public sealed class CodexSession
         foreach (var stale in _cache.Keys.Where(path => !livePaths.Contains(path)).ToList())
             _cache.Remove(stale);
 
-        return best;
+        return best is null ? null : WithRollingStart(best, files);
+    }
+
+    private SessionInfo WithRollingStart(SessionInfo info, List<(string Path, DateTime Mtime)> files)
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var cutoffMs = nowMs - SessionActivity.LookbackMs;
+        long total = 0;
+        long? newestLast = null;
+
+        foreach (var file in files)
+        {
+            var state = ReadTranscript(file.Path, file.Mtime);
+            var activityMs = SessionActivity.NormalizeMs(state.LastEventAtMs, file.Mtime);
+            if (activityMs < cutoffMs) continue;
+
+            var (activeMs, lastMs) = SessionActivity.ActiveDuration(
+                state.StampsMs, state.StartedAtMs, state.LastEventAtMs, cutoffMs, nowMs);
+            total += activeMs;
+            if (lastMs is long last && (newestLast is null || last > newestLast))
+                newestLast = last;
+        }
+
+        return info with { StartEpochMs = SessionActivity.ElapsedStartMs(total, newestLast, nowMs) };
     }
 
     private sealed class TranscriptState
@@ -83,6 +107,7 @@ public sealed class CodexSession
         public long? StartedAtMs;
         public long? LastEventAtMs;
         public long TotalTokens;
+        public List<long> StampsMs = [];
     }
 
     private sealed record CacheEntry(DateTime Mtime, TranscriptState State);
@@ -123,6 +148,7 @@ public sealed class CodexSession
                     {
                         state.StartedAtMs ??= eventMs;
                         state.LastEventAtMs = Math.Max(state.LastEventAtMs ?? eventMs, eventMs);
+                        state.StampsMs.Add(eventMs);
                     }
 
                     if (!root.TryGetProperty("type", out var typeElement)

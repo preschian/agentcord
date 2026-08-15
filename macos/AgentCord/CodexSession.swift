@@ -23,9 +23,14 @@ final class CodexSession: ObservableObject {
     private let queue = DispatchQueue(label: "com.agentcord.codex-session", qos: .utility)
     private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
+    private var scanWorkItem: DispatchWorkItem?
     /// Accessed only on `queue`; prevents a late FSEvent from restarting the
     /// runtime probe after shutdown.
     private var monitoring = false
+    private var lastFullScan = Date.distantPast
+    private var lastNewestDate: Date?
+    private static let fullScanInterval: TimeInterval = 30
+    private static let scanCoalesce: TimeInterval = 0.35
 
     // MARK: App-server runtime probe
 
@@ -57,8 +62,9 @@ final class CodexSession: ObservableObject {
     }
 
     private struct CacheEntry {
-        let mtime: Date
-        let state: TranscriptState
+        var mtime: Date
+        var cursor = JSONLCursor()
+        var state = TranscriptState()
     }
 
     private var transcriptCache: [URL: CacheEntry] = [:]
@@ -79,6 +85,7 @@ final class CodexSession: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         startFSEvents()
         startTimer()
         queue.async { [weak self] in
@@ -97,9 +104,13 @@ final class CodexSession: ObservableObject {
         }
         timer?.cancel()
         timer = nil
+        scanWorkItem?.cancel()
+        scanWorkItem = nil
         queue.async { [weak self] in
             self?.monitoring = false
+            self?.lastNewestDate = nil
             self?.stopRuntimeProbe()
+            self?.publish(nil)
         }
     }
 
@@ -117,19 +128,20 @@ final class CodexSession: ObservableObject {
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info else { return }
             let session = Unmanaged<CodexSession>.fromOpaque(info).takeUnretainedValue()
-            session.queue.async { session.scan() }
+            session.requestScan()
         }
-        let flags = FSEventStreamCreateFlags(
-            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
-        )
+        // Watch sessions/ when it exists so ~/.codex logs/cache writes do not
+        // wake a full transcript walk. Fall back to the home dir on first run.
+        let watchPath = FileManager.default.fileExists(atPath: sessionsURL.path)
+            ? sessionsURL.path : codexHome.path
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
             &context,
-            [codexHome.path] as CFArray,
+            [watchPath] as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             1.0,
-            flags
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
         ) else { return }
 
         FSEventStreamSetDispatchQueue(stream, queue)
@@ -140,9 +152,31 @@ final class CodexSession: ObservableObject {
     private func startTimer() {
         let source = DispatchSource.makeTimerSource(queue: queue)
         source.schedule(deadline: .now() + 5, repeating: 5)
-        source.setEventHandler { [weak self] in self?.scan() }
+        source.setEventHandler { [weak self] in self?.tick() }
         source.resume()
         timer = source
+    }
+
+    private func requestScan() {
+        scanWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.scan() }
+        scanWorkItem = work
+        queue.asyncAfter(deadline: .now() + Self.scanCoalesce, execute: work)
+    }
+
+    private func tick() {
+        guard monitoring else { return }
+        startRuntimeProbeIfNeeded()
+        requestRuntimeThreadsIfNeeded()
+        if runtimeThread != nil { return }
+        if let newest = lastNewestDate, Date().timeIntervalSince(newest) > activeWindowSeconds {
+            lastNewestDate = nil
+            publish(nil)
+            return
+        }
+        if Date().timeIntervalSince(lastFullScan) >= Self.fullScanInterval {
+            scanTranscripts()
+        }
     }
 
     private func scan() {
@@ -305,6 +339,7 @@ final class CodexSession: ObservableObject {
     // MARK: Transcript fallback and enrichment
 
     private func scanTranscripts() {
+        lastFullScan = Date()
         let fm = FileManager.default
         var files: [(url: URL, date: Date)] = []
         if let enumerator = fm.enumerator(
@@ -324,6 +359,7 @@ final class CodexSession: ObservableObject {
             let runtimeFile = runtime.path.flatMap { path in
                 files.first(where: { $0.url.standardizedFileURL == path.standardizedFileURL })
             }
+            guard monitoring else { return }
             publish(makeSessionInfo(
                 url: runtimeFile?.url ?? runtime.path,
                 mtime: runtimeFile?.date ?? runtime.updatedAt,
@@ -335,6 +371,8 @@ final class CodexSession: ObservableObject {
         // Standalone Codex CLI sessions are not loaded into another app-server
         // process. Recent transcript activity is therefore the compatibility
         // fallback, matching AgentCord's existing configurable idle semantics.
+        lastNewestDate = files.first?.date
+        guard monitoring else { return }
         guard let newest = files.first,
               Date().timeIntervalSince(newest.date) <= activeWindowSeconds else {
             publish(nil)
@@ -367,50 +405,55 @@ final class CodexSession: ObservableObject {
     }
 
     private func transcriptState(at url: URL, mtime: Date) -> TranscriptState {
-        if let cached = transcriptCache[url], cached.mtime == mtime { return cached.state }
+        var entry = transcriptCache[url] ?? CacheEntry(mtime: mtime)
+        if entry.mtime == mtime { return entry.state }
 
-        var state = TranscriptState()
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return state }
-        content.enumerateLines { line, _ in
-            guard let data = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return }
-
-            if let timestamp = object["timestamp"] as? String,
-               let date = Self.date(fromISO: timestamp) {
-                state.lastEventAt = max(state.lastEventAt ?? .distantPast, date)
-            }
-            guard let type = object["type"] as? String,
-                  let payload = object["payload"] as? [String: Any] else { return }
-
-            switch type {
-            case "session_meta":
-                if let cwd = payload["cwd"] as? String, !cwd.isEmpty { state.cwd = cwd }
-                if let timestamp = payload["timestamp"] as? String {
-                    state.startedAt = Self.date(fromISO: timestamp)
-                }
-            case "turn_context":
-                if let cwd = payload["cwd"] as? String, !cwd.isEmpty { state.cwd = cwd }
-                if let model = payload["model"] as? String, !model.isEmpty { state.model = model }
-            case "event_msg":
-                guard payload["type"] as? String == "token_count",
-                      let info = payload["info"] as? [String: Any],
-                      let usage = info["total_token_usage"] as? [String: Any]
-                else { return }
-                if let total = Self.intValue(usage["total_tokens"]) {
-                    state.totalTokens = max(state.totalTokens, total)
-                } else {
-                    let input = Self.intValue(usage["input_tokens"]) ?? 0
-                    let output = Self.intValue(usage["output_tokens"]) ?? 0
-                    state.totalTokens = max(state.totalTokens, input + output)
-                }
-            default:
-                break
-            }
+        let pulled = entry.cursor.pullLines(from: url)
+        if pulled.didReset { entry.state = TranscriptState() }
+        for line in pulled.lines {
+            consumeTranscriptLine(line, into: &entry.state)
         }
+        entry.mtime = mtime
+        transcriptCache[url] = entry
+        return entry.state
+    }
 
-        transcriptCache[url] = CacheEntry(mtime: mtime, state: state)
-        return state
+    private func consumeTranscriptLine(_ line: String, into state: inout TranscriptState) {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        if let timestamp = object["timestamp"] as? String,
+           let date = Self.date(fromISO: timestamp) {
+            state.lastEventAt = max(state.lastEventAt ?? .distantPast, date)
+        }
+        guard let type = object["type"] as? String,
+              let payload = object["payload"] as? [String: Any] else { return }
+
+        switch type {
+        case "session_meta":
+            if let cwd = payload["cwd"] as? String, !cwd.isEmpty { state.cwd = cwd }
+            if let timestamp = payload["timestamp"] as? String {
+                state.startedAt = Self.date(fromISO: timestamp)
+            }
+        case "turn_context":
+            if let cwd = payload["cwd"] as? String, !cwd.isEmpty { state.cwd = cwd }
+            if let model = payload["model"] as? String, !model.isEmpty { state.model = model }
+        case "event_msg":
+            guard payload["type"] as? String == "token_count",
+                  let info = payload["info"] as? [String: Any],
+                  let usage = info["total_token_usage"] as? [String: Any]
+            else { return }
+            if let total = Self.intValue(usage["total_tokens"]) {
+                state.totalTokens = max(state.totalTokens, total)
+            } else {
+                let input = Self.intValue(usage["input_tokens"]) ?? 0
+                let output = Self.intValue(usage["output_tokens"]) ?? 0
+                state.totalTokens = max(state.totalTokens, input + output)
+            }
+        default:
+            break
+        }
     }
 
     private func publish(_ info: SessionInfo?) {

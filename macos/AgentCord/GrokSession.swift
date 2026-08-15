@@ -27,6 +27,9 @@ final class GrokSession: ObservableObject {
     private let queue = DispatchQueue(label: "com.agentcord.grok.scan", qos: .utility)
     private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
+    private var scanWorkItem: DispatchWorkItem?
+    private var monitoring = false
+    private static let scanCoalesce: TimeInterval = 0.35
     /// Session summaries are stored at sessions/<encoded-cwd>/<session-id>.
     /// Build this fixed-depth index on demand instead of recursively walking an
     /// ever-growing history on every five-second poll.
@@ -42,9 +45,13 @@ final class GrokSession: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         startFSEvents()
         startTimer()
-        queue.async { [weak self] in self?.scan() }
+        queue.async { [weak self] in
+            self?.monitoring = true
+            self?.scan()
+        }
     }
 
     func stop() {
@@ -56,6 +63,13 @@ final class GrokSession: ObservableObject {
         }
         timer?.cancel()
         timer = nil
+        scanWorkItem?.cancel()
+        scanWorkItem = nil
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.monitoring = false
+            self.publish(authenticated: self.readAuthenticated(), session: nil)
+        }
     }
 
     // MARK: File system monitoring
@@ -71,12 +85,9 @@ final class GrokSession: ObservableObject {
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info else { return }
             let session = Unmanaged<GrokSession>.fromOpaque(info).takeUnretainedValue()
-            session.queue.async { session.scan() }
+            session.requestScan()
         }
         let paths = [grokHome.path] as CFArray
-        let flags = FSEventStreamCreateFlags(
-            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
-        )
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
@@ -84,7 +95,7 @@ final class GrokSession: ObservableObject {
             paths,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             1.0,
-            flags
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
         ) else { return }
 
         FSEventStreamSetDispatchQueue(stream, queue)
@@ -100,6 +111,13 @@ final class GrokSession: ObservableObject {
         timer = t
     }
 
+    private func requestScan() {
+        scanWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.scan() }
+        scanWorkItem = work
+        queue.asyncAfter(deadline: .now() + Self.scanCoalesce, execute: work)
+    }
+
     // MARK: Scanning
 
     private struct LiveEntry {
@@ -110,6 +128,7 @@ final class GrokSession: ObservableObject {
     }
 
     private func scan() {
+        guard monitoring else { return }
         let auth = readAuthenticated()
         let live = readActiveSessions().filter { processIsAlive($0.pid) }
 
@@ -160,6 +179,7 @@ final class GrokSession: ObservableObject {
 
         if let best { lastKnownSession = best }
 
+        guard monitoring else { return }
         publish(authenticated: auth, session: best?.info)
     }
 

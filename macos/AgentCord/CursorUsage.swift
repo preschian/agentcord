@@ -77,6 +77,7 @@ final class CursorUsage: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: queue)
         let firstDelay: TimeInterval = (current != nil) ? 5 : 2
         t.schedule(deadline: .now() + firstDelay, repeating: pollInterval)

@@ -29,6 +29,14 @@ final class ClaudeSession: ObservableObject {
     private let queue = DispatchQueue(label: "com.agentcord.session.scan", qos: .utility)
     private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
+    private var scanWorkItem: DispatchWorkItem?
+    /// Queue-only. Start/stop flip this so an in-flight walk cannot republish
+    /// after the monitor has been torn down.
+    private var monitoring = false
+    private var lastFullScan = Date.distantPast
+    private var lastNewestDate: Date?
+    private static let fullScanInterval: TimeInterval = 30
+    private static let scanCoalesce: TimeInterval = 0.35
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -36,9 +44,13 @@ final class ClaudeSession: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         startFSEvents()
         startTimer()
-        queue.async { [weak self] in self?.scan() }
+        queue.async { [weak self] in
+            self?.monitoring = true
+            self?.scan()
+        }
     }
 
     func stop() {
@@ -50,6 +62,13 @@ final class ClaudeSession: ObservableObject {
         }
         timer?.cancel()
         timer = nil
+        scanWorkItem?.cancel()
+        scanWorkItem = nil
+        queue.async { [weak self] in
+            self?.monitoring = false
+            self?.lastNewestDate = nil
+            self?.publish(nil)
+        }
     }
 
     // MARK: File system monitoring
@@ -65,12 +84,11 @@ final class ClaudeSession: ObservableObject {
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info else { return }
             let session = Unmanaged<ClaudeSession>.fromOpaque(info).takeUnretainedValue()
-            session.queue.async { session.scan() }
+            session.requestScan()
         }
         let paths = [projectsURL.path] as CFArray
-        let flags = FSEventStreamCreateFlags(
-            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
-        )
+        // Directory-level, coalesced events. FileEvents+NoDefer would fire a
+        // full walk on every transcript append while Claude is working.
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
@@ -78,7 +96,7 @@ final class ClaudeSession: ObservableObject {
             paths,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             1.0,
-            flags
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
         ) else { return }
 
         FSEventStreamSetDispatchQueue(stream, queue)
@@ -87,18 +105,39 @@ final class ClaudeSession: ObservableObject {
     }
 
     private func startTimer() {
-        // A periodic re-scan also catches the active -> idle transition, which
-        // produces no file system event of its own.
+        // Cheap idle expiry plus a slow safety walk. FSEvents drive updates
+        // while a session is active; walking the whole tree every 5s is waste.
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 5, repeating: 5)
-        t.setEventHandler { [weak self] in self?.scan() }
+        t.setEventHandler { [weak self] in self?.tick() }
         t.resume()
         timer = t
+    }
+
+    private func requestScan() {
+        scanWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.scan() }
+        scanWorkItem = work
+        queue.asyncAfter(deadline: .now() + Self.scanCoalesce, execute: work)
+    }
+
+    private func tick() {
+        guard monitoring else { return }
+        if let newest = lastNewestDate, Date().timeIntervalSince(newest) > activeWindowSeconds {
+            lastNewestDate = nil
+            publish(nil)
+            return
+        }
+        if Date().timeIntervalSince(lastFullScan) >= Self.fullScanInterval {
+            scan()
+        }
     }
 
     // MARK: Scanning (runs on `queue`)
 
     private func scan() {
+        guard monitoring else { return }
+        lastFullScan = Date()
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: projectsURL,
@@ -120,9 +159,11 @@ final class ClaudeSession: ObservableObject {
         }
 
         guard let newest else {
+            lastNewestDate = nil
             publish(nil)
             return
         }
+        lastNewestDate = newest.date
         if Date().timeIntervalSince(newest.date) > activeWindowSeconds {
             publish(nil)
             return
@@ -150,6 +191,7 @@ final class ClaudeSession: ObservableObject {
         let liveURLs = Set(files.map { $0.url })
         aggregateCache = aggregateCache.filter { liveURLs.contains($0.key) }
 
+        guard monitoring else { return }
         publish(makeSessionInfo(
             newest: newest,
             active: activeAgg,
@@ -181,66 +223,83 @@ final class ClaudeSession: ObservableObject {
     }
 
     private struct CacheEntry {
-        let mtime: Date
-        let dayStartMs: Int64
-        let aggregate: DayAggregate
+        var mtime: Date
+        var dayStartMs: Int64
+        var cursor = JSONLCursor()
+        var aggregate = DayAggregate()
+        var prevTodayMs: Int64?
     }
 
     /// Parsing every transcript on each scan would be wasteful, so results are
-    /// memoized per file. An entry is reused only while the file is unmodified
-    /// and we are still on the same calendar day (the day boundary changes which
-    /// lines count as "today"). Keyed access is safe: scanning is serialized on
-    /// `queue`.
+    /// memoized per file. Unchanged files reuse the last aggregate; a growing
+    /// file only parses newly appended JSONL lines. Keyed access is safe:
+    /// scanning is serialized on `queue`.
     private var aggregateCache: [URL: CacheEntry] = [:]
 
     private func aggregate(url: URL, mtime: Date, dayStartMs: Int64) -> DayAggregate {
-        if let entry = aggregateCache[url], entry.mtime == mtime, entry.dayStartMs == dayStartMs {
+        var entry = aggregateCache[url] ?? CacheEntry(mtime: mtime, dayStartMs: dayStartMs)
+        if entry.mtime == mtime, entry.dayStartMs == dayStartMs {
             return entry.aggregate
         }
 
-        var agg = DayAggregate()
-        var prevTodayMs: Int64?
-        if let content = try? String(contentsOf: url, encoding: .utf8) {
-            content.enumerateLines { line, _ in
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
-                guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        if entry.dayStartMs != dayStartMs {
+            entry = CacheEntry(mtime: mtime, dayStartMs: dayStartMs)
+        }
 
-                if agg.cwd == nil, let c = obj["cwd"] as? String, !c.isEmpty {
-                    agg.cwd = c
-                }
+        let pulled = entry.cursor.pullLines(from: url)
+        if pulled.didReset {
+            entry.aggregate = DayAggregate()
+            entry.prevTodayMs = nil
+        }
 
-                var lineMs: Int64?
-                if let ts = obj["timestamp"] as? String { lineMs = Self.epochMs(fromISO: ts) }
-                let isToday = (lineMs ?? .min) >= dayStartMs
+        for line in pulled.lines {
+            consumeAggregateLine(line, into: &entry.aggregate, prevTodayMs: &entry.prevTodayMs, dayStartMs: dayStartMs)
+        }
 
-                if let message = obj["message"] as? [String: Any] {
-                    if let m = message["model"] as? String, !m.isEmpty, m != "<synthetic>" {
-                        agg.model = m
-                    }
-                    if isToday, let usage = message["usage"] as? [String: Any] {
-                        agg.tokensToday += (usage["input_tokens"] as? Int ?? 0)
-                        agg.tokensToday += (usage["output_tokens"] as? Int ?? 0)
-                    }
-                }
+        entry.mtime = mtime
+        entry.dayStartMs = dayStartMs
+        aggregateCache[url] = entry
+        return entry.aggregate
+    }
 
-                if isToday, let ms = lineMs {
-                    // Add the gap from the previous message only if it is short
-                    // enough to count as continuous work (idle breaks excluded).
-                    if let prev = prevTodayMs {
-                        let delta = ms - prev
-                        if delta > 0 && delta <= Self.activeGapToleranceMs {
-                            agg.activeMsToday += delta
-                        }
-                    }
-                    prevTodayMs = ms
-                    agg.lastTodayMs = ms
-                }
+    private func consumeAggregateLine(
+        _ line: String,
+        into agg: inout DayAggregate,
+        prevTodayMs: inout Int64?,
+        dayStartMs: Int64
+    ) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+
+        if agg.cwd == nil, let c = obj["cwd"] as? String, !c.isEmpty {
+            agg.cwd = c
+        }
+
+        var lineMs: Int64?
+        if let ts = obj["timestamp"] as? String { lineMs = Self.epochMs(fromISO: ts) }
+        let isToday = (lineMs ?? .min) >= dayStartMs
+
+        if let message = obj["message"] as? [String: Any] {
+            if let m = message["model"] as? String, !m.isEmpty, m != "<synthetic>" {
+                agg.model = m
+            }
+            if isToday, let usage = message["usage"] as? [String: Any] {
+                agg.tokensToday += (usage["input_tokens"] as? Int ?? 0)
+                agg.tokensToday += (usage["output_tokens"] as? Int ?? 0)
             }
         }
 
-        aggregateCache[url] = CacheEntry(mtime: mtime, dayStartMs: dayStartMs, aggregate: agg)
-        return agg
+        if isToday, let ms = lineMs {
+            if let prev = prevTodayMs {
+                let delta = ms - prev
+                if delta > 0 && delta <= Self.activeGapToleranceMs {
+                    agg.activeMsToday += delta
+                }
+            }
+            prevTodayMs = ms
+            agg.lastTodayMs = ms
+        }
     }
 
     private func makeSessionInfo(

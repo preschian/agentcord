@@ -7,7 +7,7 @@
 //  ~/.cursor/chats/**/<session-id>/meta.json (cwd, createdAtMs) plus the
 //  sibling store.db (`lastUsedModel`). Elapsed time is the summed working
 //  duration across transcripts that touched the last 24 hours (idle gaps
-//  excluded), matching ClaudeSession's daily total idea. The on-disk schema
+//  excluded), matching the other agents. The on-disk schema
 //  is undocumented, so all parsing is defensive.
 //
 

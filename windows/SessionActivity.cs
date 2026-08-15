@@ -1,10 +1,18 @@
-// Shared activity-timestamp helpers for Claude, Codex, and Cursor session
-// scanners. Prefer parseable event/runtime timestamps; fall back to mtime.
+// Shared activity-timestamp helpers for Claude, Codex, Cursor, Grok, and
+// Antigravity session scanners. Prefer parseable event/runtime timestamps;
+// fall back to mtime. Duration helpers backdate Discord's elapsed timer so
+// 1pm–2pm + 5pm–6pm shows as two hours, not five.
 
 namespace AgentCord;
 
 internal static class SessionActivity
 {
+    /// <summary>A gap longer than this between consecutive stamps is idle, not work.</summary>
+    public const long GapToleranceMs = 5 * 60 * 1000;
+
+    /// <summary>Rolling window for the combined duration shown on Discord / in the UI.</summary>
+    public const long LookbackMs = 24 * 60 * 60 * 1000;
+
     /// <summary>Activity signal from an optional event timestamp and filesystem
     /// mtime. The filesystem timestamp is only a fallback when no event
     /// timestamp is available.</summary>
@@ -33,5 +41,58 @@ internal static class SessionActivity
     {
         var nowMs = (now ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
         return (nowMs - activityMs) / 1000.0 <= windowSeconds;
+    }
+
+    /// <summary>Working time inside the lookback window for one session.</summary>
+    public static (long ActiveMs, long? LastMs) ActiveDuration(
+        IReadOnlyList<long> stamps,
+        long? createdAtMs,
+        long? updatedAtMs,
+        long cutoffMs,
+        long nowMs)
+    {
+        var inWindow = stamps.Where(ms => ms >= cutoffMs && ms <= nowMs).ToList();
+
+        if (inWindow.Count == 0)
+        {
+            if (createdAtMs is not long created || updatedAtMs is not long updated)
+                return (0, null);
+            var start = Math.Max(created, cutoffMs);
+            var end = Math.Min(updated, nowMs);
+            return end > start ? (end - start, end) : (0, null);
+        }
+
+        var points = new HashSet<long>(inWindow);
+        if (createdAtMs is long c && c >= cutoffMs && c <= nowMs) points.Add(c);
+        if (updatedAtMs is long u && u >= cutoffMs && u <= nowMs) points.Add(u);
+        if (createdAtMs is long createdBefore && updatedAtMs is long updatedAfter
+            && createdBefore < cutoffMs && updatedAfter >= cutoffMs)
+        {
+            points.Add(cutoffMs);
+            points.Add(Math.Min(updatedAfter, nowMs));
+        }
+
+        var unique = points.OrderBy(ms => ms).ToList();
+        if (unique.Count == 0) return (0, null);
+
+        long active = 0;
+        for (var i = 1; i < unique.Count; i++)
+        {
+            var delta = unique[i] - unique[i - 1];
+            if (delta > 0 && delta <= GapToleranceMs) active += delta;
+        }
+        return (active, unique[^1]);
+    }
+
+    /// <summary>Discord timestamps.start that makes elapsed time equal the summed work.</summary>
+    public static long ElapsedStartMs(long totalActiveMs, long? lastMs, long nowMs)
+    {
+        var elapsed = totalActiveMs;
+        if (lastMs is long last)
+        {
+            var tail = nowMs - last;
+            if (tail > 0 && tail <= GapToleranceMs) elapsed += tail;
+        }
+        return nowMs - elapsed;
     }
 }

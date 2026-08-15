@@ -13,10 +13,6 @@ public sealed class AntigravitySession
 {
     public double ActiveWindowSeconds { get; set; } = 60;
 
-    /// <summary>When summing the active working time, a gap between consecutive
-    /// events longer than this is treated as an idle break.</summary>
-    private const long ActiveGapToleranceMs = 5 * 60 * 1000;
-
     public string? AccountEmail { get; private set; }
     public string? PlanType { get; private set; }
 
@@ -132,7 +128,7 @@ public sealed class AntigravitySession
             {
                 ProjectName = project,
                 Model = state.Model is null ? null : PrettyModel(state.Model),
-                StartEpochMs = state.StartedAtMs ?? fileActivityMs,
+                StartEpochMs = 0,
                 TotalTokens = state.TotalTokens,
                 LastModifiedMs = fileActivityMs,
                 Agent = AgentKind.Antigravity,
@@ -147,7 +143,31 @@ public sealed class AntigravitySession
         foreach (var stale in _cache.Keys.Where(p => !livePaths.Contains(p)).ToList())
             _cache.Remove(stale);
 
-        return best;
+        return best is null ? null : WithRollingStart(best, transcriptFiles);
+    }
+
+    private SessionInfo WithRollingStart(SessionInfo info, List<(string Path, DateTime Mtime)> files)
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var cutoffMs = nowMs - SessionActivity.LookbackMs;
+        long total = 0;
+        long? newestLast = null;
+
+        foreach (var file in files)
+        {
+            var convId = ExtractConversationId(file.Path);
+            var state = ReadTranscript(file.Path, file.Mtime, convId);
+            var activityMs = SessionActivity.NormalizeMs(state.LastEventAtMs, file.Mtime);
+            if (activityMs < cutoffMs) continue;
+
+            var (activeMs, lastMs) = SessionActivity.ActiveDuration(
+                state.StampsMs, state.StartedAtMs, state.LastEventAtMs, cutoffMs, nowMs);
+            total += activeMs;
+            if (lastMs is long last && (newestLast is null || last > newestLast))
+                newestLast = last;
+        }
+
+        return info with { StartEpochMs = SessionActivity.ElapsedStartMs(total, newestLast, nowMs) };
     }
 
     private static string? ExtractConversationId(string transcriptPath)
@@ -277,6 +297,7 @@ public sealed class AntigravitySession
         public long? StartedAtMs;
         public long? LastEventAtMs;
         public long TotalTokens;
+        public List<long> StampsMs = [];
     }
 
     private sealed record CacheEntry(DateTime Mtime, TranscriptState State);
@@ -325,6 +346,7 @@ public sealed class AntigravitySession
                     {
                         state.StartedAtMs ??= eventMs;
                         state.LastEventAtMs = Math.Max(state.LastEventAtMs ?? eventMs, eventMs);
+                        state.StampsMs.Add(eventMs);
                     }
 
                     if (root.TryGetProperty("content", out var contentElement) && contentElement.ValueKind == JsonValueKind.String)

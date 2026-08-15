@@ -8,6 +8,38 @@ namespace AgentCord.Tests;
 public sealed class SessionActivityDetectionTests
 {
     [Fact]
+    public void ActiveDuration_sums_dense_stamps_and_drops_idle_gaps()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var cutoff = now - SessionActivity.LookbackMs;
+        var morning = BurstMs(now - 6 * 3600_000, now - 5 * 3600_000);
+        var evening = BurstMs(now - 3600_000, now - 8_000);
+        var stamps = morning.Concat(evening).ToList();
+
+        var (active, last) = SessionActivity.ActiveDuration(stamps, null, null, cutoff, now);
+
+        Assert.InRange(active, 2 * 3600_000L - 30_000, 2 * 3600_000L + 5_000);
+        Assert.Equal(stamps[^1], last);
+    }
+
+    [Fact]
+    public void ElapsedStartMs_adds_a_short_live_tail()
+    {
+        var now = 2_000_000L;
+        var start = SessionActivity.ElapsedStartMs(3_600_000, now - 4_000, now);
+        Assert.Equal(now - 3_604_000, start);
+    }
+
+    private static List<long> BurstMs(long startMs, long endMs)
+    {
+        var stamps = new List<long>();
+        for (var t = startMs; t < endMs; t += 4 * 60_000)
+            stamps.Add(t);
+        stamps.Add(endMs);
+        return stamps;
+    }
+
+    [Fact]
     public void NormalizeMs_prefers_newer_event_over_mtime()
     {
         var mtime = DateTime.UtcNow.AddHours(-2);
@@ -78,6 +110,59 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Claude_ignores_fresh_mtime_when_events_are_old()
+    {
+        using var dir = TempDir.Create();
+        var project = Path.Combine(dir.Root, "C-Users-test-hippocamp");
+        Directory.CreateDirectory(project);
+        var transcript = Path.Combine(project, "session.jsonl");
+        var eventAt = DateTimeOffset.UtcNow.AddDays(-30);
+        File.WriteAllText(transcript,
+            "{\"cwd\":\"/Users/pres/orca/workspaces/com/hippocamp\",\"timestamp\":\"" +
+            eventAt.ToString("o") +
+            "\",\"message\":{\"model\":\"claude-fable-5\",\"role\":\"assistant\"}}\n" +
+            "{\"type\":\"bridge-session\",\"sessionId\":\"dead\"}\n");
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
+
+        var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
+        Assert.Null(scanner.Scan());
+    }
+
+    [Fact]
+    public void Claude_sums_working_time_across_sessions_in_the_last_24_hours()
+    {
+        using var dir = TempDir.Create();
+        var project = Path.Combine(dir.Root, "C-Users-test-agentcord");
+        Directory.CreateDirectory(project);
+        var now = DateTimeOffset.UtcNow;
+
+        File.WriteAllText(Path.Combine(project, "morning.jsonl"),
+            ClaudeBurst(now.AddHours(-6), now.AddHours(-5)));
+        File.WriteAllText(Path.Combine(project, "evening.jsonl"),
+            ClaudeBurst(now.AddHours(-1), now.AddSeconds(-8)));
+        File.SetLastWriteTimeUtc(Path.Combine(project, "morning.jsonl"), now.AddHours(-5).UtcDateTime);
+        File.SetLastWriteTimeUtc(Path.Combine(project, "evening.jsonl"), now.AddSeconds(-8).UtcDateTime);
+
+        var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        Assert.InRange(elapsed, 2 * 3600_000L - 30_000, 2 * 3600_000L + 30_000);
+    }
+
+    private static string ClaudeBurst(DateTimeOffset start, DateTimeOffset end)
+    {
+        var text = "";
+        foreach (var ts in Burst(start, end))
+        {
+            text += "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + ts.ToString("o") +
+                    "\",\"message\":{\"model\":\"claude-opus-4-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n";
+        }
+        return text;
+    }
+
+    [Fact]
     public void Codex_detects_active_session_when_mtime_is_stale()
     {
         using var dir = TempDir.Create();
@@ -128,6 +213,59 @@ public sealed class SessionActivityDetectionTests
 
         Assert.NotNull(info);
         Assert.True(info!.LastModifiedMs >= eventAt.ToUnixTimeMilliseconds());
+    }
+
+    [Fact]
+    public void Codex_sums_working_time_across_sessions_in_the_last_24_hours()
+    {
+        using var dir = TempDir.Create();
+        var day = Path.Combine(dir.Root, "2026", "08", "01");
+        Directory.CreateDirectory(day);
+        var now = DateTimeOffset.UtcNow;
+        var morningStart = now.AddHours(-5);
+        var morningEnd = now.AddHours(-4);
+        var eveningStart = now.AddMinutes(-20);
+        var eveningEnd = now.AddSeconds(-8);
+
+        File.WriteAllText(Path.Combine(day, "morning.jsonl"), CodexBurst(morningStart, morningEnd));
+        File.WriteAllText(Path.Combine(day, "evening.jsonl"), CodexBurst(eveningStart, eveningEnd));
+        File.SetLastWriteTimeUtc(Path.Combine(day, "morning.jsonl"), morningEnd.UtcDateTime);
+        File.SetLastWriteTimeUtc(Path.Combine(day, "evening.jsonl"), eveningEnd.UtcDateTime);
+
+        var scanner = new CodexSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        Assert.InRange(elapsed, 3600_000L + 18 * 60_000L, 3600_000L + 22 * 60_000L);
+    }
+
+    private static string CodexLine(DateTimeOffset ts, string type)
+    {
+        var iso = ts.ToString("o");
+        return "{\"timestamp\":\"" + iso + "\",\"type\":\"" + type +
+               "\",\"payload\":{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + iso +
+               "\",\"model\":\"gpt-5.2\"}}\n";
+    }
+
+    private static string CodexBurst(DateTimeOffset start, DateTimeOffset end)
+    {
+        var stamps = Burst(start, end);
+        var text = CodexLine(stamps[0], "session_meta");
+        for (var i = 1; i < stamps.Length; i++)
+            text += CodexLine(stamps[i], "turn_context");
+        return text;
+    }
+
+    /// <summary>Stamps every 4 minutes so each gap stays inside the 5-minute
+    /// work tolerance. Two endpoints an hour apart would otherwise count as idle.</summary>
+    private static DateTimeOffset[] Burst(DateTimeOffset start, DateTimeOffset end)
+    {
+        var stamps = new List<DateTimeOffset>();
+        for (var t = start; t < end; t = t.AddMinutes(4))
+            stamps.Add(t);
+        stamps.Add(end);
+        return stamps.ToArray();
     }
 
     [Fact]
@@ -353,7 +491,84 @@ public sealed class SessionActivityDetectionTests
         Assert.Equal(42221, info.TotalTokens);
         Assert.True(scanner.IsAuthenticated);
         Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 60));
-        Assert.Equal(openedAt.ToUnixTimeMilliseconds(), info.StartEpochMs);
+    }
+
+    [Fact]
+    public void Grok_sums_working_time_across_sessions_in_the_last_24_hours()
+    {
+        using var dir = TempDir.Create();
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var now = DateTimeOffset.UtcNow;
+
+        WriteGrokSession(dir.Root, encoded, "morning", cwd,
+            created: now.AddHours(-6),
+            lastActive: now.AddHours(-5),
+            events: Burst(now.AddHours(-6), now.AddHours(-5)));
+        WriteGrokSession(dir.Root, encoded, "evening", cwd,
+            created: now.AddHours(-1),
+            lastActive: now.AddSeconds(-8),
+            events: Burst(now.AddHours(-1), now.AddSeconds(-8)));
+
+        File.WriteAllText(Path.Combine(dir.Root, "active_sessions.json"),
+            "[{ \"session_id\":\"evening\",\"pid\":" + Environment.ProcessId +
+            ",\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"opened_at\":\"" +
+            now.AddHours(-1).ToString("o") + "\"}]");
+        File.WriteAllText(Path.Combine(dir.Root, "auth.json"),
+            "{\"acct\":{\"key\":\"test\"}}");
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        // 1h morning + 1h evening, idle gap between them excluded. Allow slack
+        // for the live tail (last event ~8s ago through now).
+        Assert.InRange(elapsed, 2 * 3600_000L - 30_000, 2 * 3600_000L + 30_000);
+    }
+
+    [Fact]
+    public void Grok_excludes_idle_gaps_inside_a_session()
+    {
+        using var dir = TempDir.Create();
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var now = DateTimeOffset.UtcNow;
+
+        WriteGrokSession(dir.Root, encoded, "gapped", cwd,
+            created: now.AddHours(-4),
+            lastActive: now.AddSeconds(-5),
+            events: Burst(now.AddHours(-4), now.AddHours(-3))
+                .Concat(Burst(now.AddMinutes(-10), now.AddSeconds(-5)))
+                .ToArray());
+
+        File.WriteAllText(Path.Combine(dir.Root, "active_sessions.json"),
+            "[{ \"session_id\":\"gapped\",\"pid\":" + Environment.ProcessId +
+            ",\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"opened_at\":\"" +
+            now.AddHours(-4).ToString("o") + "\"}]");
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        // Two 1h-apart morning stamps (1h) plus a 10m evening burst, not 4h wall clock.
+        Assert.InRange(elapsed, 3600_000L + 9 * 60_000L, 3600_000L + 12 * 60_000L);
+    }
+
+    private static void WriteGrokSession(
+        string root, string encodedCwd, string sessionId, string cwd,
+        DateTimeOffset created, DateTimeOffset lastActive, DateTimeOffset[] events)
+    {
+        var sessionDir = Path.Combine(root, "sessions", encodedCwd, sessionId);
+        Directory.CreateDirectory(sessionDir);
+        File.WriteAllText(Path.Combine(sessionDir, "summary.json"),
+            "{\"info\":{\"cwd\":\"" + cwd.Replace("\\", "\\\\") + "\"},\"current_model_id\":\"grok-4.5\"," +
+            "\"created_at\":\"" + created.ToString("o") + "\"," +
+            "\"last_active_at\":\"" + lastActive.ToString("o") + "\"}");
+        File.WriteAllText(Path.Combine(sessionDir, "events.jsonl"),
+            string.Concat(events.Select(ts =>
+                "{\"ts\":\"" + ts.ToString("o") + "\",\"type\":\"turn\"}\n")));
     }
 
     [Fact]

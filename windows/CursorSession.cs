@@ -7,7 +7,6 @@
 // store.db (`lastUsedModel`) when sqlite3 is on PATH. Port of
 // AgentCord/CursorSession.swift, extended for T3 Code / ACP on Windows.
 
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
@@ -15,7 +14,7 @@ using System.Text.RegularExpressions;
 
 namespace AgentCord;
 
-public sealed class CursorSession
+public sealed class CursorSession : IDisposable
 {
     /// <summary>A transcript counts as active if modified within this window.</summary>
     public double ActiveWindowSeconds { get; set; } = 60;
@@ -27,25 +26,40 @@ public sealed class CursorSession
         @"<timestamp>(.*?)</timestamp>",
         RegexOptions.Singleline | RegexOptions.Compiled);
 
-    private readonly string _projectsDir;
     private readonly string _chatsDir;
     private readonly string _acpDir;
     private readonly bool _enableT3;
     private readonly T3CursorSession _t3Scanner = new();
+    private readonly SessionTreeIndex _transcriptTree;
+    private readonly SessionTreeIndex _chatsTree;
     private readonly Dictionary<string, string> _metaBySessionId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _repoNameCache = [];
     private readonly Dictionary<string, (DateTime? Stamp, string? Model)> _modelCache = [];
     private readonly Dictionary<string, TranscriptCacheEntry> _transcriptCache = [];
+    private DateTime _metaIndexStamp = DateTime.MinValue;
 
     public CursorSession(string? cursorHome = null, bool enableT3 = true)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var resolved = cursorHome ?? Path.Combine(home, ".cursor");
-        _projectsDir = Path.Combine(resolved, "projects");
+        var projectsDir = Path.Combine(resolved, "projects");
         _chatsDir = Path.Combine(resolved, "chats");
         _acpDir = Path.Combine(resolved, "acp-sessions");
         _enableT3 = enableT3;
+        _transcriptTree = new SessionTreeIndex(projectsDir, "*.jsonl", IsAgentTranscript);
+        _chatsTree = new SessionTreeIndex(_chatsDir, "meta.json");
     }
+
+    public void Dispose()
+    {
+        _transcriptTree.Dispose();
+        _chatsTree.Dispose();
+    }
+
+    private static bool IsAgentTranscript(string path) =>
+        path.Contains($"{Path.DirectorySeparatorChar}agent-transcripts{Path.DirectorySeparatorChar}",
+            StringComparison.OrdinalIgnoreCase)
+        || path.Contains("/agent-transcripts/", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Newest live Cursor session across CLI transcripts, T3 Code, and ACP.</summary>
     public SessionInfo? Scan()
@@ -60,26 +74,10 @@ public sealed class CursorSession
 
     private SessionInfo? ScanTranscripts()
     {
-        List<(string Path, DateTime Mtime)> files;
-        try
-        {
-            if (!Directory.Exists(_projectsDir)) return null;
-            files = Directory
-                .EnumerateFiles(_projectsDir, "*.jsonl", SearchOption.AllDirectories)
-                .Where(p => p.Contains($"{Path.DirectorySeparatorChar}agent-transcripts{Path.DirectorySeparatorChar}",
-                    StringComparison.OrdinalIgnoreCase)
-                    || p.Contains("/agent-transcripts/", StringComparison.OrdinalIgnoreCase))
-                .Select(p => (Path: p, Mtime: File.GetLastWriteTimeUtc(p)))
-                .ToList();
-        }
-        catch
-        {
-            return null;
-        }
-
+        var files = _transcriptTree.Snapshot(TimeSpan.FromMilliseconds(LookbackMs));
         if (files.Count == 0) return null;
 
-        RebuildMetaIndex();
+        RebuildMetaIndexIfNeeded();
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var cutoffMs = nowMs - LookbackMs;
@@ -193,7 +191,7 @@ public sealed class CursorSession
                 }
             }
 
-            var project = string.IsNullOrWhiteSpace(cwd) ? "Cursor" : RepoName(cwd!);
+            var project = string.IsNullOrWhiteSpace(cwd) ? "Cursor" : RepoNames.FromCwd(cwd!, _repoNameCache);
             var createdMs = new DateTimeOffset(Directory.GetCreationTimeUtc(bestDir)).ToUnixTimeMilliseconds();
 
             return new SessionInfo
@@ -232,40 +230,45 @@ public sealed class CursorSession
         return best;
     }
 
-    private sealed record TranscriptCacheEntry(
-        DateTime Mtime,
-        List<long> ConversationalStampsMs,
-        long? CreatedAtMs,
-        long? UpdatedAtMs);
+    private sealed class TranscriptCacheEntry
+    {
+        public DateTime Mtime;
+        public JsonlCursor Cursor = new();
+        public List<long> ConversationalStampsMs = [];
+        public long? CreatedAtMs;
+        public long? UpdatedAtMs;
+    }
 
     private sealed record SessionMeta(string? Cwd, long? CreatedAtMs, long? UpdatedAtMs, string? Model);
 
     private TranscriptCacheEntry TranscriptAggregate(string path, DateTime mtime)
     {
-        if (_transcriptCache.TryGetValue(path, out var cached) && cached.Mtime == mtime)
+        if (!_transcriptCache.TryGetValue(path, out var cached))
+            cached = new TranscriptCacheEntry();
+        if (cached.Mtime == mtime && _transcriptCache.ContainsKey(path))
             return cached;
 
         var sessionId = Path.GetFileNameWithoutExtension(path);
         var meta = ReadMeta(sessionId, includeModel: false);
-        var stamps = new List<long>();
+        cached.CreatedAtMs = meta?.CreatedAtMs;
+        cached.UpdatedAtMs = meta?.UpdatedAtMs;
+
         try
         {
-            using var stream = new FileStream(
-                path, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-            while (reader.ReadLine() is { } line)
-                stamps.AddRange(TimestampsInJsonlLine(line));
+            var (lines, didReset) = cached.Cursor.PullLines(path);
+            if (didReset) cached.ConversationalStampsMs.Clear();
+            foreach (var line in lines)
+                cached.ConversationalStampsMs.AddRange(TimestampsInJsonlLine(line));
         }
         catch
         {
             // Live transcripts can be briefly locked; partial stamps are fine.
         }
 
-        stamps.Sort();
-        var entry = new TranscriptCacheEntry(mtime, stamps, meta?.CreatedAtMs, meta?.UpdatedAtMs);
-        _transcriptCache[path] = entry;
-        return entry;
+        cached.ConversationalStampsMs.Sort();
+        cached.Mtime = mtime;
+        _transcriptCache[path] = cached;
+        return cached;
     }
 
     private static (long ActiveMs, long? LastMs) ActiveDuration(
@@ -450,33 +453,12 @@ public sealed class CursorSession
         return model;
     }
 
-    /// <summary>Best-effort via sqlite3 CLI (same approach as macOS). Missing
-    /// sqlite3 simply leaves the model blank.</summary>
     private static string? QueryLastUsedModel(string dbPath)
     {
+        var bytes = LocalSqlite.QueryBytes(dbPath, "SELECT value FROM meta WHERE key = 0 LIMIT 1;");
+        if (bytes is null || bytes.Length == 0) return null;
         try
         {
-            var start = new ProcessStartInfo("sqlite3")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            start.ArgumentList.Add(dbPath);
-            start.ArgumentList.Add("SELECT value FROM meta WHERE key = 0 LIMIT 1;");
-
-            using var process = Process.Start(start);
-            if (process is null) return null;
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            if (!process.WaitForExit(3000))
-            {
-                process.Kill();
-                return null;
-            }
-            if (process.ExitCode != 0 || output.Length == 0) return null;
-
-            var bytes = Convert.FromHexString(output);
             using var doc = JsonDocument.Parse(bytes);
             if (doc.RootElement.TryGetProperty("lastUsedModel", out var model)
                 && model.ValueKind == JsonValueKind.String
@@ -487,7 +469,7 @@ public sealed class CursorSession
         }
         catch
         {
-            // sqlite3 absent or blob not hex JSON — model stays unknown.
+            // Blob is not JSON — model stays unknown.
         }
         return null;
     }
@@ -508,28 +490,28 @@ public sealed class CursorSession
         }));
     }
 
-    private void RebuildMetaIndex()
+    private void RebuildMetaIndexIfNeeded()
     {
+        var files = _chatsTree.Snapshot(TimeSpan.FromMilliseconds(LookbackMs));
+        DateTime newest = DateTime.MinValue;
+        foreach (var file in files)
+            if (file.Mtime > newest) newest = file.Mtime;
+        if (newest == _metaIndexStamp && _metaBySessionId.Count == files.Count)
+            return;
+
         _metaBySessionId.Clear();
-        try
+        foreach (var file in files)
         {
-            if (!Directory.Exists(_chatsDir)) return;
-            foreach (var path in Directory.EnumerateFiles(_chatsDir, "meta.json", SearchOption.AllDirectories))
-            {
-                var sessionId = Path.GetFileName(Path.GetDirectoryName(path));
-                if (!string.IsNullOrEmpty(sessionId))
-                    _metaBySessionId[sessionId] = path;
-            }
+            var sessionId = Path.GetFileName(Path.GetDirectoryName(file.Path));
+            if (string.IsNullOrEmpty(sessionId)) continue;
+            _metaBySessionId[sessionId] = file.Path;
         }
-        catch
-        {
-            // Chats tree can be mid-write; index stays best-effort.
-        }
+        _metaIndexStamp = newest;
     }
 
     private string ResolveProjectName(string? cwd, string transcriptPath)
     {
-        if (!string.IsNullOrWhiteSpace(cwd)) return RepoName(cwd);
+        if (!string.IsNullOrWhiteSpace(cwd)) return RepoNames.FromCwd(cwd, _repoNameCache);
 
         // ...\projects\<encoded-cwd>\agent-transcripts\...
         var parts = transcriptPath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -544,56 +526,4 @@ public sealed class CursorSession
         return "";
     }
 
-    private string RepoName(string cwd)
-    {
-        if (_repoNameCache.TryGetValue(cwd, out var cached)) return cached;
-
-        var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-        if (string.IsNullOrEmpty(name)) name = cwd;
-
-        if (RunGit(["-C", cwd, "config", "--get", "remote.origin.url"]) is { } remote)
-        {
-            var baseName = remote.Split('/', '\\')[^1];
-            if (baseName.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
-                baseName = baseName[..^4];
-            if (baseName.Length > 0) name = baseName;
-        }
-        else if (RunGit(["-C", cwd, "rev-parse", "--show-toplevel"]) is { } top)
-        {
-            var baseName = Path.GetFileName(top.TrimEnd('\\', '/'));
-            if (!string.IsNullOrEmpty(baseName)) name = baseName;
-        }
-
-        _repoNameCache[cwd] = name;
-        return name;
-    }
-
-    private static string? RunGit(string[] args)
-    {
-        try
-        {
-            var start = new ProcessStartInfo("git")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            foreach (var arg in args) start.ArgumentList.Add(arg);
-
-            using var process = Process.Start(start);
-            if (process is null) return null;
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            if (!process.WaitForExit(5000))
-            {
-                process.Kill();
-                return null;
-            }
-            return process.ExitCode == 0 && output.Length > 0 ? output : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
 }

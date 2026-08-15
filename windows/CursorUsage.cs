@@ -3,7 +3,7 @@
 //
 // Numbers come from undocumented endpoints the Cursor app itself calls. We
 // reuse Cursor's access token from %APPDATA%\Cursor\auth.json (preferred) or
-// state.vscdb via sqlite3, then hit the same endpoints. Account email and plan
+// state.vscdb, then hit the same endpoints. Account email and plan
 // prefer the IDE's state.vscdb cache (cursorAuth/cachedEmail,
 // stripeMembershipType); when those are missing — typical for CLI-only
 // auth.json installs — we fall back to AuthService/GetEmail and
@@ -11,7 +11,6 @@
 // endpoint change leaves Current null (or the last cached snapshot while still
 // fresh). Port of AgentCord/CursorUsage.swift.
 
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net.Http;
@@ -62,10 +61,19 @@ public sealed class CursorUsage : IDisposable
         if (IsAuthenticated) AccountEmail = ReadLocalEmail();
     }
 
-    public void Start()
+    public void Start() => SetEnabled(true);
+
+    public void SetEnabled(bool enabled)
     {
-        var first = Current is null ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(5);
-        _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, first, PollInterval);
+        if (enabled)
+        {
+            if (_timer is not null) return;
+            var first = Current is null ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(5);
+            _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, first, PollInterval);
+            return;
+        }
+        _timer?.Dispose();
+        _timer = null;
     }
 
     public void Refresh()
@@ -253,38 +261,12 @@ public sealed class CursorUsage : IDisposable
 
     private static string? ReadStateValue(string key)
     {
-        try
-        {
-            var path = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Cursor", "User", "globalStorage", "state.vscdb");
-            if (!File.Exists(path)) return null;
-
-            var start = new ProcessStartInfo("sqlite3")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            start.ArgumentList.Add(path);
-            start.ArgumentList.Add($"SELECT value FROM ItemTable WHERE key = '{key.Replace("'", "''")}';");
-
-            using var process = Process.Start(start);
-            if (process is null) return null;
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            if (!process.WaitForExit(3000))
-            {
-                process.Kill();
-                return null;
-            }
-            if (process.ExitCode != 0 || output.Length == 0) return null;
-            return output.Trim('"');
-        }
-        catch
-        {
-            return null;
-        }
+        var path = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Cursor", "User", "globalStorage", "state.vscdb");
+        var escaped = key.Replace("'", "''");
+        var value = LocalSqlite.QueryText(path, $"SELECT value FROM ItemTable WHERE key = '{escaped}' LIMIT 1;");
+        return string.IsNullOrEmpty(value) ? null : value.Trim('"');
     }
 
     // --- Parsing

@@ -129,6 +129,47 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Claude_picks_up_appended_jsonl_lines_on_the_next_scan()
+    {
+        using var dir = TempDir.Create();
+        var project = Path.Combine(dir.Root, "C-Users-test-agentcord");
+        Directory.CreateDirectory(project);
+        var transcript = Path.Combine(project, "session.jsonl");
+        var first = DateTimeOffset.UtcNow.AddSeconds(-20);
+        File.WriteAllText(transcript,
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + first.ToString("o") +
+            "\",\"message\":{\"model\":\"claude-opus-4-5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n");
+
+        using var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var firstInfo = scanner.Scan();
+        Assert.NotNull(firstInfo);
+        Assert.Equal(8, firstInfo!.TotalTokens);
+
+        var second = DateTimeOffset.UtcNow.AddSeconds(-5);
+        File.AppendAllText(transcript,
+            "{\"timestamp\":\"" + second.ToString("o") +
+            "\",\"message\":{\"model\":\"claude-opus-4-5\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n");
+
+        var secondInfo = scanner.Scan();
+        Assert.NotNull(secondInfo);
+        Assert.Equal(20, secondInfo!.TotalTokens);
+    }
+
+    [Fact]
+    public void RepoNames_reads_origin_from_git_config()
+    {
+        using var dir = TempDir.Create();
+        var git = Path.Combine(dir.Root, ".git");
+        Directory.CreateDirectory(git);
+        File.WriteAllText(Path.Combine(git, "config"),
+            "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = git@github.com:preschian/agentcord.git\n");
+
+        var cache = new Dictionary<string, string>();
+        Assert.Equal("agentcord", RepoNames.FromCwd(dir.Root, cache));
+        Assert.Equal("agentcord", RepoNames.FromCwd(dir.Root, cache));
+    }
+
+    [Fact]
     public void Claude_sums_working_time_across_sessions_in_the_last_24_hours()
     {
         using var dir = TempDir.Create();

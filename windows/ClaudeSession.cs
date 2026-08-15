@@ -7,47 +7,38 @@
 // touched the last 24 hours (idle gaps excluded), matching Grok / Codex /
 // Cursor. The transcript schema is undocumented, so all parsing is defensive:
 // malformed or unexpected lines are skipped, never fatal. Scans are driven by
-// the presence controller's tick (the macOS FSEvents watcher becomes a plain
-// re-scan here; the per-file cache keeps that cheap).
+// the presence controller's tick. A SessionTreeIndex plus per-file JSONL
+// cursor keep idle ticks from walking or re-parsing the growing tree.
 
-using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace AgentCord;
 
-public sealed class ClaudeSession
+public sealed class ClaudeSession : IDisposable
 {
     /// <summary>A transcript counts as active if modified within this window.</summary>
     public double ActiveWindowSeconds { get; set; } = 60;
 
-    private readonly string _projectsDir;
+    private readonly SessionTreeIndex _tree;
     private readonly Dictionary<string, CacheEntry> _aggregateCache = [];
     private readonly Dictionary<string, string> _repoNameCache = [];
 
     public ClaudeSession(string? projectsDir = null)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        _projectsDir = projectsDir ?? Path.Combine(home, ".claude", "projects");
+        var root = projectsDir ?? Path.Combine(home, ".claude", "projects");
+        _tree = new SessionTreeIndex(root, "*.jsonl");
     }
+
+    public void Dispose() => _tree.Dispose();
 
     /// <summary>Scan the transcript tree and return the active session, or null
     /// when none is active. Not thread-safe; call from one thread.</summary>
     public SessionInfo? Scan()
     {
-        List<(string Path, DateTime Mtime)> files;
-        try
-        {
-            files = Directory
-                .EnumerateFiles(_projectsDir, "*.jsonl", SearchOption.AllDirectories)
-                .Select(p => (Path: p, Mtime: File.GetLastWriteTimeUtc(p)))
-                .ToList();
-        }
-        catch
-        {
-            return null;
-        }
+        var files = _tree.Snapshot(TimeSpan.FromMilliseconds(SessionActivity.LookbackMs));
         if (files.Count == 0) return null;
 
         // Tokens stay on the local calendar day. Elapsed time is a rolling 24h
@@ -109,80 +100,94 @@ public sealed class ClaudeSession
         public long TokensToday;
     }
 
-    private sealed record CacheEntry(DateTime Mtime, long DayStartMs, DayAggregate Aggregate);
+    private sealed class CacheEntry
+    {
+        public DateTime Mtime;
+        public long DayStartMs;
+        public JsonlCursor Cursor = new();
+        public DayAggregate Aggregate = new();
+    }
 
-    /// <summary>Parsing every transcript on each scan would be wasteful, so
-    /// results are memoized per file. An entry is reused only while the file is
-    /// unmodified and we are still on the same calendar day (the day boundary
-    /// changes which lines count toward today's token total).</summary>
+    /// <summary>Memoized per file. Unchanged files reuse the last aggregate; a
+    /// growing file only parses newly appended JSONL lines. The day boundary
+    /// forces a reset because it changes which lines count toward today's
+    /// token total.</summary>
     private DayAggregate Aggregate(string path, DateTime mtime, long dayStartMs)
     {
-        if (_aggregateCache.TryGetValue(path, out var entry)
-            && entry.Mtime == mtime && entry.DayStartMs == dayStartMs)
-        {
+        if (!_aggregateCache.TryGetValue(path, out var entry))
+            entry = new CacheEntry { DayStartMs = dayStartMs };
+        else if (entry.Mtime == mtime && entry.DayStartMs == dayStartMs)
             return entry.Aggregate;
-        }
 
-        var agg = new DayAggregate();
+        if (entry.DayStartMs != dayStartMs)
+            entry = new CacheEntry { Mtime = mtime, DayStartMs = dayStartMs };
+
         var stampFloorMs = dayStartMs - SessionActivity.LookbackMs;
         try
         {
-            foreach (var line in File.ReadLines(path))
-            {
-                var trimmed = line.Trim();
-                if (trimmed.Length == 0) continue;
-
-                JsonDocument doc;
-                try { doc = JsonDocument.Parse(trimmed); }
-                catch { continue; }
-
-                using (doc)
-                {
-                    var root = doc.RootElement;
-                    if (root.ValueKind != JsonValueKind.Object) continue;
-
-                    if (agg.Cwd is null
-                        && root.TryGetProperty("cwd", out var cwd)
-                        && cwd.ValueKind == JsonValueKind.String
-                        && cwd.GetString() is { Length: > 0 } c)
-                    {
-                        agg.Cwd = c;
-                    }
-
-                    long? lineMs = null;
-                    if (root.TryGetProperty("timestamp", out var ts) && ts.ValueKind == JsonValueKind.String)
-                        lineMs = EpochMsFromIso(ts.GetString());
-                    if (lineMs is long anyMs)
-                    {
-                        agg.LastEventMs = Math.Max(agg.LastEventMs ?? anyMs, anyMs);
-                        if (anyMs >= stampFloorMs) agg.StampsMs.Add(anyMs);
-                    }
-                    var isToday = (lineMs ?? long.MinValue) >= dayStartMs;
-
-                    if (root.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.Object)
-                    {
-                        if (message.TryGetProperty("model", out var model)
-                            && model.ValueKind == JsonValueKind.String
-                            && model.GetString() is { Length: > 0 } m
-                            && m != "<synthetic>")
-                        {
-                            agg.Model = m;
-                        }
-                        if (isToday && message.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
-                        {
-                            agg.TokensToday += IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
-                        }
-                    }
-                }
-            }
+            var (lines, didReset) = entry.Cursor.PullLines(path);
+            if (didReset) entry.Aggregate = new DayAggregate();
+            foreach (var line in lines)
+                ConsumeLine(line, entry.Aggregate, dayStartMs, stampFloorMs);
         }
         catch
         {
             // File vanished or unreadable mid-scan; keep whatever we parsed.
         }
 
-        _aggregateCache[path] = new CacheEntry(mtime, dayStartMs, agg);
-        return agg;
+        entry.Mtime = mtime;
+        entry.DayStartMs = dayStartMs;
+        _aggregateCache[path] = entry;
+        return entry.Aggregate;
+    }
+
+    private static void ConsumeLine(string line, DayAggregate agg, long dayStartMs, long stampFloorMs)
+    {
+        var trimmed = line.Trim();
+        if (trimmed.Length == 0) return;
+
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(trimmed); }
+        catch { return; }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return;
+
+            if (agg.Cwd is null
+                && root.TryGetProperty("cwd", out var cwd)
+                && cwd.ValueKind == JsonValueKind.String
+                && cwd.GetString() is { Length: > 0 } c)
+            {
+                agg.Cwd = c;
+            }
+
+            long? lineMs = null;
+            if (root.TryGetProperty("timestamp", out var ts) && ts.ValueKind == JsonValueKind.String)
+                lineMs = EpochMsFromIso(ts.GetString());
+            if (lineMs is long anyMs)
+            {
+                agg.LastEventMs = Math.Max(agg.LastEventMs ?? anyMs, anyMs);
+                if (anyMs >= stampFloorMs) agg.StampsMs.Add(anyMs);
+            }
+            var isToday = (lineMs ?? long.MinValue) >= dayStartMs;
+
+            if (root.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.Object)
+            {
+                if (message.TryGetProperty("model", out var model)
+                    && model.ValueKind == JsonValueKind.String
+                    && model.GetString() is { Length: > 0 } m
+                    && m != "<synthetic>")
+                {
+                    agg.Model = m;
+                }
+                if (isToday && message.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+                {
+                    agg.TokensToday += IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
+                }
+            }
+        }
     }
 
     private static long IntProp(JsonElement obj, string name) =>
@@ -193,7 +198,7 @@ public sealed class ClaudeSession
         long totalActiveMs, long? newestLast, long nowMs)
     {
         var projectName = DeriveProjectName(Path.GetFileName(Path.GetDirectoryName(newestPath)) ?? "");
-        if (active.Cwd is not null) projectName = RepoName(active.Cwd);
+        if (active.Cwd is not null) projectName = RepoNames.FromCwd(active.Cwd, _repoNameCache);
 
         return new SessionInfo
         {
@@ -213,61 +218,6 @@ public sealed class ClaudeSession
     {
         var parts = dir.Split('-', StringSplitOptions.RemoveEmptyEntries);
         return parts.Length > 0 ? parts[^1] : dir;
-    }
-
-    /// <summary>Resolve the repository name for a working directory. Prefers the
-    /// git remote (so a worktree like ".../agentcord/abuja" still reports
-    /// "agentcord"), then the git toplevel, then the directory name.</summary>
-    private string RepoName(string cwd)
-    {
-        if (_repoNameCache.TryGetValue(cwd, out var cached)) return cached;
-
-        var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-        if (string.IsNullOrEmpty(name)) name = cwd;
-
-        if (RunGit(["-C", cwd, "config", "--get", "remote.origin.url"]) is { } remote)
-        {
-            var baseName = remote.Split('/', '\\')[^1];
-            if (baseName.EndsWith(".git", StringComparison.OrdinalIgnoreCase)) baseName = baseName[..^4];
-            if (baseName.Length > 0) name = baseName;
-        }
-        else if (RunGit(["-C", cwd, "rev-parse", "--show-toplevel"]) is { } top)
-        {
-            var baseName = Path.GetFileName(top.TrimEnd('\\', '/'));
-            if (!string.IsNullOrEmpty(baseName)) name = baseName;
-        }
-
-        _repoNameCache[cwd] = name;
-        return name;
-    }
-
-    private static string? RunGit(string[] args)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo("git")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true, // don't flash a console from the tray app
-            };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-
-            using var process = Process.Start(psi);
-            if (process is null) return null;
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            if (!process.WaitForExit(5000))
-            {
-                process.Kill();
-                return null;
-            }
-            return process.ExitCode == 0 && output.Length > 0 ? output : null;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     // --- Static helpers

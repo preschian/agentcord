@@ -110,6 +110,25 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Claude_ignores_fresh_mtime_when_events_are_old()
+    {
+        using var dir = TempDir.Create();
+        var project = Path.Combine(dir.Root, "C-Users-test-hippocamp");
+        Directory.CreateDirectory(project);
+        var transcript = Path.Combine(project, "session.jsonl");
+        var eventAt = DateTimeOffset.UtcNow.AddDays(-30);
+        File.WriteAllText(transcript,
+            "{\"cwd\":\"/Users/pres/orca/workspaces/com/hippocamp\",\"timestamp\":\"" +
+            eventAt.ToString("o") +
+            "\",\"message\":{\"model\":\"claude-fable-5\",\"role\":\"assistant\"}}\n" +
+            "{\"type\":\"bridge-session\",\"sessionId\":\"dead\"}\n");
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
+
+        var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
+        Assert.Null(scanner.Scan());
+    }
+
+    [Fact]
     public void Claude_sums_working_time_across_sessions_in_the_last_24_hours()
     {
         using var dir = TempDir.Create();

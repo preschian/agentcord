@@ -160,6 +160,9 @@ final class ClaudeSession: ObservableObject {
             publish(nil)
             return
         }
+        // A fresh mtime is only a hint to parse. Orca/Claude Code can append a
+        // timestamp-less `bridge-session` heartbeat and bump mtime on a dead
+        // workspace; activity must come from parseable event timestamps.
         lastNewestDate = newest.date
         if Date().timeIntervalSince(newest.date) > activeWindowSeconds {
             publish(nil)
@@ -175,7 +178,7 @@ final class ClaudeSession: ObservableObject {
         var totalTokensToday = 0
         var totalActiveMs: Int64 = 0
         var newestLast: Int64?
-        var activeAgg = DayAggregate()
+        var best: (url: URL, date: Date, agg: DayAggregate, activity: Date)?
         for file in files {
             let agg = aggregate(url: file.url, mtime: file.date, dayStartMs: dayStartMs)
             totalTokensToday += agg.tokensToday
@@ -185,8 +188,10 @@ final class ClaudeSession: ObservableObject {
             if let lastMs, newestLast == nil || lastMs > newestLast! {
                 newestLast = lastMs
             }
-            if file.url == newest.url {
-                activeAgg = agg
+            let activity = agg.lastEventMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) }
+                ?? file.date
+            if best == nil || activity > best!.activity {
+                best = (file.url, file.date, agg, activity)
             }
         }
 
@@ -194,10 +199,19 @@ final class ClaudeSession: ObservableObject {
         let liveURLs = Set(files.map { $0.url })
         aggregateCache = aggregateCache.filter { liveURLs.contains($0.key) }
 
+        guard let best else {
+            publish(nil)
+            return
+        }
+        if Date().timeIntervalSince(best.activity) > activeWindowSeconds {
+            publish(nil)
+            return
+        }
+
         guard monitoring else { return }
         publish(makeSessionInfo(
-            newest: newest,
-            active: activeAgg,
+            newest: (best.url, best.activity),
+            active: best.agg,
             totalTokensToday: totalTokensToday,
             startEpochMs: SessionDuration.startMs(
                 totalActiveMs: totalActiveMs, lastMs: newestLast, nowMs: nowMs)
@@ -217,6 +231,9 @@ final class ClaudeSession: ObservableObject {
     private struct DayAggregate {
         var cwd: String?
         var model: String?
+        /// Newest parseable event timestamp in the transcript (any day), used
+        /// for idle detection so a heartbeat that only bumps mtime stays idle.
+        var lastEventMs: Int64?
         /// Event timestamps, used to sum working time inside the 24h window.
         var stampsMs: [Int64] = []
         var tokensToday = 0
@@ -275,8 +292,11 @@ final class ClaudeSession: ObservableObject {
 
         var lineMs: Int64?
         if let ts = obj["timestamp"] as? String { lineMs = Self.epochMs(fromISO: ts) }
-        if let ms = lineMs, ms >= dayStartMs - SessionDuration.lookbackMs {
-            agg.stampsMs.append(ms)
+        if let ms = lineMs {
+            agg.lastEventMs = max(agg.lastEventMs ?? ms, ms)
+            if ms >= dayStartMs - SessionDuration.lookbackMs {
+                agg.stampsMs.append(ms)
+            }
         }
         let isToday = (lineMs ?? .min) >= dayStartMs
 

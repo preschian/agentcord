@@ -386,6 +386,56 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Grok_ignores_idle_session_with_live_pid()
+    {
+        using var dir = TempDir.Create();
+        var sessionId = "idle-live-session";
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var sessionDir = Path.Combine(dir.Root, "sessions", encoded, sessionId);
+        Directory.CreateDirectory(sessionDir);
+
+        File.WriteAllText(Path.Combine(dir.Root, "active_sessions.json"),
+            "[{ \"session_id\":\"" + sessionId + "\",\"pid\":" + Environment.ProcessId +
+            ",\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"opened_at\":\"2026-01-01T00:00:00Z\"}]");
+        var summaryPath = Path.Combine(sessionDir, "summary.json");
+        File.WriteAllText(summaryPath,
+            "{\"current_model_id\":\"grok-4.5\",\"last_active_at\":\"2026-01-01T00:00:00Z\"}");
+        File.SetLastWriteTimeUtc(summaryPath, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
+        Assert.Null(scanner.Scan());
+    }
+
+    [Fact]
+    public void Grok_keeps_live_pid_active_when_event_log_is_recent()
+    {
+        using var dir = TempDir.Create();
+        var sessionId = "tool-run-session";
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var sessionDir = Path.Combine(dir.Root, "sessions", encoded, sessionId);
+        Directory.CreateDirectory(sessionDir);
+
+        File.WriteAllText(Path.Combine(dir.Root, "active_sessions.json"),
+            "[{ \"session_id\":\"" + sessionId + "\",\"pid\":" + Environment.ProcessId +
+            ",\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"opened_at\":\"2026-01-01T00:00:00Z\"}]");
+        var summaryPath = Path.Combine(sessionDir, "summary.json");
+        File.WriteAllText(summaryPath,
+            "{\"current_model_id\":\"grok-4.5\",\"last_active_at\":\"2026-01-01T00:00:00Z\"}");
+        File.SetLastWriteTimeUtc(summaryPath, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        File.WriteAllText(Path.Combine(sessionDir, "events.jsonl"),
+            "{\"ts\":\"2026-01-01T00:00:00Z\",\"type\":\"turn_started\"}\n");
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        Assert.Equal(AgentKind.Grok, info!.Agent);
+        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 60));
+    }
+
+    [Fact]
     public void Grok_ignores_idle_session_with_dead_pid()
     {
         using var dir = TempDir.Create();

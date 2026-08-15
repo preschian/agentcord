@@ -100,8 +100,8 @@ every READY.
 controller's 3-second tick and parse defensively. Claude's totals cover the local
 calendar day; Codex reports the current transcript's model, latest context
 token count, and start time; Cursor sums working time over the last 24 hours
-and enriches from `~/.cursor/chats/**/meta.json`; Grok treats a live PID in
-`~/.grok/active_sessions.json` as authoritative and reads
+and enriches from `~/.cursor/chats/**/meta.json`; Grok uses
+`last_active_at` and event-log mtimes (a live PID alone is not enough) and reads
 `summary.json` / `signals.json` for project, model, and context tokens;
 Antigravity detects active sessions, models (e.g. Gemini 3.7 Flash), workspaces,
 and presence locks under `%USERPROFILE%\.gemini\antigravity-cli`.

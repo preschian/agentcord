@@ -125,10 +125,10 @@ public sealed class ClaudeSession : IDisposable
         var stampFloorMs = dayStartMs - SessionActivity.LookbackMs;
         try
         {
-            var (lines, didReset) = entry.Cursor.PullLines(path);
-            if (didReset) entry.Aggregate = new DayAggregate();
-            foreach (var line in lines)
-                ConsumeLine(line, entry.Aggregate, dayStartMs, stampFloorMs);
+            entry.Cursor.PullLines(
+                path,
+                line => ConsumeLine(line, entry.Aggregate, dayStartMs, stampFloorMs),
+                () => entry.Aggregate = new DayAggregate());
         }
         catch
         {

@@ -1,14 +1,21 @@
 // Incremental reader for append-only JSONL transcripts. Session files grow
 // while an agent is working; re-reading the whole file on every mtime change
 // is the expensive path. The cursor keeps the byte offset and any incomplete
-// trailing line so each refresh only parses new bytes. Port of JSONLTail.swift.
+// trailing line so each refresh only parses new bytes.
+//
+// Reads in 8 KB chunks and yields one line at a time. Do not ReadToEnd: a
+// 28 MB UTF-8 transcript becomes a ~56 MB UTF-16 string on the large object
+// heap, and holding every line in a List doubles that again.
 
 using System.IO;
+using System.Text;
 
 namespace AgentCord;
 
 internal sealed class JsonlCursor
 {
+    private const int BufSize = 8192;
+
     public long Offset;
     public string Leftover = "";
 
@@ -18,10 +25,11 @@ internal sealed class JsonlCursor
         Leftover = "";
     }
 
-    /// <summary>Newly completed lines since the last pull. <c>DidReset</c> is
-    /// true when the file shrank (rotated / rewritten) and the caller must drop
-    /// any aggregate built from earlier bytes.</summary>
-    public (List<string> Lines, bool DidReset) PullLines(string path)
+    /// <summary>Calls <paramref name="consume"/> for each newly completed
+    /// line. <paramref name="onReset"/> runs first when the file shrank
+    /// (rotated / rewritten) so the caller can drop stale aggregates before
+    /// new lines arrive.</summary>
+    public bool PullLines(string path, Action<string> consume, Action? onReset = null)
     {
         using var stream = new FileStream(
             path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -31,23 +39,38 @@ internal sealed class JsonlCursor
         {
             Reset();
             didReset = true;
+            onReset?.Invoke();
         }
 
         stream.Seek(Offset, SeekOrigin.Begin);
-        using var reader = new StreamReader(stream);
-        var text = Leftover + reader.ReadToEnd();
-        Offset = size;
+        var decoder = Encoding.UTF8.GetDecoder();
+        var bytes = new byte[BufSize];
+        var chars = new char[BufSize];
+        var line = Leftover.Length > 0 ? new StringBuilder(Leftover) : new StringBuilder();
+        Leftover = "";
 
-        var lines = new List<string>();
-        var start = 0;
-        for (var i = 0; i < text.Length; i++)
+        int n;
+        while ((n = stream.Read(bytes, 0, bytes.Length)) > 0)
         {
-            if (text[i] != '\n') continue;
-            var line = text[start..i].TrimEnd('\r');
-            if (line.Length > 0) lines.Add(line);
-            start = i + 1;
+            var written = decoder.GetChars(bytes, 0, n, chars, 0);
+            for (var i = 0; i < written; i++)
+            {
+                var c = chars[i];
+                if (c == '\n')
+                {
+                    if (line.Length > 0 && line[^1] == '\r') line.Length--;
+                    if (line.Length > 0) consume(line.ToString());
+                    line.Clear();
+                }
+                else
+                {
+                    line.Append(c);
+                }
+            }
         }
-        Leftover = text[start..];
-        return (lines, didReset);
+
+        Offset = size;
+        Leftover = line.Length > 0 ? line.ToString() : "";
+        return didReset;
     }
 }

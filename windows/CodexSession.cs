@@ -115,10 +115,10 @@ public sealed class CodexSession : IDisposable
 
         try
         {
-            var (lines, didReset) = cached.Cursor.PullLines(path);
-            if (didReset) cached.State = new TranscriptState();
-            foreach (var line in lines)
-                ConsumeLine(line, cached.State);
+            cached.Cursor.PullLines(
+                path,
+                line => ConsumeLine(line, cached.State),
+                () => cached.State = new TranscriptState());
         }
         catch
         {

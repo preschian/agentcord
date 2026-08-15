@@ -22,6 +22,7 @@ internal sealed class SessionTreeIndex : IDisposable
     private List<(string Path, DateTime Mtime)> _files = [];
     private DateTime _lastWalk = DateTime.MinValue;
     private int _needWalk = 1;
+    private int _queued;
     private bool _disposed;
 
     public SessionTreeIndex(string root, string pattern, Func<string, bool>? match = null)
@@ -59,6 +60,9 @@ internal sealed class SessionTreeIndex : IDisposable
 
     private void Walk()
     {
+        while (_events.TryDequeue(out _)) { }
+        Interlocked.Exchange(ref _queued, 0);
+
         List<(string Path, DateTime Mtime)> files = [];
         try
         {
@@ -107,10 +111,14 @@ internal sealed class SessionTreeIndex : IDisposable
         }
     }
 
+    private static string WatcherFilter(string pattern) =>
+        string.IsNullOrEmpty(pattern) || pattern is "*" or "*.*" ? "*.*" : pattern;
+
     private void DrainEvents()
     {
         while (_events.TryDequeue(out var ev))
         {
+            Interlocked.Decrement(ref _queued);
             if (ev.Change is WatcherChangeTypes.Deleted or WatcherChangeTypes.Renamed)
             {
                 Interlocked.Exchange(ref _needWalk, 1);
@@ -165,8 +173,10 @@ internal sealed class SessionTreeIndex : IDisposable
             {
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite,
-                Filter = "*",
-                InternalBufferSize = 64 * 1024,
+                // Watch only the files we parse. Filter=* on ~/.cursor/chats
+                // enqueues every store.db write and the queue grows without bound.
+                Filter = WatcherFilter(_pattern),
+                InternalBufferSize = 16 * 1024,
             };
             watcher.Created += OnEvent;
             watcher.Changed += OnEvent;
@@ -182,17 +192,27 @@ internal sealed class SessionTreeIndex : IDisposable
         }
     }
 
-    private void OnEvent(object sender, FileSystemEventArgs e)
-    {
-        if (e.FullPath.Length == 0) return;
-        _events.Enqueue((e.ChangeType, e.FullPath));
-    }
+    private void OnEvent(object sender, FileSystemEventArgs e) => Enqueue(e.ChangeType, e.FullPath);
 
     private void OnRenamed(object sender, RenamedEventArgs e)
     {
-        _events.Enqueue((WatcherChangeTypes.Renamed, e.FullPath));
+        Enqueue(WatcherChangeTypes.Renamed, e.FullPath);
         if (e.OldFullPath.Length > 0)
-            _events.Enqueue((WatcherChangeTypes.Deleted, e.OldFullPath));
+            Enqueue(WatcherChangeTypes.Deleted, e.OldFullPath);
+    }
+
+    private void Enqueue(WatcherChangeTypes change, string path)
+    {
+        if (path.Length == 0) return;
+        if (change is WatcherChangeTypes.Changed && !Matches(path)) return;
+        if (Volatile.Read(ref _needWalk) != 0) return;
+        if (Volatile.Read(ref _queued) >= 256)
+        {
+            Interlocked.Exchange(ref _needWalk, 1);
+            return;
+        }
+        Interlocked.Increment(ref _queued);
+        _events.Enqueue((change, path));
     }
 
     private void OnError(object sender, ErrorEventArgs e)

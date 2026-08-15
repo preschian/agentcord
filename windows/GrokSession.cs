@@ -401,13 +401,14 @@ public sealed class GrokSession
             {
                 try
                 {
-                    var (lines, didReset) = entry.Cursor.PullLines(eventsPath);
-                    if (didReset) entry.StampsMs.Clear();
-                    foreach (var line in lines)
-                    {
-                        if (EventTimestampMs(line) is long ms)
-                            entry.StampsMs.Add(ms);
-                    }
+                    entry.Cursor.PullLines(
+                        eventsPath,
+                        line =>
+                        {
+                            if (EventTimestampMs(line) is long ms)
+                                entry.StampsMs.Add(ms);
+                        },
+                        () => entry.StampsMs.Clear());
                     entry.EventsMtime = eventsMtime;
                 }
                 catch

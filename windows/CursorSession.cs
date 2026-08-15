@@ -255,10 +255,10 @@ public sealed class CursorSession : IDisposable
 
         try
         {
-            var (lines, didReset) = cached.Cursor.PullLines(path);
-            if (didReset) cached.ConversationalStampsMs.Clear();
-            foreach (var line in lines)
-                cached.ConversationalStampsMs.AddRange(TimestampsInJsonlLine(line));
+            cached.Cursor.PullLines(
+                path,
+                line => cached.ConversationalStampsMs.AddRange(TimestampsInJsonlLine(line)),
+                () => cached.ConversationalStampsMs.Clear());
         }
         catch
         {

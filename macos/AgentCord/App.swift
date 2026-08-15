@@ -50,12 +50,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Belt and suspenders: ensure no Dock icon even without LSUIElement.
         NSApp.setActivationPolicy(.accessory)
         controller.start()
-        usage.start()
-        cursorUsage.start()
-        codexUsage.start()
-        grokUsage.start()
+        syncUsageMonitors()
         // Provider status has no background poller — it's popover-only UI, so
         // it fetches on popover open (see togglePopover) with a cached snapshot.
+        settings.objectWillChange
+            .sink { [weak self] in
+                DispatchQueue.main.async { self?.syncUsageMonitors() }
+            }
+            .store(in: &cancellables)
 
         // Keep the Mac awake whenever "Prevent sleep" is on, and follow the
         // toggle thereafter. `setEnabled` is idempotent, so the initial apply
@@ -73,6 +75,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         controller.shutdown()
+    }
+
+    /// Usage pollers (especially Codex, which starts a short-lived app-server)
+    /// stay off when the user has disabled that agent.
+    private func syncUsageMonitors() {
+        if settings.agentClaudeEnabled { usage.start() } else { usage.stop() }
+        if settings.agentCursorEnabled { cursorUsage.start() } else { cursorUsage.stop() }
+        if settings.agentCodexEnabled { codexUsage.start() } else { codexUsage.stop() }
+        if settings.agentGrokEnabled { grokUsage.start() } else { grokUsage.stop() }
     }
 
     // MARK: NSPopoverDelegate

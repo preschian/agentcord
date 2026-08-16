@@ -44,8 +44,11 @@ public partial class PopoverWindow : Window
     private bool _expandStatus;
     private bool _closing;
     private bool _offscreenCapture;
-    /// <summary>Stay pinned to the tray corner until the user drags the window.</summary>
+    /// <summary>Stay pinned to the tray corner until the user actually moves the window.</summary>
     private bool _anchored = true;
+    /// <summary>A tray click deactivates this window before NotifyIcon.MouseUp,
+    /// so IsActive is already false. A recent Deactivated still means "was focused".</summary>
+    private DateTime _lastDeactivated = DateTime.MinValue;
 
     private static readonly int[] IdleSteps = [0, 5, 10, 15, 20, 25, 30];
 
@@ -80,16 +83,19 @@ public partial class PopoverWindow : Window
         InitializeComponent();
         _timer.Tick += (_, _) => UpdateUi();
         MouseLeftButtonDown += OnDragMove;
+        Deactivated += (_, _) => _lastDeactivated = DateTime.UtcNow;
     }
 
     // --- Show / hide
 
     /// <summary>Tray click shows the window, focuses it if it's already open
-    /// in the background, or hides it when it's the active window.</summary>
+    /// in the background, or hides it when it was focused (including the
+    /// deactivate that the tray click itself causes).</summary>
     public void TogglePopover()
     {
         if (!IsVisible) ShowPopover();
-        else if (IsActive) HidePopover();
+        else if (IsActive || (DateTime.UtcNow - _lastDeactivated).TotalMilliseconds < 300)
+            HidePopover();
         else Activate();
     }
 
@@ -135,8 +141,11 @@ public partial class PopoverWindow : Window
     private void OnDragMove(object sender, MouseButtonEventArgs e)
     {
         if (e.ButtonState != MouseButtonState.Pressed) return;
+        var left = Left;
+        var top = Top;
         DragMove();
-        _anchored = false;
+        if (Math.Abs(Left - left) > 1 || Math.Abs(Top - top) > 1)
+            _anchored = false;
     }
 
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)

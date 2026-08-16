@@ -167,6 +167,8 @@ public sealed record GrokUsageInfo
     public required UsageWindow Weekly { get; init; }
     /// <summary>On-demand window when a cap is set.</summary>
     public UsageWindow? OnDemand { get; init; }
+    /// <summary>Brand plan label, e.g. "SuperGrok" or "SuperGrok Heavy".</summary>
+    public string? PlanName { get; init; }
 }
 
 // --- Antigravity subscription usage

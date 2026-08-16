@@ -104,6 +104,62 @@
       <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
+
+    <!-- Invisible track hit-target for the idle slider. -->
+    <Style x:Key="SliderSilentRepeat" TargetType="RepeatButton">
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="IsTabStop" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RepeatButton">
+            <Border Background="Transparent"/>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- 14px thumb; label row uses the same 7px inset so ticks sit under it. -->
+    <Style x:Key="IdleSlider" TargetType="Slider">
+      <Setter Property="OverridesDefaultStyle" Value="True"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Height" Value="16"/>
+      <Setter Property="IsMoveToPointEnabled" Value="True"/>
+      <Setter Property="IsSnapToTickEnabled" Value="True"/>
+      <Setter Property="TickFrequency" Value="1"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Slider">
+            <Grid>
+              <Border Height="4" CornerRadius="2" Background="#33787880"
+                      VerticalAlignment="Center" Margin="7,0"/>
+              <Track x:Name="PART_Track">
+                <Track.DecreaseRepeatButton>
+                  <RepeatButton Command="Slider.DecreaseLarge"
+                                Style="{StaticResource SliderSilentRepeat}"/>
+                </Track.DecreaseRepeatButton>
+                <Track.Thumb>
+                  <Thumb Width="14" Height="14">
+                    <Thumb.Template>
+                      <ControlTemplate TargetType="Thumb">
+                        <Ellipse Fill="White" Stroke="#26000000" StrokeThickness="0.5">
+                          <Ellipse.Effect>
+                            <DropShadowEffect BlurRadius="2" ShadowDepth="0.5" Opacity="0.3"/>
+                          </Ellipse.Effect>
+                        </Ellipse>
+                      </ControlTemplate>
+                    </Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                  <RepeatButton Command="Slider.IncreaseLarge"
+                                Style="{StaticResource SliderSilentRepeat}"/>
+                </Track.IncreaseRepeatButton>
+              </Track>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
   </Window.Resources>
 
   <!-- Outer margin leaves room for the drop shadow. -->
@@ -153,7 +209,7 @@
           </StackPanel>
         </Border>
 
-        <!-- Agent accordion (rows built in code-behind) -->
+        <!-- Agent list (rows open a detail screen; built in code-behind) -->
         <Border Style="{StaticResource Card}" Margin="0,0,0,11" Padding="0">
           <StackPanel x:Name="AgentListPanel"/>
         </Border>
@@ -345,19 +401,61 @@
                            Foreground="{StaticResource SecStrong}"/>
                 <TextBlock Text="Idle window" FontSize="12.5"/>
               </DockPanel>
-              <Slider x:Name="IdleSlider" Minimum="0" Maximum="6" TickFrequency="1"
-                      IsSnapToTickEnabled="True" ValueChanged="OnIdleChanged" Margin="0,4,0,0"/>
-              <UniformGrid Columns="7" Margin="2,1,2,0">
-                <TextBlock Text="0" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Left"/>
-                <TextBlock Text="5" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>
-                <TextBlock Text="10" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>
-                <TextBlock Text="15" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>
-                <TextBlock Text="20" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>
-                <TextBlock Text="25" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Center"/>
-                <TextBlock Text="30" FontSize="9.5" Foreground="{StaticResource SecSoft}" HorizontalAlignment="Right"/>
-              </UniformGrid>
+              <Slider x:Name="IdleSlider" Style="{StaticResource IdleSlider}"
+                      Minimum="0" Maximum="6" ValueChanged="OnIdleChanged" Margin="0,6,0,0"/>
+              <!-- 6 equal gaps between 7 ticks; 7px inset matches the 14px thumb. -->
+              <Grid Margin="7,3,7,0">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="0"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="0"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="0"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="0"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="0"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="0"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="0"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="0" FontSize="9.5" Foreground="{StaticResource SecSoft}"
+                           Width="16" Margin="-8,0" TextAlignment="Center"/>
+                <TextBlock Grid.Column="2" Text="5" FontSize="9.5" Foreground="{StaticResource SecSoft}"
+                           Width="16" Margin="-8,0" TextAlignment="Center"/>
+                <TextBlock Grid.Column="4" Text="10" FontSize="9.5" Foreground="{StaticResource SecSoft}"
+                           Width="16" Margin="-8,0" TextAlignment="Center"/>
+                <TextBlock Grid.Column="6" Text="15" FontSize="9.5" Foreground="{StaticResource SecSoft}"
+                           Width="16" Margin="-8,0" TextAlignment="Center"/>
+                <TextBlock Grid.Column="8" Text="20" FontSize="9.5" Foreground="{StaticResource SecSoft}"
+                           Width="16" Margin="-8,0" TextAlignment="Center"/>
+                <TextBlock Grid.Column="10" Text="25" FontSize="9.5" Foreground="{StaticResource SecSoft}"
+                           Width="16" Margin="-8,0" TextAlignment="Center"/>
+                <TextBlock Grid.Column="12" Text="30" FontSize="9.5" Foreground="{StaticResource SecSoft}"
+                           Width="16" Margin="-8,0" TextAlignment="Center"/>
+              </Grid>
             </StackPanel>
           </StackPanel>
+        </Border>
+      </StackPanel>
+
+      <!-- ======================== Agent detail screen ======================== -->
+      <StackPanel x:Name="AgentDetailScreen" Visibility="Collapsed">
+
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,11">
+          <Button Style="{StaticResource PlainRow}" Click="OnCloseAgentDetail">
+            <Border Width="26" Height="26" CornerRadius="7" Background="#24787880">
+              <TextBlock Style="{StaticResource Glyph}" Text="&#xE76B;" FontSize="12"
+                         FontWeight="Bold" HorizontalAlignment="Center"/>
+            </Border>
+          </Button>
+          <TextBlock x:Name="AgentDetailTitle" FontSize="15" FontWeight="SemiBold"
+                     VerticalAlignment="Center" Margin="9,0,0,0"/>
+        </StackPanel>
+
+        <Border Style="{StaticResource Card}" Padding="12,11">
+          <StackPanel x:Name="AgentDetailHost"/>
         </Border>
       </StackPanel>
     </Grid>

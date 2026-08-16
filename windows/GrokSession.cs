@@ -4,10 +4,12 @@
 //   sibling signals.json                      (context tokens / model)
 //
 // A live PID only means the TUI is open. Activity comes from summary
-// last_active_at plus event-log mtimes, so an idle prompt is not treated as
-// working. After the list clears (quit), the last-known session stays visible
-// for the idle window. Elapsed time is the summed working duration across
-// sessions that touched the last 24 hours (idle gaps excluded).
+// last_active_at, event-log mtimes, and an open turn (turn_started without
+// turn_ended) so a long think / tool run stays active even when files pause.
+// An idle prompt after turn_ended is not treated as working. After the list
+// clears (quit), the last-known session stays visible for the idle window.
+// Elapsed time is the summed working duration across sessions that touched
+// the last 24 hours (idle gaps excluded).
 // Port of AgentCord/GrokSession.swift.
 
 using System.Diagnostics;
@@ -29,6 +31,7 @@ public sealed class GrokSession
     private readonly Dictionary<string, string> _summaryBySessionId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _repoNameCache = [];
     private readonly Dictionary<string, DurationCacheEntry> _durationCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, EventTailCache> _eventTail = new(StringComparer.OrdinalIgnoreCase);
     private bool _hasBuiltSummaryIndex;
     private (SessionInfo Info, long ActivityMs)? _lastKnown;
     private DateTime? _authStamp;
@@ -261,7 +264,10 @@ public sealed class GrokSession
         }
     }
 
-    private static readonly string[] ActivityFiles = ["events.jsonl", "updates.jsonl", "chat_history.jsonl"];
+    private static readonly string[] ActivityFiles =
+        ["events.jsonl", "updates.jsonl", "chat_history.jsonl", "signals.json", "hunk_records.jsonl"];
+
+    private sealed record EventTailCache(DateTime Mtime, long Length, string? Type);
 
     private long? ActivityMs(SummaryMeta? summary, string? summaryPath)
     {
@@ -286,9 +292,97 @@ public sealed class GrokSession
             {
                 foreach (var name in ActivityFiles)
                     Consider(FileTimeMs(Path.Combine(dir, name)));
+                Consider(FileTimeMs(Path.Combine(dir, "terminal")));
             }
         }
+
+        if (best is long fresh && SessionActivity.IsWithinWindow(fresh, ActiveWindowSeconds))
+            return fresh;
+
+        // Mid-turn thinking can pause file writes for tens of seconds. A live
+        // events.jsonl whose last event is not turn_ended still counts as work.
+        if (summaryPath is not null
+            && Path.GetDirectoryName(summaryPath) is { } sessionDir
+            && IsOpenTurn(sessionDir))
+        {
+            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
         return best;
+    }
+
+    private bool IsOpenTurn(string sessionDir)
+    {
+        var type = LastEventType(Path.Combine(sessionDir, "events.jsonl"));
+        return type is { Length: > 0 }
+            && !type.Equals("turn_ended", StringComparison.OrdinalIgnoreCase)
+            && !type.Equals("session_end", StringComparison.OrdinalIgnoreCase)
+            && !type.Equals("session_ended", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string? LastEventType(string eventsPath)
+    {
+        try
+        {
+            if (!File.Exists(eventsPath)) return null;
+            var mtime = File.GetLastWriteTimeUtc(eventsPath);
+            var length = new FileInfo(eventsPath).Length;
+            if (_eventTail.TryGetValue(eventsPath, out var cached)
+                && cached.Mtime == mtime && cached.Length == length)
+            {
+                return cached.Type;
+            }
+
+            var type = TailEventType(eventsPath, length);
+            _eventTail[eventsPath] = new EventTailCache(mtime, length, type);
+            return type;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Last complete JSONL event <c>type</c>, reading only the tail.</summary>
+    internal static string? TailEventType(string path, long length)
+    {
+        try
+        {
+            if (length <= 0) return null;
+            using var stream = new FileStream(
+                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var take = (int)Math.Min(length, 8192);
+            stream.Seek(length - take, SeekOrigin.Begin);
+            var buf = new byte[take];
+            var read = stream.Read(buf, 0, take);
+            if (read <= 0) return null;
+
+            var text = System.Text.Encoding.UTF8.GetString(buf, 0, read);
+            if (length > take)
+            {
+                var cut = text.IndexOf('\n');
+                if (cut < 0) return null;
+                text = text[(cut + 1)..];
+            }
+            string? last = null;
+            var start = 0;
+            for (var i = 0; i < text.Length; i++)
+            {
+                if (text[i] != '\n') continue;
+                var line = text[start..i].Trim();
+                if (line.Length > 0) last = line;
+                start = i + 1;
+            }
+            var tail = text[start..].Trim();
+            if (tail.Length > 0) last = tail;
+            if (last is null) return null;
+
+            using var doc = JsonDocument.Parse(last);
+            return StringProp(doc.RootElement, "type");
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static SignalsMeta? ReadSignals(string sessionDir)

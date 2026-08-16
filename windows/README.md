@@ -8,9 +8,10 @@ driven through T3 Code. If several agents are active, the most recently updated
 session wins.
 
 The app lives entirely in the system tray — no taskbar entry. Left-clicking the
-tray icon opens a popover that mirrors the macOS one: accordion agent list,
-optional unified usage summary, colored usage bars, an expandable Claude status
-breakdown, and a settings screen with iOS-style switches.
+tray icon opens a popover that mirrors the macOS one: an agent list that opens
+a settings-style detail screen, optional unified usage summary, colored usage
+bars, an expandable Claude status breakdown, and a settings screen with
+iOS-style switches.
 
 It uses the .NET base class library (WinForms for the tray icon, WPF for the
 popover, named pipes, `HttpClient`, `System.Text.Json`, the registry API) plus
@@ -52,15 +53,15 @@ dotnet run
 ```
 
 **Left-click** the tray icon for the popover: connection pill, optional unified
-usage card (one primary bar per linked agent), accordion rows for every enabled
-agent (expand for session, usage, and Claude status), and a Settings screen with
-agent toggles, presence, launch-at-login, prevent-sleep, display fields
-(including Show unified usage), activity type, and the idle window.
+usage card (one primary bar per linked agent), a row per enabled agent that
+opens a detail screen (session, usage, and Claude status), and a Settings
+screen with agent toggles, presence, launch-at-login, prevent-sleep, display
+fields (including Show unified usage), activity type, and the idle window.
 **Right-click** for a quick menu (show, toggle presence, quit).
 
 Two debug flags: `--popover` opens the popover at startup, and
-`--screenshot <path>` renders both popover screens to PNGs off-screen and exits
-(no tray interaction, no focus steal).
+`--screenshot <path>` renders the main, agent-detail, and settings screens to
+PNGs off-screen and exits (no tray interaction, no focus steal).
 
 ## Build a standalone exe
 
@@ -125,7 +126,7 @@ using the OIDC tokens in `%USERPROFILE%\.grok\auth.json` (refreshed on 401).
 **UI.** WinForms owns the tray icon and the message loop; the popover is a WPF
 window (`PopoverWindow.xaml`) on that same thread, which is what makes the
 macOS look reachable — rounded cards, drop shadow, capsule pills, custom
-toggle switches, accordion agent rows, the unified usage card, and progress
+toggle switches, agent rows that open a detail screen, the unified usage card, and progress
 bars whose fill is a star-sized grid column. It is borderless and transparent, shows on the taskbar like a normal window,
 and stays open when you click elsewhere (Escape or a second tray click hides
 it). It anchors itself to the bottom-right work-area corner on open and

@@ -43,16 +43,13 @@ public partial class PopoverWindow : Window
     private bool _seededExpanded;
     private StatusInfo? _renderedStatus;
     private bool _expandStatus;
-    private DateTime _lastHidden = DateTime.MinValue;
     private bool _closing;
     private bool _offscreenCapture;
-
-    /// <summary>Set once the window has actually taken focus. Show() can be
-    /// followed by a Deactivated before activation ever lands (the message loop
-    /// may not be pumping yet at startup), which would hide the popover the
-    /// instant it opens. Only dismiss on a deactivation that follows a real
-    /// activation.</summary>
-    private bool _seenActivation;
+    /// <summary>Stay pinned to the tray corner until the user actually moves the window.</summary>
+    private bool _anchored = true;
+    /// <summary>A tray click deactivates this window before NotifyIcon.MouseUp,
+    /// so IsActive is already false. A recent Deactivated still means "was focused".</summary>
+    private DateTime _lastDeactivated = DateTime.MinValue;
 
     private static readonly int[] IdleSteps = [0, 5, 10, 15, 20, 25, 30];
 
@@ -87,18 +84,21 @@ public partial class PopoverWindow : Window
         _syncPollers = syncPollers;
         InitializeComponent();
         _timer.Tick += (_, _) => UpdateUi();
-        Activated += (_, _) => _seenActivation = true;
+        MouseLeftButtonDown += OnDragMove;
+        Deactivated += (_, _) => _lastDeactivated = DateTime.UtcNow;
     }
 
     // --- Show / hide
 
-    /// <summary>Left-clicking the tray icon toggles the popover. Clicking it
-    /// while open first deactivates (and hides) the window, so a short
-    /// cooldown keeps that same click from instantly reopening it.</summary>
+    /// <summary>Tray click shows the window, focuses it if it's already open
+    /// in the background, or hides it when it was focused (including the
+    /// deactivate that the tray click itself causes).</summary>
     public void TogglePopover()
     {
-        if (IsVisible) HidePopover();
-        else if ((DateTime.UtcNow - _lastHidden).TotalMilliseconds > 300) ShowPopover();
+        if (!IsVisible) ShowPopover();
+        else if (IsActive || (DateTime.UtcNow - _lastDeactivated).TotalMilliseconds < 300)
+            HidePopover();
+        else Activate();
     }
 
     public void ShowPopover()
@@ -113,10 +113,9 @@ public partial class PopoverWindow : Window
         _status.Refresh();
         ShowMainScreen();
         UpdateUi();
-        _seenActivation = false;
         Show();
         UpdateLayout();
-        Reposition();
+        if (_anchored) Reposition();
         Activate();
         _timer.Start();
     }
@@ -124,7 +123,6 @@ public partial class PopoverWindow : Window
     private void HidePopover()
     {
         _timer.Stop();
-        _lastHidden = DateTime.UtcNow;
         Hide();
     }
 
@@ -137,14 +135,19 @@ public partial class PopoverWindow : Window
         Close();
     }
 
-    private void OnDeactivated(object? sender, EventArgs e)
-    {
-        if (_seenActivation) HidePopover();
-    }
-
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Escape) HidePopover();
+    }
+
+    private void OnDragMove(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ButtonState != MouseButtonState.Pressed) return;
+        var left = Left;
+        var top = Top;
+        DragMove();
+        if (Math.Abs(Left - left) > 1 || Math.Abs(Top - top) > 1)
+            _anchored = false;
     }
 
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
@@ -154,10 +157,13 @@ public partial class PopoverWindow : Window
         HidePopover();
     }
 
-    /// <summary>Anchor the bottom-right corner near the tray, like the macOS
-    /// popover hangs off its status item. Re-run on every size change so
-    /// expanding a section grows the window upward.</summary>
-    private void OnSizeChanged(object sender, SizeChangedEventArgs e) => Reposition();
+    /// <summary>Keep the bottom-right corner near the tray until the user
+    /// moves the window. Re-run on size changes so expanding a section grows
+    /// upward instead of off the work area.</summary>
+    private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_anchored) Reposition();
+    }
 
     private void Reposition()
     {

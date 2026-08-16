@@ -110,7 +110,7 @@ public sealed class CodexSession : IDisposable
     {
         if (!_cache.TryGetValue(path, out var cached))
             cached = new CacheEntry();
-        if (cached.Mtime == mtime && _cache.ContainsKey(path))
+        if (cached.Mtime == mtime && _cache.ContainsKey(path) && cached.Cursor.IsCurrent(path))
             return cached.State;
 
         try

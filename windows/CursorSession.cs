@@ -245,7 +245,7 @@ public sealed class CursorSession : IDisposable
     {
         if (!_transcriptCache.TryGetValue(path, out var cached))
             cached = new TranscriptCacheEntry();
-        if (cached.Mtime == mtime && _transcriptCache.ContainsKey(path))
+        if (cached.Mtime == mtime && _transcriptCache.ContainsKey(path) && cached.Cursor.IsCurrent(path))
             return cached;
 
         var sessionId = Path.GetFileNameWithoutExtension(path);

@@ -149,6 +149,7 @@ public sealed class SessionActivityDetectionTests
         File.AppendAllText(transcript,
             "{\"timestamp\":\"" + second.ToString("o") +
             "\",\"message\":{\"model\":\"claude-opus-4-5\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n");
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow);
 
         var secondInfo = scanner.Scan();
         Assert.NotNull(secondInfo);

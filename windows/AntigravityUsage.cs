@@ -28,7 +28,7 @@ public sealed class AntigravityUsage : IDisposable
     private readonly string _baseDir;
     private readonly bool _isCustomDir;
     private readonly object _lock = new();
-    private readonly Dictionary<string, (DateTime Mtime, List<StepRecord> Steps)> _fileStepsCache = [];
+    private readonly Dictionary<string, (DateTime Mtime, long Length, List<StepRecord> Steps)> _fileStepsCache = [];
     private readonly SessionTreeIndex _transcriptTree;
     private DateTime _lastSuccess = DateTime.MinValue;
     private DateTime _lastAttempt = DateTime.MinValue;
@@ -385,15 +385,18 @@ public sealed class AntigravityUsage : IDisposable
         {
             try
             {
-                var mtime = File.GetLastWriteTimeUtc(path);
-                if (_fileStepsCache.TryGetValue(path, out var cached) && cached.Mtime == mtime)
+                var info = new FileInfo(path);
+                var mtime = info.LastWriteTimeUtc;
+                var length = info.Length;
+                if (_fileStepsCache.TryGetValue(path, out var cached)
+                    && cached.Mtime == mtime && cached.Length == length)
                 {
                     results.AddRange(cached.Steps);
                     continue;
                 }
 
                 var steps = ParseTranscriptSteps(path);
-                _fileStepsCache[path] = (mtime, steps);
+                _fileStepsCache[path] = (mtime, length, steps);
                 results.AddRange(steps);
             }
             catch { }

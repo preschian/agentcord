@@ -4,10 +4,10 @@
         Title="agentcord"
         Width="330" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
-        Background="Transparent" ShowInTaskbar="False" Topmost="True"
+        Background="Transparent" ShowInTaskbar="True" Topmost="False"
         UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"
         FontFamily="Segoe UI" TextElement.Foreground="{DynamicResource TextBrush}"
-        Deactivated="OnDeactivated" KeyDown="OnKeyDown" SizeChanged="OnSizeChanged"
+        KeyDown="OnKeyDown" SizeChanged="OnSizeChanged"
         Closing="OnClosing">
 
   <Window.Resources>

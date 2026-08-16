@@ -5,8 +5,10 @@
 //  Detects the currently active Grok (xAI) coding session by watching
 //  ~/.grok/active_sessions.json and per-session summary/signals files under
 //  ~/.grok/sessions/. Grok stores sessions grouped by URL-encoded cwd rather
-//  than a single transcript, so activity comes from the live PID list plus
-//  summary.json last_active_at / updated_at.
+//  than a single transcript, so activity comes from summary.json last_active_at
+//  plus event-log mtimes. A live PID is not enough: an idle TUI stays idle.
+//  Elapsed time is the summed working duration across sessions that touched
+//  the last 24 hours (idle gaps excluded).
 //
 
 import Foundation
@@ -27,6 +29,9 @@ final class GrokSession: ObservableObject {
     private let queue = DispatchQueue(label: "com.agentcord.grok.scan", qos: .utility)
     private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
+    private var scanWorkItem: DispatchWorkItem?
+    private var monitoring = false
+    private static let scanCoalesce: TimeInterval = 0.35
     /// Session summaries are stored at sessions/<encoded-cwd>/<session-id>.
     /// Build this fixed-depth index on demand instead of recursively walking an
     /// ever-growing history on every five-second poll.
@@ -35,6 +40,9 @@ final class GrokSession: ObservableObject {
     /// Preserves the just-closed session during the configured idle grace
     /// period without rescanning every historical summary.
     private var lastKnownSession: (info: SessionInfo, activity: Date)?
+    /// Incremental event-log stamps per session dir, reused while mtime is
+    /// unchanged so the 24h duration sum stays cheap.
+    private var durationCache: [URL: DurationCacheEntry] = [:]
 
     init(grokHome: URL? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -42,9 +50,13 @@ final class GrokSession: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         startFSEvents()
         startTimer()
-        queue.async { [weak self] in self?.scan() }
+        queue.async { [weak self] in
+            self?.monitoring = true
+            self?.scan()
+        }
     }
 
     func stop() {
@@ -56,6 +68,13 @@ final class GrokSession: ObservableObject {
         }
         timer?.cancel()
         timer = nil
+        scanWorkItem?.cancel()
+        scanWorkItem = nil
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.monitoring = false
+            self.publish(authenticated: self.readAuthenticated(), session: nil)
+        }
     }
 
     // MARK: File system monitoring
@@ -71,12 +90,9 @@ final class GrokSession: ObservableObject {
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info else { return }
             let session = Unmanaged<GrokSession>.fromOpaque(info).takeUnretainedValue()
-            session.queue.async { session.scan() }
+            session.requestScan()
         }
         let paths = [grokHome.path] as CFArray
-        let flags = FSEventStreamCreateFlags(
-            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
-        )
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
@@ -84,7 +100,7 @@ final class GrokSession: ObservableObject {
             paths,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             1.0,
-            flags
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
         ) else { return }
 
         FSEventStreamSetDispatchQueue(stream, queue)
@@ -100,6 +116,13 @@ final class GrokSession: ObservableObject {
         timer = t
     }
 
+    private func requestScan() {
+        scanWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.scan() }
+        scanWorkItem = work
+        queue.asyncAfter(deadline: .now() + Self.scanCoalesce, execute: work)
+    }
+
     // MARK: Scanning
 
     private struct LiveEntry {
@@ -110,30 +133,29 @@ final class GrokSession: ObservableObject {
     }
 
     private func scan() {
+        guard monitoring else { return }
         let auth = readAuthenticated()
         let live = readActiveSessions().filter { processIsAlive($0.pid) }
 
         var best: (info: SessionInfo, activity: Date)?
+        let now = Date()
 
-        // A live PID in active_sessions.json means the Grok TUI is open. Prefer
-        // the most recently touched open session; don't drop it solely because
-        // last_active_at lagged during a long tool run.
+        // A live PID only means the TUI is open. Require recent last_active_at
+        // or event-log writes so an idle prompt is not treated as working, while
+        // a long tool run that keeps appending events stays active.
         for entry in live {
             let summaryURL = findSummary(sessionID: entry.sessionID)
             let summary = summaryURL.flatMap { readSummary($0) }
-            let activity = summary?.lastActive
-                ?? summaryURL?.resourceModificationDate
-                ?? entry.openedAt
+            let activity = activityDate(summary: summary, summaryURL: summaryURL, fallback: entry.openedAt)
+            if now.timeIntervalSince(activity) > activeWindowSeconds { continue }
             let signals = summaryURL.flatMap { readSignals($0.deletingLastPathComponent()) }
             let tokens = signals?.contextTokensUsed ?? 0
             let modelRaw = summary?.modelID ?? signals?.primaryModelID
             let project = repoName(forCwd: entry.cwd)
-            let startMs = Int64(entry.openedAt.timeIntervalSince1970 * 1000)
-
             let info = SessionInfo(
                 projectName: project.isEmpty ? "Grok" : project,
                 model: modelRaw.map(Self.prettyModel),
-                startEpochMs: startMs,
+                startEpochMs: 0,
                 totalTokens: tokens,
                 lastModified: activity,
                 contextWindowTokens: signals?.contextWindowTokens,
@@ -148,7 +170,6 @@ final class GrokSession: ObservableObject {
         // is cleared mid-quit. On first launch, discover the newest recent
         // summary once; subsequent timer ticks reuse the in-memory snapshot.
         if best == nil {
-            let now = Date()
             if let known = lastKnownSession,
                now.timeIntervalSince(known.activity) <= activeWindowSeconds {
                 best = known
@@ -158,9 +179,16 @@ final class GrokSession: ObservableObject {
             }
         }
 
-        if let best { lastKnownSession = best }
+        if var best {
+            best.info = withRollingStart(best.info)
+            lastKnownSession = best
+            guard monitoring else { return }
+            publish(authenticated: auth, session: best.info)
+            return
+        }
 
-        publish(authenticated: auth, session: best?.info)
+        guard monitoring else { return }
+        publish(authenticated: auth, session: nil)
     }
 
     private func publish(authenticated: Bool, session: SessionInfo?) {
@@ -211,7 +239,17 @@ final class GrokSession: ObservableObject {
     private struct SummaryMeta {
         var modelID: String?
         var lastActive: Date?
+        var createdAt: Date?
         var cwd: String?
+    }
+
+    private struct DurationCacheEntry {
+        var eventsMtime: Date?
+        var summaryMtime: Date?
+        var cursor = JSONLCursor()
+        var stampsMs: [Int64] = []
+        var createdAtMs: Int64?
+        var lastActiveMs: Int64?
     }
 
     private struct SignalsMeta {
@@ -265,6 +303,7 @@ final class GrokSession: ObservableObject {
         meta.modelID = obj["current_model_id"] as? String
         meta.lastActive = parseISO(obj["last_active_at"] as? String)
             ?? parseISO(obj["updated_at"] as? String)
+        meta.createdAt = parseISO(obj["created_at"] as? String)
         if let info = obj["info"] as? [String: Any] {
             meta.cwd = info["cwd"] as? String
         }
@@ -286,6 +325,27 @@ final class GrokSession: ObservableObject {
         return meta
     }
 
+    private static let activityFiles = ["events.jsonl", "updates.jsonl", "chat_history.jsonl"]
+
+    private func activityDate(summary: SummaryMeta?, summaryURL: URL?, fallback: Date?) -> Date {
+        if let last = summary?.lastActive, Date().timeIntervalSince(last) <= activeWindowSeconds {
+            return last
+        }
+        var best: Date?
+        func consider(_ date: Date?) {
+            guard let date else { return }
+            if best == nil || date > best! { best = date }
+        }
+        consider(summary?.lastActive)
+        consider(summaryURL?.resourceModificationDate)
+        if let dir = summaryURL?.deletingLastPathComponent() {
+            for name in Self.activityFiles {
+                consider(dir.appendingPathComponent(name).resourceModificationDate)
+            }
+        }
+        return best ?? fallback ?? .distantPast
+    }
+
     private func newestRecentSession(within window: TimeInterval) -> (SessionInfo, Date)? {
         if !hasBuiltSummaryIndex { rebuildSummaryIndex() }
 
@@ -305,7 +365,7 @@ final class GrokSession: ObservableObject {
             let info = SessionInfo(
                 projectName: project.isEmpty ? "Grok" : project,
                 model: (summary?.modelID ?? signals?.primaryModelID).map(Self.prettyModel),
-                startEpochMs: Int64(activity.timeIntervalSince1970 * 1000),
+                startEpochMs: 0,
                 totalTokens: signals?.contextTokensUsed ?? 0,
                 lastModified: activity,
                 contextWindowTokens: signals?.contextWindowTokens,
@@ -321,6 +381,94 @@ final class GrokSession: ObservableObject {
     /// Session group folders are URL-encoded cwds, e.g. `%2FUsers%2F…`.
     private func decodeCwd(fromEncoded encoded: String) -> String {
         encoded.removingPercentEncoding ?? encoded
+    }
+
+    // MARK: 24h duration
+
+    private func withRollingStart(_ info: SessionInfo) -> SessionInfo {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let (activeMs, lastMs) = rollingActive(nowMs: nowMs)
+        var copy = info
+        copy.startEpochMs = SessionDuration.startMs(totalActiveMs: activeMs, lastMs: lastMs, nowMs: nowMs)
+        return copy
+    }
+
+    /// Combined working time across every Grok session that touched the last
+    /// 24 hours. Summaries are stat'd first so historical dirs are skipped
+    /// without opening their event logs.
+    private func rollingActive(nowMs: Int64) -> (Int64, Int64?) {
+        if !hasBuiltSummaryIndex { rebuildSummaryIndex() }
+
+        let cutoffMs = nowMs - SessionDuration.lookbackMs
+        let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoffMs) / 1000)
+        var total: Int64 = 0
+        var newestLast: Int64?
+        var liveDirs = Set<URL>()
+
+        for summaryURL in summaryURLsBySessionID.values {
+            let dir = summaryURL.deletingLastPathComponent()
+            liveDirs.insert(dir)
+
+            let eventsURL = dir.appendingPathComponent("events.jsonl")
+            let eventsMtime = eventsURL.resourceModificationDate
+            let summaryMtime = summaryURL.resourceModificationDate
+            var entry = durationCache[dir] ?? DurationCacheEntry()
+
+            if entry.summaryMtime != summaryMtime {
+                let summary = readSummary(summaryURL)
+                entry.createdAtMs = summary?.createdAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+                entry.lastActiveMs = summary?.lastActive.map { Int64($0.timeIntervalSince1970 * 1000) }
+                entry.summaryMtime = summaryMtime
+            }
+
+            let hint = [eventsMtime, summaryMtime]
+                .compactMap { $0 }
+                .max()
+                ?? (entry.lastActiveMs.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) } ?? .distantPast)
+            if hint < cutoffDate {
+                durationCache[dir] = entry
+                continue
+            }
+
+            if FileManager.default.fileExists(atPath: eventsURL.path),
+               entry.eventsMtime != eventsMtime {
+                let pulled = entry.cursor.pullLines(from: eventsURL)
+                if pulled.didReset { entry.stampsMs.removeAll(keepingCapacity: true) }
+                for line in pulled.lines {
+                    if let ms = Self.eventTimestamp(inJSONLLine: line) {
+                        entry.stampsMs.append(ms)
+                    }
+                }
+                entry.eventsMtime = eventsMtime
+            }
+            durationCache[dir] = entry
+
+            let (activeMs, lastMs) = SessionDuration.activeMs(
+                stamps: entry.stampsMs,
+                createdAtMs: entry.createdAtMs,
+                updatedAtMs: entry.lastActiveMs,
+                cutoffMs: cutoffMs,
+                nowMs: nowMs
+            )
+            total += activeMs
+            if let lastMs, newestLast == nil || lastMs > newestLast! {
+                newestLast = lastMs
+            }
+        }
+
+        durationCache = durationCache.filter { liveDirs.contains($0.key) }
+        return (total, newestLast)
+    }
+
+    private static func eventTimestamp(inJSONLLine line: String) -> Int64? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = trimmed.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ts = obj["ts"] as? String
+        else { return nil }
+        let parsed = isoWithFraction.date(from: ts) ?? isoPlain.date(from: ts)
+        return parsed.map { Int64($0.timeIntervalSince1970 * 1000) }
     }
 
     // MARK: Project name

@@ -83,14 +83,8 @@ final class PresenceController: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        session.activeWindowSeconds = settings.idleWindowSeconds
-        codexSession.activeWindowSeconds = settings.idleWindowSeconds
-        cursorSession.activeWindowSeconds = settings.idleWindowSeconds
-        grokSession.activeWindowSeconds = settings.idleWindowSeconds
-        session.start()
-        codexSession.start()
-        cursorSession.start()
-        grokSession.start()
+        applyIdleWindow()
+        syncMonitors()
         selectActiveSession()
         connectIfPossible()
     }
@@ -131,11 +125,25 @@ final class PresenceController: ObservableObject {
         rebuild()
     }
 
-    private func handleSettingsChange() {
+    private func applyIdleWindow() {
         session.activeWindowSeconds = settings.idleWindowSeconds
         codexSession.activeWindowSeconds = settings.idleWindowSeconds
         cursorSession.activeWindowSeconds = settings.idleWindowSeconds
         grokSession.activeWindowSeconds = settings.idleWindowSeconds
+    }
+
+    /// Only watch agents the user has enabled. Each scanner walks a large
+    /// on-disk tree; leaving a disabled agent running is wasted I/O.
+    private func syncMonitors() {
+        if settings.agentClaudeEnabled { session.start() } else { session.stop() }
+        if settings.agentCodexEnabled { codexSession.start() } else { codexSession.stop() }
+        if settings.agentCursorEnabled { cursorSession.start() } else { cursorSession.stop() }
+        if settings.agentGrokEnabled { grokSession.start() } else { grokSession.stop() }
+    }
+
+    private func handleSettingsChange() {
+        applyIdleWindow()
+        syncMonitors()
         selectActiveSession()
         rebuild()
     }

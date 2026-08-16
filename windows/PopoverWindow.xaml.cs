@@ -30,6 +30,7 @@ public partial class PopoverWindow : Window
     private readonly AnthropicStatus _status;
     private readonly SleepGuard _sleepGuard;
     private readonly Action _quit;
+    private readonly Action? _syncPollers;
 
     // A WinForms timer: it runs off the same message pump WinForms already
     // drives, so no WPF Dispatcher assumptions are needed.
@@ -68,7 +69,7 @@ public partial class PopoverWindow : Window
     public PopoverWindow(
         Settings settings, PresenceController controller, ClaudeUsage usage, CodexUsage codexUsage,
         CursorUsage cursorUsage, AntigravityUsage antigravityUsage, GrokUsage grokUsage,
-        AnthropicStatus status, SleepGuard sleepGuard, Action quit)
+        AnthropicStatus status, SleepGuard sleepGuard, Action quit, Action? syncPollers = null)
     {
         _settings = settings;
         _controller = controller;
@@ -80,6 +81,7 @@ public partial class PopoverWindow : Window
         _status = status;
         _sleepGuard = sleepGuard;
         _quit = quit;
+        _syncPollers = syncPollers;
         InitializeComponent();
         _timer.Tick += (_, _) => UpdateUi();
         MouseLeftButtonDown += OnDragMove;
@@ -287,6 +289,7 @@ public partial class PopoverWindow : Window
     {
         _settings.SetAgentEnabled(agent, toggle.IsChecked == true);
         _settings.Save();
+        _syncPollers?.Invoke();
         if (_expandedAgent is AgentKind expanded && !_settings.IsAgentEnabled(expanded))
             _expandedAgent = _settings.SelectedAgent;
         UpdateUi();

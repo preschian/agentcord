@@ -5,10 +5,9 @@
 // AgentCord/PresenceController.swift. Cursor covers both the Cursor CLI and
 // Cursor sessions driven via T3 Code.
 //
-// A 3-second tick both re-scans the session (cheap, thanks to the per-file
-// aggregate cache) and serves as the update throttle — Discord rate-limits
-// rapid activity updates, and DiscordIpc additionally dedupes unchanged
-// payloads.
+// A 3-second tick both re-scans enabled agents (cheap: tree index + JSONL
+// tail) and serves as the update throttle — Discord rate-limits rapid
+// activity updates, and DiscordIpc additionally dedupes unchanged payloads.
 
 using System.IO;
 
@@ -78,6 +77,10 @@ public sealed class PresenceController : IDisposable
     {
         _timer?.Dispose();
         _ipc.Dispose();
+        _claudeScanner.Dispose();
+        _codexScanner.Dispose();
+        _cursorScanner.Dispose();
+        _antigravityScanner.Dispose();
     }
 
     private void Tick()
@@ -92,11 +95,12 @@ public sealed class PresenceController : IDisposable
             _cursorScanner.ActiveWindowSeconds = activeWindow;
             _antigravityScanner.ActiveWindowSeconds = activeWindow;
             _grokScanner.ActiveWindowSeconds = activeWindow;
-            ClaudeSession = _claudeScanner.Scan();
-            CodexSession = _codexScanner.Scan();
-            CursorSession = _cursorScanner.Scan();
-            AntigravitySession = _antigravityScanner.Scan();
-            GrokSession = _grokScanner.Scan();
+            // Disabled agents must not walk their on-disk trees.
+            ClaudeSession = _settings.AgentClaudeEnabled ? _claudeScanner.Scan() : null;
+            CodexSession = _settings.AgentCodexEnabled ? _codexScanner.Scan() : null;
+            CursorSession = _settings.AgentCursorEnabled ? _cursorScanner.Scan() : null;
+            AntigravitySession = _settings.AgentAntigravityEnabled ? _antigravityScanner.Scan() : null;
+            GrokSession = _settings.AgentGrokEnabled ? _grokScanner.Scan() : null;
 
             var info = new[] { ClaudeSession, CodexSession, CursorSession, AntigravitySession, GrokSession }
                 .Where(session => session is not null && _settings.IsAgentEnabled(session.Agent))

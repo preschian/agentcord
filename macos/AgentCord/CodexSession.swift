@@ -6,6 +6,8 @@
 //  authoritative source for runtime thread status. Standalone CLI processes do
 //  not share that runtime, so recent ~/.codex/sessions transcripts are used as
 //  a defensive fallback and to enrich runtime threads with model/token data.
+//  Elapsed time is the summed working duration across transcripts that
+//  touched the last 24 hours (idle gaps excluded).
 //
 
 import Foundation
@@ -23,9 +25,14 @@ final class CodexSession: ObservableObject {
     private let queue = DispatchQueue(label: "com.agentcord.codex-session", qos: .utility)
     private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
+    private var scanWorkItem: DispatchWorkItem?
     /// Accessed only on `queue`; prevents a late FSEvent from restarting the
     /// runtime probe after shutdown.
     private var monitoring = false
+    private var lastFullScan = Date.distantPast
+    private var lastNewestDate: Date?
+    private static let fullScanInterval: TimeInterval = 30
+    private static let scanCoalesce: TimeInterval = 0.35
 
     // MARK: App-server runtime probe
 
@@ -54,11 +61,13 @@ final class CodexSession: ObservableObject {
         var startedAt: Date?
         var lastEventAt: Date?
         var totalTokens = 0
+        var stampsMs: [Int64] = []
     }
 
     private struct CacheEntry {
-        let mtime: Date
-        let state: TranscriptState
+        var mtime: Date
+        var cursor = JSONLCursor()
+        var state = TranscriptState()
     }
 
     private var transcriptCache: [URL: CacheEntry] = [:]
@@ -79,6 +88,7 @@ final class CodexSession: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         startFSEvents()
         startTimer()
         queue.async { [weak self] in
@@ -97,9 +107,13 @@ final class CodexSession: ObservableObject {
         }
         timer?.cancel()
         timer = nil
+        scanWorkItem?.cancel()
+        scanWorkItem = nil
         queue.async { [weak self] in
             self?.monitoring = false
+            self?.lastNewestDate = nil
             self?.stopRuntimeProbe()
+            self?.publish(nil)
         }
     }
 
@@ -117,19 +131,20 @@ final class CodexSession: ObservableObject {
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info else { return }
             let session = Unmanaged<CodexSession>.fromOpaque(info).takeUnretainedValue()
-            session.queue.async { session.scan() }
+            session.requestScan()
         }
-        let flags = FSEventStreamCreateFlags(
-            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
-        )
+        // Watch sessions/ when it exists so ~/.codex logs/cache writes do not
+        // wake a full transcript walk. Fall back to the home dir on first run.
+        let watchPath = FileManager.default.fileExists(atPath: sessionsURL.path)
+            ? sessionsURL.path : codexHome.path
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
             &context,
-            [codexHome.path] as CFArray,
+            [watchPath] as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             1.0,
-            flags
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
         ) else { return }
 
         FSEventStreamSetDispatchQueue(stream, queue)
@@ -140,9 +155,31 @@ final class CodexSession: ObservableObject {
     private func startTimer() {
         let source = DispatchSource.makeTimerSource(queue: queue)
         source.schedule(deadline: .now() + 5, repeating: 5)
-        source.setEventHandler { [weak self] in self?.scan() }
+        source.setEventHandler { [weak self] in self?.tick() }
         source.resume()
         timer = source
+    }
+
+    private func requestScan() {
+        scanWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.scan() }
+        scanWorkItem = work
+        queue.asyncAfter(deadline: .now() + Self.scanCoalesce, execute: work)
+    }
+
+    private func tick() {
+        guard monitoring else { return }
+        startRuntimeProbeIfNeeded()
+        requestRuntimeThreadsIfNeeded()
+        if runtimeThread != nil { return }
+        if let newest = lastNewestDate, Date().timeIntervalSince(newest) > activeWindowSeconds {
+            lastNewestDate = nil
+            publish(nil)
+            return
+        }
+        if Date().timeIntervalSince(lastFullScan) >= Self.fullScanInterval {
+            scanTranscripts()
+        }
     }
 
     private func scan() {
@@ -305,6 +342,7 @@ final class CodexSession: ObservableObject {
     // MARK: Transcript fallback and enrichment
 
     private func scanTranscripts() {
+        lastFullScan = Date()
         let fm = FileManager.default
         var files: [(url: URL, date: Date)] = []
         if let enumerator = fm.enumerator(
@@ -324,10 +362,12 @@ final class CodexSession: ObservableObject {
             let runtimeFile = runtime.path.flatMap { path in
                 files.first(where: { $0.url.standardizedFileURL == path.standardizedFileURL })
             }
+            guard monitoring else { return }
             publish(makeSessionInfo(
                 url: runtimeFile?.url ?? runtime.path,
                 mtime: runtimeFile?.date ?? runtime.updatedAt,
-                runtime: runtime
+                runtime: runtime,
+                files: files
             ))
             return
         }
@@ -335,82 +375,146 @@ final class CodexSession: ObservableObject {
         // Standalone Codex CLI sessions are not loaded into another app-server
         // process. Recent transcript activity is therefore the compatibility
         // fallback, matching AgentCord's existing configurable idle semantics.
+        lastNewestDate = files.first?.date
+        guard monitoring else { return }
         guard let newest = files.first,
               Date().timeIntervalSince(newest.date) <= activeWindowSeconds else {
             publish(nil)
             return
         }
-        publish(makeSessionInfo(url: newest.url, mtime: newest.date, runtime: nil))
+        publish(makeSessionInfo(url: newest.url, mtime: newest.date, runtime: nil, files: files))
 
         // Avoid retaining cache entries forever as Codex history grows.
         let live = Set(files.prefix(100).map(\.url))
         transcriptCache = transcriptCache.filter { live.contains($0.key) }
     }
 
-    private func makeSessionInfo(url: URL?, mtime: Date, runtime: RuntimeThread?) -> SessionInfo {
+    private func makeSessionInfo(
+        url: URL?,
+        mtime: Date,
+        runtime: RuntimeThread?,
+        files: [(url: URL, date: Date)]
+    ) -> SessionInfo {
         let state = url.map { transcriptState(at: $0, mtime: mtime) } ?? TranscriptState()
         let cwd = state.cwd ?? runtime?.cwd
         let project = cwd.map(repoName(forCwd:))
             ?? url?.deletingLastPathComponent().lastPathComponent
             ?? "Codex"
-        let started = state.startedAt ?? runtime?.createdAt ?? mtime
         let activity = max(state.lastEventAt ?? .distantPast, runtime?.updatedAt ?? mtime)
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let (activeMs, lastMs) = rollingActive(files: files, runtime: runtime, nowMs: nowMs)
 
         return SessionInfo(
             projectName: project.isEmpty ? "Codex" : project,
             model: state.model.map(Self.prettyModel),
-            startEpochMs: Int64(started.timeIntervalSince1970 * 1000),
+            startEpochMs: SessionDuration.startMs(totalActiveMs: activeMs, lastMs: lastMs, nowMs: nowMs),
             totalTokens: state.totalTokens,
             lastModified: activity,
             agent: .codex
         )
     }
 
-    private func transcriptState(at url: URL, mtime: Date) -> TranscriptState {
-        if let cached = transcriptCache[url], cached.mtime == mtime { return cached.state }
+    /// Combined working time across transcripts that touched the last 24 hours.
+    /// Files older than the lookback are skipped unless they are the live one.
+    private func rollingActive(
+        files: [(url: URL, date: Date)],
+        runtime: RuntimeThread?,
+        nowMs: Int64
+    ) -> (Int64, Int64?) {
+        let cutoffMs = nowMs - SessionDuration.lookbackMs
+        let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoffMs) / 1000)
+        let runtimeURL = runtime?.path?.standardizedFileURL
+        var total: Int64 = 0
+        var newestLast: Int64?
 
-        var state = TranscriptState()
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return state }
-        content.enumerateLines { line, _ in
-            guard let data = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return }
+        for file in files {
+            let isLive = runtimeURL.map { file.url.standardizedFileURL == $0 } ?? false
+            if !isLive && file.date < cutoffDate { continue }
 
-            if let timestamp = object["timestamp"] as? String,
-               let date = Self.date(fromISO: timestamp) {
-                state.lastEventAt = max(state.lastEventAt ?? .distantPast, date)
-            }
-            guard let type = object["type"] as? String,
-                  let payload = object["payload"] as? [String: Any] else { return }
-
-            switch type {
-            case "session_meta":
-                if let cwd = payload["cwd"] as? String, !cwd.isEmpty { state.cwd = cwd }
-                if let timestamp = payload["timestamp"] as? String {
-                    state.startedAt = Self.date(fromISO: timestamp)
-                }
-            case "turn_context":
-                if let cwd = payload["cwd"] as? String, !cwd.isEmpty { state.cwd = cwd }
-                if let model = payload["model"] as? String, !model.isEmpty { state.model = model }
-            case "event_msg":
-                guard payload["type"] as? String == "token_count",
-                      let info = payload["info"] as? [String: Any],
-                      let usage = info["total_token_usage"] as? [String: Any]
-                else { return }
-                if let total = Self.intValue(usage["total_tokens"]) {
-                    state.totalTokens = max(state.totalTokens, total)
-                } else {
-                    let input = Self.intValue(usage["input_tokens"]) ?? 0
-                    let output = Self.intValue(usage["output_tokens"]) ?? 0
-                    state.totalTokens = max(state.totalTokens, input + output)
-                }
-            default:
-                break
+            let state = transcriptState(at: file.url, mtime: file.date)
+            let createdMs = state.startedAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+                ?? (isLive ? runtime.flatMap { Int64($0.createdAt.timeIntervalSince1970 * 1000) } : nil)
+            let updatedMs = state.lastEventAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+                ?? (isLive ? runtime.flatMap { Int64($0.updatedAt.timeIntervalSince1970 * 1000) } : nil)
+            let (activeMs, lastMs) = SessionDuration.activeMs(
+                stamps: state.stampsMs,
+                createdAtMs: createdMs,
+                updatedAtMs: updatedMs,
+                cutoffMs: cutoffMs,
+                nowMs: nowMs
+            )
+            total += activeMs
+            if let lastMs, newestLast == nil || lastMs > newestLast! {
+                newestLast = lastMs
             }
         }
 
-        transcriptCache[url] = CacheEntry(mtime: mtime, state: state)
-        return state
+        if files.isEmpty, let runtime {
+            let createdMs = Int64(runtime.createdAt.timeIntervalSince1970 * 1000)
+            let updatedMs = Int64(runtime.updatedAt.timeIntervalSince1970 * 1000)
+            let (activeMs, lastMs) = SessionDuration.activeMs(
+                stamps: [],
+                createdAtMs: createdMs,
+                updatedAtMs: updatedMs,
+                cutoffMs: cutoffMs,
+                nowMs: nowMs
+            )
+            return (activeMs, lastMs)
+        }
+        return (total, newestLast)
+    }
+
+    private func transcriptState(at url: URL, mtime: Date) -> TranscriptState {
+        var entry = transcriptCache[url] ?? CacheEntry(mtime: mtime)
+        if entry.mtime == mtime { return entry.state }
+
+        let pulled = entry.cursor.pullLines(from: url)
+        if pulled.didReset { entry.state = TranscriptState() }
+        for line in pulled.lines {
+            consumeTranscriptLine(line, into: &entry.state)
+        }
+        entry.mtime = mtime
+        transcriptCache[url] = entry
+        return entry.state
+    }
+
+    private func consumeTranscriptLine(_ line: String, into state: inout TranscriptState) {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+
+        if let timestamp = object["timestamp"] as? String,
+           let date = Self.date(fromISO: timestamp) {
+            state.lastEventAt = max(state.lastEventAt ?? .distantPast, date)
+            state.stampsMs.append(Int64(date.timeIntervalSince1970 * 1000))
+        }
+        guard let type = object["type"] as? String,
+              let payload = object["payload"] as? [String: Any] else { return }
+
+        switch type {
+        case "session_meta":
+            if let cwd = payload["cwd"] as? String, !cwd.isEmpty { state.cwd = cwd }
+            if let timestamp = payload["timestamp"] as? String {
+                state.startedAt = Self.date(fromISO: timestamp)
+            }
+        case "turn_context":
+            if let cwd = payload["cwd"] as? String, !cwd.isEmpty { state.cwd = cwd }
+            if let model = payload["model"] as? String, !model.isEmpty { state.model = model }
+        case "event_msg":
+            guard payload["type"] as? String == "token_count",
+                  let info = payload["info"] as? [String: Any],
+                  let usage = info["total_token_usage"] as? [String: Any]
+            else { return }
+            if let total = Self.intValue(usage["total_tokens"]) {
+                state.totalTokens = max(state.totalTokens, total)
+            } else {
+                let input = Self.intValue(usage["input_tokens"]) ?? 0
+                let output = Self.intValue(usage["output_tokens"]) ?? 0
+                state.totalTokens = max(state.totalTokens, input + output)
+            }
+        default:
+            break
+        }
     }
 
     private func publish(_ info: SessionInfo?) {

@@ -7,7 +7,7 @@
 //  ~/.cursor/chats/**/<session-id>/meta.json (cwd, createdAtMs) plus the
 //  sibling store.db (`lastUsedModel`). Elapsed time is the summed working
 //  duration across transcripts that touched the last 24 hours (idle gaps
-//  excluded), matching ClaudeSession's daily total idea. The on-disk schema
+//  excluded), matching the other agents. The on-disk schema
 //  is undocumented, so all parsing is defensive.
 //
 
@@ -37,6 +37,14 @@ final class CursorSession: ObservableObject {
     private let queue = DispatchQueue(label: "com.agentcord.cursor-session", qos: .utility)
     private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
+    private var scanWorkItem: DispatchWorkItem?
+    private var monitoring = false
+    private var lastFullScan = Date.distantPast
+    private var lastNewestDate: Date?
+    private var lastMetaIndexRebuild = Date.distantPast
+    private static let fullScanInterval: TimeInterval = 30
+    private static let metaIndexInterval: TimeInterval = 30
+    private static let scanCoalesce: TimeInterval = 0.35
     private var metaBySessionID: [String: URL] = [:]
     private var repoNameCache: [String: String] = [:]
     /// Last-used model per chat `store.db`, keyed by mtime so we don't spawn
@@ -55,9 +63,13 @@ final class CursorSession: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         startFSEvents()
         startTimer()
-        queue.async { [weak self] in self?.scan() }
+        queue.async { [weak self] in
+            self?.monitoring = true
+            self?.scan()
+        }
     }
 
     func stop() {
@@ -69,6 +81,15 @@ final class CursorSession: ObservableObject {
         }
         timer?.cancel()
         timer = nil
+        scanWorkItem?.cancel()
+        scanWorkItem = nil
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.monitoring = false
+            self.lastNewestDate = nil
+            let installed = FileManager.default.fileExists(atPath: self.projectsURL.path)
+            self.publish(installed: installed, session: nil)
+        }
     }
 
     // MARK: File system monitoring
@@ -84,20 +105,26 @@ final class CursorSession: ObservableObject {
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info else { return }
             let session = Unmanaged<CursorSession>.fromOpaque(info).takeUnretainedValue()
-            session.queue.async { session.scan() }
+            session.requestScan()
         }
-        let paths = [cursorHome.path] as CFArray
-        let flags = FSEventStreamCreateFlags(
-            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
-        )
+        // Watch only the trees we parse. ~/.cursor also holds extensions,
+        // caches, and the IDE state DB — FileEvents there is constant noise.
+        var paths: [String] = []
+        let fm = FileManager.default
+        if fm.fileExists(atPath: projectsURL.path) { paths.append(projectsURL.path) }
+        if fm.fileExists(atPath: chatsURL.path) { paths.append(chatsURL.path) }
+        if paths.isEmpty, fm.fileExists(atPath: cursorHome.path) {
+            paths = [cursorHome.path]
+        }
+        guard !paths.isEmpty else { return }
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
             &context,
-            paths,
+            paths as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             1.0,
-            flags
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
         ) else { return }
 
         FSEventStreamSetDispatchQueue(stream, queue)
@@ -108,9 +135,29 @@ final class CursorSession: ObservableObject {
     private func startTimer() {
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 5, repeating: 5)
-        t.setEventHandler { [weak self] in self?.scan() }
+        t.setEventHandler { [weak self] in self?.tick() }
         t.resume()
         timer = t
+    }
+
+    private func requestScan() {
+        scanWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.scan() }
+        scanWorkItem = work
+        queue.asyncAfter(deadline: .now() + Self.scanCoalesce, execute: work)
+    }
+
+    private func tick() {
+        guard monitoring else { return }
+        if let newest = lastNewestDate, Date().timeIntervalSince(newest) > activeWindowSeconds {
+            lastNewestDate = nil
+            let installed = FileManager.default.fileExists(atPath: projectsURL.path)
+            publish(installed: installed, session: nil)
+            return
+        }
+        if Date().timeIntervalSince(lastFullScan) >= Self.fullScanInterval {
+            scan()
+        }
     }
 
     // MARK: Scanning
@@ -123,14 +170,17 @@ final class CursorSession: ObservableObject {
     }
 
     private struct TranscriptCacheEntry {
-        let mtime: Date
+        var mtime: Date
+        var cursor = JSONLCursor()
         /// Epoch ms from `<timestamp>` tags embedded in user messages.
-        let conversationalStampsMs: [Int64]
-        let createdAtMs: Int64?
-        let updatedAtMs: Int64?
+        var conversationalStampsMs: [Int64] = []
+        var createdAtMs: Int64?
+        var updatedAtMs: Int64?
     }
 
     private func scan() {
+        guard monitoring else { return }
+        lastFullScan = Date()
         let installed = FileManager.default.fileExists(atPath: projectsURL.path)
         guard installed else {
             publish(installed: false, session: nil)
@@ -161,15 +211,17 @@ final class CursorSession: ObservableObject {
         }
 
         guard let newest else {
+            lastNewestDate = nil
             publish(installed: true, session: nil)
             return
         }
+        lastNewestDate = newest.date
         if Date().timeIntervalSince(newest.date) > activeWindowSeconds {
             publish(installed: true, session: nil)
             return
         }
 
-        rebuildMetaIndex()
+        rebuildMetaIndexIfNeeded(requiredSessionID: newest.url.deletingPathExtension().lastPathComponent)
 
         // Combined working time across every Cursor transcript that touched the
         // last 24 hours — Discord's elapsed timer then shows the rolling sum,
@@ -223,6 +275,7 @@ final class CursorSession: ObservableObject {
             lastModified: activity,
             agent: .cursor
         )
+        guard monitoring else { return }
         publish(installed: true, session: info)
     }
 
@@ -237,25 +290,22 @@ final class CursorSession: ObservableObject {
     // MARK: 24h duration
 
     private func transcriptAggregate(url: URL, mtime: Date) -> TranscriptCacheEntry {
-        if let cached = transcriptCache[url], cached.mtime == mtime {
-            return cached
+        var entry = transcriptCache[url] ?? TranscriptCacheEntry(mtime: mtime)
+        if entry.mtime == mtime {
+            return entry
         }
 
         let sessionID = url.deletingPathExtension().lastPathComponent
         let meta = readMeta(sessionID: sessionID, includeModel: false)
-        var stamps: [Int64] = []
-        if let content = try? String(contentsOf: url, encoding: .utf8) {
-            content.enumerateLines { line, _ in
-                stamps.append(contentsOf: Self.timestamps(inJSONLLine: line))
-            }
+        let pulled = entry.cursor.pullLines(from: url)
+        if pulled.didReset { entry.conversationalStampsMs.removeAll(keepingCapacity: true) }
+        for line in pulled.lines {
+            entry.conversationalStampsMs.append(contentsOf: Self.timestamps(inJSONLLine: line))
         }
-        stamps.sort()
-        let entry = TranscriptCacheEntry(
-            mtime: mtime,
-            conversationalStampsMs: stamps,
-            createdAtMs: meta?.createdAtMs,
-            updatedAtMs: meta?.updatedAtMs
-        )
+        entry.conversationalStampsMs.sort()
+        entry.mtime = mtime
+        entry.createdAtMs = meta?.createdAtMs
+        entry.updatedAtMs = meta?.updatedAtMs
         transcriptCache[url] = entry
         return entry
     }
@@ -352,17 +402,25 @@ final class CursorSession: ObservableObject {
         guard let offsetSeconds = parseUTCOffsetSeconds(offsetBody) else { return nil }
         let body = trimmed[..<utc.lowerBound].trimmingCharacters(in: .whitespaces)
 
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: offsetSeconds)
-        for format in ["EEEE, MMM d, yyyy, h:mm a", "EEEE, MMMM d, yyyy, h:mm a"] {
-            formatter.dateFormat = format
+        for formatter in stampFormatters {
+            formatter.timeZone = TimeZone(secondsFromGMT: offsetSeconds)
             if let date = formatter.date(from: String(body)) {
                 return Int64(date.timeIntervalSince1970 * 1000)
             }
         }
         return nil
     }
+
+    /// DateFormatter allocation is expensive; reuse across every timestamp in
+    /// a transcript. Only touched from the session scan queue.
+    private static let stampFormatters: [DateFormatter] = {
+        ["EEEE, MMM d, yyyy, h:mm a", "EEEE, MMMM d, yyyy, h:mm a"].map { format in
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            return formatter
+        }
+    }()
 
     /// Parses Cursor's UTC offset forms: `+7`, `-3`, `+05:30`, `+5:45`, `-3:30`.
     private static func parseUTCOffsetSeconds(_ raw: Substring) -> Int? {
@@ -468,7 +526,15 @@ final class CursorSession: ObservableObject {
     }
 
 
+    private func rebuildMetaIndexIfNeeded(requiredSessionID: String) {
+        let missing = metaBySessionID[requiredSessionID] == nil
+        let stale = Date().timeIntervalSince(lastMetaIndexRebuild) >= Self.metaIndexInterval
+        guard missing || stale || metaBySessionID.isEmpty else { return }
+        rebuildMetaIndex()
+    }
+
     private func rebuildMetaIndex() {
+        lastMetaIndexRebuild = Date()
         metaBySessionID.removeAll(keepingCapacity: true)
         guard let enumerator = FileManager.default.enumerator(
             at: chatsURL,

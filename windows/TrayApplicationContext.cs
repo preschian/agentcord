@@ -56,12 +56,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _sleepGuard.SetEnabled(_settings.PreventSleep);
         _controller.Start();
-        _usage.Start();
-        _codexUsage.Start();
-        _cursorUsage.Start();
-        _antigravityUsage.Start();
-        _grokUsage.Start();
-        _status.Start();
+        SyncPollers();
 
         // Clear the presence even when the process exits via logoff/shutdown
         // rather than the Quit item.
@@ -82,7 +77,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// NotifyIcon.</summary>
     private PopoverWindow Popover =>
         _popover ??= new PopoverWindow(
-            _settings, _controller, _usage, _codexUsage, _cursorUsage, _antigravityUsage, _grokUsage, _status, _sleepGuard, Quit);
+            _settings, _controller, _usage, _codexUsage, _cursorUsage, _antigravityUsage, _grokUsage, _status, _sleepGuard, Quit, SyncPollers);
 
     private void BuildMenu()
     {
@@ -100,6 +95,16 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _menu.Items.AddRange([showItem, _presenceItem, new ToolStripSeparator(), quitItem]);
         _menu.Opening += (_, _) => _presenceItem.Checked = _settings.PresenceEnabled;
+    }
+
+    private void SyncPollers()
+    {
+        _usage.SetEnabled(_settings.AgentClaudeEnabled);
+        _codexUsage.SetEnabled(_settings.AgentCodexEnabled);
+        _cursorUsage.SetEnabled(_settings.AgentCursorEnabled);
+        _antigravityUsage.SetEnabled(_settings.AgentAntigravityEnabled);
+        _grokUsage.SetEnabled(_settings.AgentGrokEnabled);
+        _status.SetEnabled(_settings.AgentClaudeEnabled);
     }
 
     private void RefreshTooltip()

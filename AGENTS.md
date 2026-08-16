@@ -34,6 +34,14 @@ For all GitHub needs (issues, PRs, checks, releases, reviews, etc.), use the loc
 
 Always **squash merge** PRs (`gh pr merge --squash`). Merge commits and rebase merges are disabled on this repo. The squash commit message should follow Conventional Commits — usually the PR title is enough.
 
+## Keep scanners cheap
+
+Session and usage scanners run on a timer in a menu-bar / tray app. Prefer the lightest signal that is still correct:
+
+- Stat or read only the files needed for the current decision. Skip extra I/O when a cheaper field (for example `last_active_at`) already answers the question.
+- Do not walk growing history trees on every tick. Index, memoize by mtime, and reuse the last snapshot.
+- A live process is not a reason to poll more. Idle must stay idle without extra work.
+
 ## Relaunch the app after every change
 
 After every change under `macos/` or `windows/`, rebuild and relaunch the app so the change is actually running. Other trees build differently — `web/` (bun), `native/` (zig); see each directory's `README.md`.

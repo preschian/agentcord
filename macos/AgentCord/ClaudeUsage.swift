@@ -115,6 +115,7 @@ final class ClaudeUsage: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: queue)
         // Prefer a slightly longer first delay when we already have a cache hit,
         // so we don't immediately burn a rate-limit slot on every relaunch.

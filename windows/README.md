@@ -97,11 +97,12 @@ every READY.
 
 **Session detection.** `ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`,
 `GrokSession.cs`, and `AntigravitySession.cs` re-scan their data on the
-controller's 3-second tick and parse defensively. Claude's totals cover the local
-calendar day; Codex reports the current transcript's model, latest context
-token count, and start time; Cursor sums working time over the last 24 hours
-and enriches from `~/.cursor/chats/**/meta.json`; Grok treats a live PID in
-`~/.grok/active_sessions.json` as authoritative and reads
+controller's 3-second tick and parse defensively. Claude sums tokens over the
+local calendar day and working time over the last 24 hours; Codex reports the
+current transcript's model, latest context token count, and a 24-hour working
+sum; Cursor sums working time over the last 24 hours
+and enriches from `~/.cursor/chats/**/meta.json`; Grok uses
+`last_active_at` and event-log mtimes (a live PID alone is not enough) and reads
 `summary.json` / `signals.json` for project, model, and context tokens;
 Antigravity detects active sessions, models (e.g. Gemini 3.7 Flash), workspaces,
 and presence locks under `%USERPROFILE%\.gemini\antigravity-cli`.

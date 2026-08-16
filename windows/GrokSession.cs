@@ -3,10 +3,12 @@
 //   %USERPROFILE%\.grok\sessions\<url-encoded-cwd>\<session-id>\summary.json
 //   sibling signals.json                      (context tokens / model)
 //
-// A live PID in the active-sessions list is authoritative. Summary timestamps
-// and signals enrich project, model, and token fields. After the list clears
-// (quit), the last-known session stays visible for the idle window. Port of
-// AgentCord/GrokSession.swift.
+// A live PID only means the TUI is open. Activity comes from summary
+// last_active_at plus event-log mtimes, so an idle prompt is not treated as
+// working. After the list clears (quit), the last-known session stays visible
+// for the idle window. Elapsed time is the summed working duration across
+// sessions that touched the last 24 hours (idle gaps excluded).
+// Port of AgentCord/GrokSession.swift.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -26,8 +28,11 @@ public sealed class GrokSession
     private readonly string _grokHome;
     private readonly Dictionary<string, string> _summaryBySessionId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _repoNameCache = [];
+    private readonly Dictionary<string, DurationCacheEntry> _durationCache = new(StringComparer.OrdinalIgnoreCase);
     private bool _hasBuiltSummaryIndex;
     private (SessionInfo Info, long ActivityMs)? _lastKnown;
+    private DateTime? _authStamp;
+    private bool _authCached;
 
     public GrokSession(string? grokHome = null)
     {
@@ -56,21 +61,20 @@ public sealed class GrokSession
         {
             var summaryPath = FindSummary(entry.SessionId, entry.Cwd);
             var summary = summaryPath is null ? null : ReadSummary(summaryPath);
-            var activityMs = summary?.LastActiveMs
-                ?? (summaryPath is not null ? FileTimeMs(summaryPath) : null)
-                ?? entry.OpenedAtMs;
+            var activityMs = ActivityMs(summary, summaryPath) ?? entry.OpenedAtMs;
+            if (!SessionActivity.IsWithinWindow(activityMs, ActiveWindowSeconds)) continue;
             var signals = summaryPath is null
                 ? null
                 : ReadSignals(Path.GetDirectoryName(summaryPath)!);
             var tokens = signals?.ContextTokensUsed ?? 0;
             var modelRaw = summary?.ModelId ?? signals?.PrimaryModelId;
-            var project = RepoName(entry.Cwd, summary?.GitRemotes);
+            var project = ResolveRepoName(entry.Cwd, summary?.GitRemotes);
 
             var info = new SessionInfo
             {
                 ProjectName = string.IsNullOrWhiteSpace(project) ? "Grok" : project,
                 Model = modelRaw is { Length: > 0 } raw ? PrettyModel(raw) : "Grok",
-                StartEpochMs = entry.OpenedAtMs,
+                StartEpochMs = 0,
                 TotalTokens = tokens,
                 LastModifiedMs = activityMs,
                 Agent = AgentKind.Grok,
@@ -92,8 +96,13 @@ public sealed class GrokSession
             }
         }
 
-        if (best is { } found) _lastKnown = found;
-        return best?.Info;
+        if (best is { } found)
+        {
+            var info = WithRollingStart(found.Info);
+            _lastKnown = (info, found.ActivityMs);
+            return info;
+        }
+        return null;
     }
 
     // --- Auth / active sessions
@@ -103,10 +112,20 @@ public sealed class GrokSession
         try
         {
             var path = Path.Combine(_grokHome, "auth.json");
-            if (!File.Exists(path)) return false;
+            if (!File.Exists(path))
+            {
+                _authStamp = null;
+                _authCached = false;
+                return false;
+            }
+            var stamp = File.GetLastWriteTimeUtc(path);
+            if (_authCached && stamp == _authStamp) return true;
             using var doc = JsonDocument.Parse(ReadAllShared(path));
-            return doc.RootElement.ValueKind == JsonValueKind.Object
+            var ok = doc.RootElement.ValueKind == JsonValueKind.Object
                 && doc.RootElement.EnumerateObject().Any();
+            _authStamp = stamp;
+            _authCached = ok;
+            return ok;
         }
         catch
         {
@@ -161,7 +180,18 @@ public sealed class GrokSession
 
     // --- Session files
 
-    private sealed record SummaryMeta(string? ModelId, long? LastActiveMs, string? Cwd, IReadOnlyList<string> GitRemotes);
+    private sealed record SummaryMeta(string? ModelId, long? LastActiveMs, long? CreatedAtMs, string? Cwd, IReadOnlyList<string> GitRemotes);
+
+    private sealed class DurationCacheEntry
+    {
+        public DateTime? EventsMtime;
+        public DateTime? SummaryMtime;
+        public JsonlCursor Cursor = new();
+        public List<long> StampsMs = [];
+        public long? CreatedAtMs;
+        public long? LastActiveMs;
+    }
+
     private sealed record SignalsMeta(long? ContextTokensUsed, long? ContextWindowTokens, string? PrimaryModelId);
 
     private string? FindSummary(string sessionId, string cwd)
@@ -210,6 +240,7 @@ public sealed class GrokSession
             var model = StringProp(root, "current_model_id");
             var lastActive = ParseIsoMs(StringProp(root, "last_active_at"))
                 ?? ParseIsoMs(StringProp(root, "updated_at"));
+            var createdAt = ParseIsoMs(StringProp(root, "created_at"));
             string? cwd = null;
             if (root.TryGetProperty("info", out var info) && info.ValueKind == JsonValueKind.Object)
                 cwd = StringProp(info, "cwd");
@@ -222,12 +253,42 @@ public sealed class GrokSession
                         remotes.Add(remote);
                 }
             }
-            return new SummaryMeta(model, lastActive, cwd, remotes);
+            return new SummaryMeta(model, lastActive, createdAt, cwd, remotes);
         }
         catch
         {
             return null;
         }
+    }
+
+    private static readonly string[] ActivityFiles = ["events.jsonl", "updates.jsonl", "chat_history.jsonl"];
+
+    private long? ActivityMs(SummaryMeta? summary, string? summaryPath)
+    {
+        if (summary?.LastActiveMs is long last
+            && SessionActivity.IsWithinWindow(last, ActiveWindowSeconds))
+        {
+            return last;
+        }
+
+        long? best = summary?.LastActiveMs;
+        void Consider(long? value)
+        {
+            if (value is not long candidate) return;
+            best = best is long current ? Math.Max(current, candidate) : candidate;
+        }
+
+        if (summaryPath is not null)
+        {
+            Consider(FileTimeMs(summaryPath));
+            var dir = Path.GetDirectoryName(summaryPath);
+            if (dir is not null)
+            {
+                foreach (var name in ActivityFiles)
+                    Consider(FileTimeMs(Path.Combine(dir, name)));
+            }
+        }
+        return best;
     }
 
     private static SignalsMeta? ReadSignals(string sessionDir)
@@ -268,13 +329,13 @@ public sealed class GrokSession
             var cwd = summary?.Cwd
                 ?? (encodedGroup is null ? null : Uri.UnescapeDataString(encodedGroup))
                 ?? "";
-            var project = RepoName(cwd, summary?.GitRemotes);
+            var project = ResolveRepoName(cwd, summary?.GitRemotes);
             var modelRaw = summary?.ModelId ?? signals?.PrimaryModelId;
             var info = new SessionInfo
             {
                 ProjectName = string.IsNullOrWhiteSpace(project) ? "Grok" : project,
                 Model = modelRaw is { Length: > 0 } raw ? PrettyModel(raw) : "Grok",
-                StartEpochMs = activity,
+                StartEpochMs = 0,
                 TotalTokens = signals?.ContextTokensUsed ?? 0,
                 LastModifiedMs = activity,
                 Agent = AgentKind.Grok,
@@ -285,9 +346,115 @@ public sealed class GrokSession
         return best;
     }
 
+    // --- 24h duration
+
+    private SessionInfo WithRollingStart(SessionInfo info)
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var (activeMs, lastMs) = RollingActive(nowMs);
+        return info with { StartEpochMs = SessionActivity.ElapsedStartMs(activeMs, lastMs, nowMs) };
+    }
+
+    /// <summary>Combined working time across every Grok session that touched
+    /// the last 24 hours. Summaries are stat'd first so historical dirs are
+    /// skipped without opening their event logs.</summary>
+    private (long ActiveMs, long? LastMs) RollingActive(long nowMs)
+    {
+        if (!_hasBuiltSummaryIndex) RebuildSummaryIndex();
+
+        var cutoffMs = nowMs - SessionActivity.LookbackMs;
+        long total = 0;
+        long? newestLast = null;
+        var liveDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var summaryPath in _summaryBySessionId.Values)
+        {
+            var dir = Path.GetDirectoryName(summaryPath);
+            if (dir is null) continue;
+            liveDirs.Add(dir);
+
+            var eventsPath = Path.Combine(dir, "events.jsonl");
+            var eventsMtime = FileTimeUtc(eventsPath);
+            var summaryMtime = FileTimeUtc(summaryPath);
+            if (!_durationCache.TryGetValue(dir, out var entry))
+                entry = new DurationCacheEntry();
+
+            if (entry.SummaryMtime != summaryMtime)
+            {
+                var summary = ReadSummary(summaryPath);
+                entry.CreatedAtMs = summary?.CreatedAtMs;
+                entry.LastActiveMs = summary?.LastActiveMs;
+                entry.SummaryMtime = summaryMtime;
+            }
+
+            var hintMs = FileTimeMs(eventsPath)
+                ?? FileTimeMs(summaryPath)
+                ?? entry.LastActiveMs
+                ?? 0;
+            if (hintMs < cutoffMs)
+            {
+                _durationCache[dir] = entry;
+                continue;
+            }
+
+            if (File.Exists(eventsPath) && entry.EventsMtime != eventsMtime)
+            {
+                try
+                {
+                    entry.Cursor.PullLines(
+                        eventsPath,
+                        line =>
+                        {
+                            if (EventTimestampMs(line) is long ms)
+                                entry.StampsMs.Add(ms);
+                        },
+                        () => entry.StampsMs.Clear());
+                    entry.EventsMtime = eventsMtime;
+                }
+                catch
+                {
+                    // Live event logs can be briefly locked.
+                }
+            }
+            _durationCache[dir] = entry;
+
+            var (activeMs, lastMs) = SessionActivity.ActiveDuration(
+                entry.StampsMs, entry.CreatedAtMs, entry.LastActiveMs, cutoffMs, nowMs);
+            total += activeMs;
+            if (lastMs is long last && (newestLast is null || last > newestLast))
+                newestLast = last;
+        }
+
+        foreach (var stale in _durationCache.Keys.Where(k => !liveDirs.Contains(k)).ToList())
+            _durationCache.Remove(stale);
+
+        return (total, newestLast);
+    }
+
+    private static long? EventTimestampMs(string line)
+    {
+        var trimmed = line.Trim();
+        if (trimmed.Length == 0) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(trimmed);
+            return ParseIsoMs(StringProp(doc.RootElement, "ts"));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static DateTime? FileTimeUtc(string path)
+    {
+        try { return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : null; }
+        catch { return null; }
+    }
+
     // --- Project name
 
-    private string RepoName(string cwd, IReadOnlyList<string>? remotes)
+    private string ResolveRepoName(string cwd, IReadOnlyList<string>? remotes)
     {
         if (remotes is { Count: > 0 })
         {
@@ -296,62 +463,10 @@ public sealed class GrokSession
         }
 
         if (string.IsNullOrWhiteSpace(cwd)) return "";
-        if (_repoNameCache.TryGetValue(cwd, out var cached)) return cached;
-
-        var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-        if (string.IsNullOrEmpty(name)) name = cwd;
-
-        if (RunGit(["-C", cwd, "config", "--get", "remote.origin.url"]) is { } remote)
-        {
-            var baseName = RepoNameFromRemote(remote);
-            if (baseName.Length > 0) name = baseName;
-        }
-        else if (RunGit(["-C", cwd, "rev-parse", "--show-toplevel"]) is { } top)
-        {
-            var baseName = Path.GetFileName(top.TrimEnd('\\', '/'));
-            if (!string.IsNullOrEmpty(baseName)) name = baseName;
-        }
-
-        _repoNameCache[cwd] = name;
-        return name;
+        return RepoNames.FromCwd(cwd, _repoNameCache);
     }
 
-    internal static string RepoNameFromRemote(string remote)
-    {
-        var baseName = remote.Split('/', '\\', ':')[^1];
-        if (baseName.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
-            baseName = baseName[..^4];
-        return baseName;
-    }
-
-    private static string? RunGit(string[] args)
-    {
-        try
-        {
-            var start = new ProcessStartInfo("git")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            foreach (var arg in args) start.ArgumentList.Add(arg);
-
-            using var process = Process.Start(start);
-            if (process is null) return null;
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            if (!process.WaitForExit(5000))
-            {
-                process.Kill();
-                return null;
-            }
-            return process.ExitCode == 0 && output.Length > 0 ? output : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    internal static string RepoNameFromRemote(string remote) => RepoNames.FromRemote(remote);
 
     // --- Helpers
 

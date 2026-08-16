@@ -34,6 +34,8 @@ For all GitHub needs (issues, PRs, checks, releases, reviews, etc.), use the loc
 
 Always **squash merge** PRs (`gh pr merge --squash`). Merge commits and rebase merges are disabled on this repo. The squash commit message should follow Conventional Commits — usually the PR title is enough.
 
+After every merge, switch the local checkout back to the default branch (`main`), fast-forward it, and delete the merged local branch (`git switch main`; `git pull --ff-only`; `git branch -d <merged-branch>`). Do not stay on the feature branch.
+
 ## Keep scanners cheap
 
 Session and usage scanners run on a timer in a menu-bar / tray app. Prefer the lightest signal that is still correct:

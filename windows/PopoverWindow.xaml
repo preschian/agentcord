@@ -153,7 +153,7 @@
           </StackPanel>
         </Border>
 
-        <!-- Agent accordion (rows built in code-behind) -->
+        <!-- Agent list (rows open a detail screen; built in code-behind) -->
         <Border Style="{StaticResource Card}" Margin="0,0,0,11" Padding="0">
           <StackPanel x:Name="AgentListPanel"/>
         </Border>
@@ -358,6 +358,25 @@
               </UniformGrid>
             </StackPanel>
           </StackPanel>
+        </Border>
+      </StackPanel>
+
+      <!-- ======================== Agent detail screen ======================== -->
+      <StackPanel x:Name="AgentDetailScreen" Visibility="Collapsed">
+
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,11">
+          <Button Style="{StaticResource PlainRow}" Click="OnCloseAgentDetail">
+            <Border Width="26" Height="26" CornerRadius="7" Background="#24787880">
+              <TextBlock Style="{StaticResource Glyph}" Text="&#xE76B;" FontSize="12"
+                         FontWeight="Bold" HorizontalAlignment="Center"/>
+            </Border>
+          </Button>
+          <TextBlock x:Name="AgentDetailTitle" FontSize="15" FontWeight="SemiBold"
+                     VerticalAlignment="Center" Margin="9,0,0,0"/>
+        </StackPanel>
+
+        <Border Style="{StaticResource Card}" Padding="12,11">
+          <StackPanel x:Name="AgentDetailHost"/>
         </Border>
       </StackPanel>
     </Grid>

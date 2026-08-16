@@ -693,6 +693,66 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Grok_keeps_live_pid_active_during_open_turn_even_when_files_are_stale()
+    {
+        using var dir = TempDir.Create();
+        var sessionId = "open-turn-session";
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var sessionDir = Path.Combine(dir.Root, "sessions", encoded, sessionId);
+        Directory.CreateDirectory(sessionDir);
+
+        File.WriteAllText(Path.Combine(dir.Root, "active_sessions.json"),
+            "[{ \"session_id\":\"" + sessionId + "\",\"pid\":" + Environment.ProcessId +
+            ",\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"opened_at\":\"2026-01-01T00:00:00Z\"}]");
+        var summaryPath = Path.Combine(sessionDir, "summary.json");
+        File.WriteAllText(summaryPath,
+            "{\"current_model_id\":\"grok-4.5\",\"last_active_at\":\"2026-01-01T00:00:00Z\"}");
+        var eventsPath = Path.Combine(sessionDir, "events.jsonl");
+        File.WriteAllText(eventsPath,
+            "{\"ts\":\"2026-01-01T00:00:00Z\",\"type\":\"turn_started\"}\n" +
+            "{\"ts\":\"2026-01-01T00:00:01Z\",\"type\":\"phase_changed\",\"phase\":\"streaming_reasoning\"}\n");
+        var stale = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(summaryPath, stale);
+        File.SetLastWriteTimeUtc(eventsPath, stale);
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 1 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        Assert.Equal(AgentKind.Grok, info!.Agent);
+        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, 1));
+    }
+
+    [Fact]
+    public void Grok_treats_turn_ended_as_idle_when_files_are_stale()
+    {
+        using var dir = TempDir.Create();
+        var sessionId = "ended-turn-session";
+        var cwd = @"D:\Workspace\agentcord";
+        var encoded = Uri.EscapeDataString(cwd);
+        var sessionDir = Path.Combine(dir.Root, "sessions", encoded, sessionId);
+        Directory.CreateDirectory(sessionDir);
+
+        File.WriteAllText(Path.Combine(dir.Root, "active_sessions.json"),
+            "[{ \"session_id\":\"" + sessionId + "\",\"pid\":" + Environment.ProcessId +
+            ",\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"opened_at\":\"2026-01-01T00:00:00Z\"}]");
+        var summaryPath = Path.Combine(sessionDir, "summary.json");
+        File.WriteAllText(summaryPath,
+            "{\"current_model_id\":\"grok-4.5\",\"last_active_at\":\"2026-01-01T00:00:00Z\"}");
+        var eventsPath = Path.Combine(sessionDir, "events.jsonl");
+        File.WriteAllText(eventsPath,
+            "{\"ts\":\"2026-01-01T00:00:00Z\",\"type\":\"turn_started\"}\n" +
+            "{\"ts\":\"2026-01-01T00:00:02Z\",\"type\":\"turn_ended\",\"outcome\":\"completed\"}\n");
+        var stale = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(summaryPath, stale);
+        File.SetLastWriteTimeUtc(eventsPath, stale);
+
+        var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 1 };
+        Assert.Null(scanner.Scan());
+    }
+
+    [Fact]
     public void Grok_ignores_idle_session_with_dead_pid()
     {
         using var dir = TempDir.Create();
@@ -770,6 +830,25 @@ public sealed class SessionActivityDetectionTests
         Assert.NotNull(info);
         Assert.Equal(0, info!.Weekly.Percent);
         Assert.Null(info.OnDemand);
+    }
+
+    [Fact]
+    public void GrokUsage_reads_plan_from_settings_display_string()
+    {
+        var label = GrokUsage.PlanLabelFromJson("""{"subscription_tier_display":"SuperGrok"}""");
+        Assert.Equal("SuperGrok", label);
+    }
+
+    [Theory]
+    [InlineData("GrokPro", "SuperGrok")]
+    [InlineData("SuperGrok", "SuperGrok")]
+    [InlineData("SuperGrokPro", "SuperGrok Heavy")]
+    [InlineData("SuperGrokHeavy", "SuperGrok Heavy")]
+    [InlineData("Free", "Free")]
+    public void GrokUsage_maps_subscription_tier_enums(string raw, string expected)
+    {
+        Assert.Equal(expected, GrokUsage.MapSubscriptionTier(raw));
+        Assert.Equal(expected, GrokUsage.PlanLabelFromJson($@"{{""subscriptionTier"":""{raw}""}}"));
     }
 
     [Fact]

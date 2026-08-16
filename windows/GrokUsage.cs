@@ -25,6 +25,9 @@ public sealed class GrokUsage : IDisposable
     /// <summary>Email of the signed-in xAI account, recorded in ~/.grok/auth.json.</summary>
     public string? AccountEmail { get; private set; }
 
+    /// <summary>Brand plan label from settings / subscription, e.g. "SuperGrok".</summary>
+    public string? PlanName { get; private set; }
+
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(300);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromSeconds(60);
     /// <summary>Keep a disk-cached snapshot for a day so relaunch / idle
@@ -32,6 +35,8 @@ public sealed class GrokUsage : IDisposable
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
 
     private static readonly Uri BillingUrl = new("https://cli-chat-proxy.grok.com/v1/billing?format=credits");
+    private static readonly Uri SettingsUrl = new("https://cli-chat-proxy.grok.com/v1/settings");
+    private static readonly Uri UserUrl = new("https://cli-chat-proxy.grok.com/v1/user?include=subscription");
     private const string CliAuthHeader = "xai-grok-cli";
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
@@ -53,6 +58,7 @@ public sealed class GrokUsage : IDisposable
             && DateTime.UtcNow - cached.FetchedAt <= MaxStaleness)
         {
             Current = cached.Info;
+            PlanName = cached.Info.PlanName;
             _lastSuccess = cached.FetchedAt;
         }
         var auth = ReadAuthFile();
@@ -67,7 +73,9 @@ public sealed class GrokUsage : IDisposable
         if (enabled)
         {
             if (_timer is not null) return;
-            var first = Current is null ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(5);
+            var first = Current is null || Current.PlanName is null
+                ? TimeSpan.FromSeconds(2)
+                : TimeSpan.FromSeconds(5);
             _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, first, PollInterval);
             return;
         }
@@ -101,6 +109,7 @@ public sealed class GrokUsage : IDisposable
             {
                 IsAuthenticated = false;
                 AccountEmail = null;
+                PlanName = null;
                 HandleFailure();
                 return;
             }
@@ -111,6 +120,13 @@ public sealed class GrokUsage : IDisposable
             {
                 HandleFailure();
                 return;
+            }
+
+            var plan = await FetchPlanNameAsync() ?? PlanName ?? info.PlanName;
+            if (plan is not null)
+            {
+                PlanName = plan;
+                info = info with { PlanName = plan };
             }
 
             lock (_lock) _lastSuccess = DateTime.UtcNow;
@@ -132,21 +148,77 @@ public sealed class GrokUsage : IDisposable
             return null;
         }
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, BillingUrl);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _cachedAccessToken);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.TryAddWithoutValidation("X-XAI-Token-Auth", CliAuthHeader);
-        request.Headers.TryAddWithoutValidation("User-Agent", "GrokCLI");
-        if (!string.IsNullOrEmpty(_cachedUserId))
-            request.Headers.TryAddWithoutValidation("x-userid", _cachedUserId);
-
-        using var response = await _http.SendAsync(request);
+        using var response = await SendAuthorizedGetAsync(BillingUrl);
         if ((int)response.StatusCode == 401 && allowRefresh && await RefreshAccessTokenAsync())
             return await RequestBillingAsync(allowRefresh: false);
         if (!response.IsSuccessStatusCode) return null;
 
         var body = await response.Content.ReadAsStringAsync();
         return ParseBilling(body);
+    }
+
+    private async Task<HttpResponseMessage> SendAuthorizedGetAsync(Uri url)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _cachedAccessToken);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.TryAddWithoutValidation("X-XAI-Token-Auth", CliAuthHeader);
+        request.Headers.TryAddWithoutValidation("User-Agent", "GrokCLI");
+        if (!string.IsNullOrEmpty(_cachedUserId))
+            request.Headers.TryAddWithoutValidation("x-userid", _cachedUserId);
+        return await _http.SendAsync(request);
+    }
+
+    private async Task<string?> FetchPlanNameAsync()
+    {
+        try
+        {
+            using var settingsResponse = await SendAuthorizedGetAsync(SettingsUrl);
+            if (settingsResponse.IsSuccessStatusCode)
+            {
+                var label = PlanLabelFromJson(await settingsResponse.Content.ReadAsStringAsync());
+                if (label is not null) return label;
+            }
+
+            using var userResponse = await SendAuthorizedGetAsync(UserUrl);
+            if (!userResponse.IsSuccessStatusCode) return null;
+            return PlanLabelFromJson(await userResponse.Content.ReadAsStringAsync());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Prefer the brand string from settings; fall back to mapping
+    /// <c>subscriptionTier</c> from the user endpoint.</summary>
+    public static string? PlanLabelFromJson(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (StringProp(root, "subscription_tier_display") is { Length: > 0 } display)
+                return display.Trim();
+            return MapSubscriptionTier(StringProp(root, "subscriptionTier"));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>API enums like <c>GrokPro</c> → "SuperGrok".</summary>
+    public static string? MapSubscriptionTier(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        return raw.Trim() switch
+        {
+            "SuperGrokPro" or "SuperGrokHeavy" or "GrokHeavy" => "SuperGrok Heavy",
+            "GrokPro" or "SuperGrok" => "SuperGrok",
+            "Free" or "GrokFree" => "Free",
+            var other => other,
+        };
     }
 
     private async Task<bool> RefreshAccessTokenAsync()
@@ -200,6 +272,7 @@ public sealed class GrokUsage : IDisposable
             if (DateTime.UtcNow - _lastSuccess > MaxStaleness)
             {
                 Current = null;
+                PlanName = null;
                 ClearCache();
             }
         }
@@ -216,6 +289,7 @@ public sealed class GrokUsage : IDisposable
             _cachedIssuer = null;
             _cachedUserId = null;
             AccountEmail = null;
+            PlanName = null;
             return;
         }
 

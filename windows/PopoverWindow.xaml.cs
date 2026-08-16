@@ -1,8 +1,8 @@
 // Code-behind for the popover: fills the XAML layout from the live state
 // (settings, controller, usage, Anthropic status) once per second while
-// visible, and applies setting changes from its toggles. Mirrors
-// MenuContentView in the macOS app's App.swift — accordion agent list plus
-// optional unified usage card.
+// visible, and applies setting changes from its toggles. Agent rows open a
+// settings-style detail screen (Windows-only for now; macOS still expands
+// in place), plus an optional unified usage card.
 
 using System.Diagnostics;
 using System.IO;
@@ -39,8 +39,8 @@ public partial class PopoverWindow : Window
     private readonly List<UsageRow> _unifiedRows = [];
     private readonly Dictionary<AgentKind, AgentRow> _agentRows = new();
     private readonly HashSet<AgentKind> _revealedEmails = [];
-    private AgentKind? _expandedAgent;
-    private bool _seededExpanded;
+    private readonly AgentDetailView _agentDetail = new();
+    private AgentKind? _detailAgent;
     private StatusInfo? _renderedStatus;
     private bool _expandStatus;
     private bool _closing;
@@ -83,6 +83,7 @@ public partial class PopoverWindow : Window
         _quit = quit;
         _syncPollers = syncPollers;
         InitializeComponent();
+        AgentDetailHost.Children.Add(_agentDetail.Root);
         _timer.Tick += (_, _) => UpdateUi();
         MouseLeftButtonDown += OnDragMove;
         Deactivated += (_, _) => _lastDeactivated = DateTime.UtcNow;
@@ -137,7 +138,12 @@ public partial class PopoverWindow : Window
 
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape) HidePopover();
+        if (e.Key != Key.Escape) return;
+        if (SettingsScreen.Visibility == Visibility.Visible
+            || AgentDetailScreen.Visibility == Visibility.Visible)
+            ShowMainScreen();
+        else
+            HidePopover();
     }
 
     private void OnDragMove(object sender, MouseButtonEventArgs e)
@@ -158,7 +164,7 @@ public partial class PopoverWindow : Window
     }
 
     /// <summary>Keep the bottom-right corner near the tray until the user
-    /// moves the window. Re-run on size changes so expanding a section grows
+    /// moves the window. Re-run on size changes so opening a screen grows
     /// upward instead of off the work area.</summary>
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -175,7 +181,8 @@ public partial class PopoverWindow : Window
 
     /// <summary>Debug helper for the --screenshot mode: renders the popover
     /// off-screen (no focus steal, nothing visible) into PNG files — the main
-    /// screen at <paramref name="path"/> and the settings screen next to it.</summary>
+    /// screen at <paramref name="path"/>, plus adjacent detail and settings
+    /// screens.</summary>
     public void CaptureForDebug(string path)
     {
         _offscreenCapture = true;
@@ -185,16 +192,19 @@ public partial class PopoverWindow : Window
         Show();
 
         ShowMainScreen();
-        _expandedAgent = AgentKind.Claude;
-        _settings.SelectedAgent = AgentKind.Claude;
-        _expandStatus = true;
         UpdateUi();
-        if (_agentRows.TryGetValue(AgentKind.Claude, out var claudeRow))
-            claudeRow.SetStatusExpanded(true);
         SavePng(path);
 
-        MainScreen.Visibility = Visibility.Collapsed;
-        SettingsScreen.Visibility = Visibility.Visible;
+        var detailAgent = _settings.EnabledAgents.Count > 0
+            ? _settings.EnabledAgents[0]
+            : AgentKind.Claude;
+        ShowAgentDetail(detailAgent);
+        _expandStatus = true;
+        UpdateUi();
+        _agentDetail.SetStatusExpanded(true);
+        SavePng(System.IO.Path.ChangeExtension(path, null) + "-detail.png");
+
+        ShowSettingsScreen();
         DisplayExpanded.Visibility = Visibility.Visible;
         ActivityExpanded.Visibility = Visibility.Visible;
         SavePng(System.IO.Path.ChangeExtension(path, null) + "-settings.png");
@@ -221,18 +231,51 @@ public partial class PopoverWindow : Window
 
     private void ShowMainScreen()
     {
+        LeaveAgentDetail();
         MainScreen.Visibility = Visibility.Visible;
         SettingsScreen.Visibility = Visibility.Collapsed;
+        AgentDetailScreen.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowSettingsScreen()
+    {
+        LeaveAgentDetail();
+        MainScreen.Visibility = Visibility.Collapsed;
+        SettingsScreen.Visibility = Visibility.Visible;
+        AgentDetailScreen.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowAgentDetail(AgentKind agent)
+    {
+        if (_detailAgent is AgentKind previous && previous != agent)
+            _revealedEmails.Remove(previous);
+        if (_detailAgent != agent) _expandStatus = false;
+        _detailAgent = agent;
+        _settings.SelectedAgent = agent;
+        _settings.Save();
+        AgentDetailTitle.Text = agent.DisplayName();
+        MainScreen.Visibility = Visibility.Collapsed;
+        SettingsScreen.Visibility = Visibility.Collapsed;
+        AgentDetailScreen.Visibility = Visibility.Visible;
+    }
+
+    private void LeaveAgentDetail()
+    {
+        if (_detailAgent is AgentKind agent)
+            _revealedEmails.Remove(agent);
+        _detailAgent = null;
+        _expandStatus = false;
     }
 
     private void OnOpenSettings(object sender, RoutedEventArgs e)
     {
-        MainScreen.Visibility = Visibility.Collapsed;
-        SettingsScreen.Visibility = Visibility.Visible;
+        ShowSettingsScreen();
         UpdateUi();
     }
 
     private void OnCloseSettings(object sender, RoutedEventArgs e) => ShowMainScreen();
+
+    private void OnCloseAgentDetail(object sender, RoutedEventArgs e) => ShowMainScreen();
 
     private void OnQuit(object sender, RoutedEventArgs e) => _quit();
 
@@ -290,8 +333,8 @@ public partial class PopoverWindow : Window
         _settings.SetAgentEnabled(agent, toggle.IsChecked == true);
         _settings.Save();
         _syncPollers?.Invoke();
-        if (_expandedAgent is AgentKind expanded && !_settings.IsAgentEnabled(expanded))
-            _expandedAgent = _settings.SelectedAgent;
+        if (_detailAgent is AgentKind viewing && !_settings.IsAgentEnabled(viewing))
+            ShowMainScreen();
         UpdateUi();
     }
 
@@ -339,23 +382,9 @@ public partial class PopoverWindow : Window
         catch { }
     }
 
-    private void ToggleExpanded(AgentKind agent)
+    private void OpenAgentDetail(AgentKind agent)
     {
-        if (_expandedAgent == agent)
-        {
-            _expandedAgent = null;
-            _expandStatus = false;
-            _revealedEmails.Remove(agent);
-        }
-        else
-        {
-            if (_expandedAgent is AgentKind previous)
-                _revealedEmails.Remove(previous);
-            if (_expandedAgent != agent) _expandStatus = false;
-            _expandedAgent = agent;
-            _settings.SelectedAgent = agent;
-            _settings.Save();
-        }
+        ShowAgentDetail(agent);
         UpdateUi();
     }
 
@@ -365,7 +394,6 @@ public partial class PopoverWindow : Window
     {
         var enabled = _settings.EnabledAgents;
         EnsureAgentRows(enabled);
-        SeedExpandedAgent(enabled);
 
         var presenceOn = _settings.PresenceEnabled;
         var activeCount = enabled.Count(a => _controller.SessionFor(a) is not null);
@@ -395,41 +423,39 @@ public partial class PopoverWindow : Window
             if (!_agentRows.TryGetValue(agent, out var row)) continue;
             var session = _controller.SessionFor(agent);
             var linked = IsAgentLinked(agent);
-            var expanded = _expandedAgent == agent;
+            row.UpdateHeader(agent, linked, session, _settings.ShowProject);
+        }
+
+        if (_detailAgent is AgentKind detail && _settings.IsAgentEnabled(detail))
+        {
+            var session = _controller.SessionFor(detail);
             var sharing = session is not null && presenceOn
-                && _controller.CurrentSession?.Agent == agent;
-            row.UpdateHeader(agent, linked, session, expanded, _settings.ShowProject);
-            if (expanded)
-            {
-                row.UpdateDetail(agent, session, presenceOn, sharing, _settings,
-                    AccountEmail(agent), PlanName(agent),
-                    _revealedEmails.Contains(agent),
-                    () =>
-                    {
-                        if (!_revealedEmails.Add(agent))
-                            _revealedEmails.Remove(agent);
-                        UpdateUi();
-                    },
-                    UsageRowsFor(agent),
-                    agent == AgentKind.Claude ? _controller.LastError : null,
-                    agent == AgentKind.Claude ? _status.Current : null,
-                    _expandStatus,
-                    () =>
-                    {
-                        _expandStatus = !_expandStatus;
-                        UpdateUi();
-                    },
-                    OnOpenStatusPage);
-                if (_expandStatus && agent == AgentKind.Claude
-                    && !ReferenceEquals(_status.Current, _renderedStatus))
+                && _controller.CurrentSession?.Agent == detail;
+            AgentDetailTitle.Text = detail.DisplayName();
+            _agentDetail.UpdateDetail(detail, session, presenceOn, sharing, _settings,
+                AccountEmail(detail), PlanName(detail),
+                _revealedEmails.Contains(detail),
+                () =>
                 {
-                    row.RenderStatusDetails(_status.Current);
-                    _renderedStatus = _status.Current;
-                }
-            }
-            else
+                    if (!_revealedEmails.Add(detail))
+                        _revealedEmails.Remove(detail);
+                    UpdateUi();
+                },
+                UsageRowsFor(detail),
+                detail == AgentKind.Claude ? _controller.LastError : null,
+                detail == AgentKind.Claude ? _status.Current : null,
+                _expandStatus,
+                () =>
+                {
+                    _expandStatus = !_expandStatus;
+                    UpdateUi();
+                },
+                OnOpenStatusPage);
+            if (_expandStatus && detail == AgentKind.Claude
+                && !ReferenceEquals(_status.Current, _renderedStatus))
             {
-                row.CollapseDetail();
+                _agentDetail.RenderStatusDetails(_status.Current);
+                _renderedStatus = _status.Current;
             }
         }
 
@@ -464,16 +490,6 @@ public partial class PopoverWindow : Window
         ActivitySummary.Text = $"{ActivityLabel.Text} · {idleMinutes} min";
     }
 
-    private void SeedExpandedAgent(IReadOnlyList<AgentKind> enabled)
-    {
-        if (_seededExpanded) return;
-        _seededExpanded = true;
-        if (_expandedAgent is null && enabled.Contains(_settings.SelectedAgent))
-            _expandedAgent = _settings.SelectedAgent;
-        else if (_expandedAgent is null && enabled.Count > 0)
-            _expandedAgent = enabled[0];
-    }
-
     private void EnsureAgentRows(IReadOnlyList<AgentKind> enabled)
     {
         var wanted = enabled.ToHashSet();
@@ -499,7 +515,7 @@ public partial class PopoverWindow : Window
             var agent = enabled[i];
             if (!_agentRows.TryGetValue(agent, out var row))
             {
-                row = new AgentRow(agent, () => ToggleExpanded(agent));
+                row = new AgentRow(agent, () => OpenAgentDetail(agent));
                 _agentRows[agent] = row;
             }
             row.SetDivider(i > 0);
@@ -573,7 +589,7 @@ public partial class PopoverWindow : Window
         AgentKind.Codex => _codexUsage.Current?.PlanType,
         AgentKind.Cursor => _cursorUsage.Current?.PlanName,
         AgentKind.Antigravity => _antigravityUsage.Current?.PlanName ?? _controller.AntigravityPlanType,
-        AgentKind.Grok => null,
+        AgentKind.Grok => _grokUsage.PlanName ?? _grokUsage.Current?.PlanName,
         _ => _usage.Current?.PlanName,
     };
 
@@ -806,47 +822,19 @@ public partial class PopoverWindow : Window
         return new ControlTemplate(typeof(Button)) { VisualTree = factory };
     }
 
-    /// <summary>One accordion row for an enabled agent.</summary>
+    /// <summary>One agent row on the main list. Tapping opens the detail screen.</summary>
     private sealed class AgentRow
     {
         public readonly Border Root;
         public readonly AgentKind Agent;
 
         private readonly Border _divider;
-        private readonly Border _headerBg;
         private readonly TextBlock _name;
         private readonly TextBlock _subtitle;
         private readonly Ellipse _liveDot;
         private readonly TextBlock _trailing;
-        private readonly TextBlock _chevron;
-        private readonly Border _detail;
-        private readonly StackPanel _detailBody;
 
-        private readonly Button _accountButton;
-        private readonly TextBlock _accountText;
-        private readonly TextBlock _accountEye;
-        private readonly Border _planChip;
-        private readonly TextBlock _planText;
-        private readonly TextBlock _projectText;
-        private readonly TextBlock _sessionState;
-        private readonly TextBlock _metaText;
-        private readonly Ellipse _broadcastDot;
-        private readonly TextBlock _broadcastText;
-        private readonly StackPanel _usageHost;
-        private readonly TextBlock _errorText;
-        private readonly Border _statusCard;
-        private readonly TextBlock _statusChevron;
-        private readonly Border _statusPill;
-        private readonly Ellipse _statusPillDot;
-        private readonly TextBlock _statusPillText;
-        private readonly StackPanel _statusExpanded;
-        private readonly StackPanel _incidentsPanel;
-        private readonly StackPanel _componentsPanel;
-        private readonly TextBlock _statusFooterText;
-
-        private readonly List<UsageRow> _usageRows = [];
-
-        public AgentRow(AgentKind agent, Action onToggle)
+        public AgentRow(AgentKind agent, Action onOpen)
         {
             Agent = agent;
             _name = new TextBlock
@@ -873,9 +861,9 @@ public partial class PopoverWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
             };
             Typography.SetNumeralAlignment(_trailing, FontNumeralAlignment.Tabular);
-            _chevron = new TextBlock
+            var chevron = new TextBlock
             {
-                Text = "",
+                Text = "\uE76C",
                 FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
                 FontSize = 10,
                 Foreground = Brush(WithAlpha(Secondary, 0x4D)),
@@ -898,9 +886,9 @@ public partial class PopoverWindow : Window
             trailingStack.Children.Add(_trailing);
 
             var header = new DockPanel { Margin = new Thickness(11, 9, 11, 9) };
-            DockPanel.SetDock(_chevron, Dock.Right);
+            DockPanel.SetDock(chevron, Dock.Right);
             DockPanel.SetDock(trailingStack, Dock.Right);
-            header.Children.Add(_chevron);
+            header.Children.Add(chevron);
             header.Children.Add(trailingStack);
             header.Children.Add(titleCol);
 
@@ -915,11 +903,95 @@ public partial class PopoverWindow : Window
                 Content = header,
                 Template = ChromelessButtonTemplate(),
             };
-            headerButton.Click += (_, _) => onToggle();
+            headerButton.Click += (_, _) => onOpen();
 
-            _headerBg = new Border { Child = headerButton };
+            _divider = new Border
+            {
+                Height = 1,
+                Background = Brush(WithAlpha(Colors.Black, 0x0F)),
+                Visibility = Visibility.Collapsed,
+            };
 
-            // Detail: account + session + usage + optional Claude status.
+            var column = new StackPanel();
+            column.Children.Add(_divider);
+            column.Children.Add(headerButton);
+            Root = new Border { Child = column, Tag = agent };
+        }
+
+        public void SetDivider(bool show) =>
+            _divider.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+
+        public void UpdateHeader(
+            AgentKind agent, bool linked, SessionInfo? session, bool showProject)
+        {
+            _name.Foreground = Brush(linked ? TextColor : WithAlpha(Secondary, 0x80));
+            if (!linked)
+                _subtitle.Text = "Not connected";
+            else if (session is null)
+                _subtitle.Text = "Connected";
+            else
+                _subtitle.Text = showProject ? session.ProjectName : "Project hidden";
+
+            if (session is not null)
+            {
+                _liveDot.Visibility = Visibility.Visible;
+                _liveDot.Fill = Brush(Green);
+                _liveDot.Margin = new Thickness(0, 0, 5, 0);
+                _trailing.Text = Format.Clock(Format.NowMs() - session.StartEpochMs);
+                _trailing.FontWeight = FontWeights.Medium;
+                _trailing.Foreground = Brush(TextColor);
+            }
+            else if (linked)
+            {
+                _liveDot.Visibility = Visibility.Collapsed;
+                _trailing.Text = "idle";
+                _trailing.FontWeight = FontWeights.Normal;
+                _trailing.Foreground = Brush(WithAlpha(Secondary, 0x73));
+            }
+            else
+            {
+                _liveDot.Visibility = Visibility.Collapsed;
+                _trailing.Text = "Connect";
+                _trailing.FontWeight = FontWeights.Medium;
+                _trailing.Foreground = Brush(Blue);
+            }
+        }
+    }
+
+    /// <summary>Account, session, usage, and Claude status for one agent.</summary>
+    private sealed class AgentDetailView
+    {
+        public readonly StackPanel Root = new();
+
+        private readonly Button _accountButton;
+        private readonly TextBlock _accountText;
+        private readonly TextBlock _accountEye;
+        private readonly Border _planChip;
+        private readonly TextBlock _planText;
+        private readonly TextBlock _projectText;
+        private readonly TextBlock _sessionState;
+        private readonly TextBlock _metaText;
+        private readonly Ellipse _broadcastDot;
+        private readonly TextBlock _broadcastText;
+        private readonly StackPanel _usageHost;
+        private readonly TextBlock _errorText;
+        private readonly Border _statusCard;
+        private readonly TextBlock _statusChevron;
+        private readonly Border _statusPill;
+        private readonly Ellipse _statusPillDot;
+        private readonly TextBlock _statusPillText;
+        private readonly StackPanel _statusExpanded;
+        private readonly StackPanel _incidentsPanel;
+        private readonly StackPanel _componentsPanel;
+        private readonly TextBlock _statusFooterText;
+
+        private readonly List<UsageRow> _usageRows = [];
+        private Action? _onToggleStatus;
+        private Action? _onToggleEmail;
+        private RoutedEventHandler? _onOpenStatus;
+
+        public AgentDetailView()
+        {
             _accountText = new TextBlock
             {
                 FontSize = 12.5,
@@ -969,7 +1041,7 @@ public partial class PopoverWindow : Window
                 Visibility = Visibility.Collapsed,
                 Child = _planText,
             };
-            var accountRow = new DockPanel { Margin = new Thickness(0, 9, 0, 8) };
+            var accountRow = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
             DockPanel.SetDock(_planChip, Dock.Right);
             accountRow.Children.Add(_planChip);
             accountRow.Children.Add(_accountButton);
@@ -1015,7 +1087,7 @@ public partial class PopoverWindow : Window
 
             var folder = new TextBlock
             {
-                Text = "",
+                Text = "\uE8B7",
                 FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
                 FontSize = 12,
                 Foreground = Brush(WithAlpha(Secondary, 0x8C)),
@@ -1049,10 +1121,9 @@ public partial class PopoverWindow : Window
             sessionBlock.Children.Add(_metaText);
             sessionBlock.Children.Add(broadcastRow);
 
-            // Claude status expander.
             _statusChevron = new TextBlock
             {
-                Text = "",
+                Text = "\uE76C",
                 FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
                 FontSize = 10,
                 Foreground = Brush(WithAlpha(Secondary, 0x66)),
@@ -1102,7 +1173,7 @@ public partial class PopoverWindow : Window
             var footerDock = new DockPanel();
             var ext = new TextBlock
             {
-                Text = "",
+                Text = "\uE8A7",
                 FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
                 FontSize = 10,
                 Foreground = Brush(WithAlpha(Secondary, 0x66)),
@@ -1145,99 +1216,14 @@ public partial class PopoverWindow : Window
                 Child = statusStack,
             };
 
-            // Wire status clicks after fields exist; handlers set via UpdateDetail.
-            statusHeaderBtn.Tag = this;
-            statusFooterBtn.Tag = this;
+            Root.Children.Add(accountRow);
+            Root.Children.Add(sessionBlock);
+            Root.Children.Add(_usageHost);
+            Root.Children.Add(_errorText);
+            Root.Children.Add(_statusCard);
 
-            _detailBody = new StackPanel { Margin = new Thickness(11, 2, 11, 11) };
-            _detailBody.Children.Add(accountRow);
-            _detailBody.Children.Add(sessionBlock);
-            _detailBody.Children.Add(_usageHost);
-            _detailBody.Children.Add(_errorText);
-            _detailBody.Children.Add(_statusCard);
-
-            _detail = new Border
-            {
-                Background = Brush(WithAlpha(Track, 0x0A)),
-                BorderBrush = Brush(WithAlpha(Colors.Black, 0x0D)),
-                BorderThickness = new Thickness(0, 1, 0, 0),
-                Visibility = Visibility.Collapsed,
-                Child = _detailBody,
-            };
-
-            _divider = new Border
-            {
-                Height = 1,
-                Background = Brush(WithAlpha(Colors.Black, 0x0F)),
-                Visibility = Visibility.Collapsed,
-            };
-
-            var column = new StackPanel();
-            column.Children.Add(_divider);
-            column.Children.Add(_headerBg);
-            column.Children.Add(_detail);
-
-            Root = new Border { Child = column, Tag = agent };
-
-            // Store click targets for status on the buttons via closures.
             statusHeaderBtn.Click += (_, _) => _onToggleStatus?.Invoke();
             statusFooterBtn.Click += (_, e) => _onOpenStatus?.Invoke(statusFooterBtn, e);
-        }
-
-        private Action? _onToggleStatus;
-        private Action? _onToggleEmail;
-        private RoutedEventHandler? _onOpenStatus;
-
-        public void SetDivider(bool show) =>
-            _divider.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-
-        public void UpdateHeader(
-            AgentKind agent, bool linked, SessionInfo? session, bool expanded, bool showProject)
-        {
-            _name.Foreground = Brush(linked ? TextColor : WithAlpha(Secondary, 0x80));
-            if (!linked)
-                _subtitle.Text = "Not connected";
-            else if (session is null)
-                _subtitle.Text = "Connected";
-            else
-                _subtitle.Text = showProject ? session.ProjectName : "Project hidden";
-
-            if (session is not null)
-            {
-                _liveDot.Visibility = Visibility.Visible;
-                _liveDot.Fill = Brush(Green);
-                _liveDot.Margin = new Thickness(0, 0, 5, 0);
-                _trailing.Text = Format.Clock(Format.NowMs() - session.StartEpochMs);
-                _trailing.FontWeight = FontWeights.Medium;
-                _trailing.Foreground = Brush(TextColor);
-            }
-            else if (linked)
-            {
-                _liveDot.Visibility = Visibility.Collapsed;
-                _trailing.Text = "idle";
-                _trailing.FontWeight = FontWeights.Normal;
-                _trailing.Foreground = Brush(WithAlpha(Secondary, 0x73));
-            }
-            else
-            {
-                _liveDot.Visibility = Visibility.Collapsed;
-                _trailing.Text = "Connect";
-                _trailing.FontWeight = FontWeights.Medium;
-                _trailing.Foreground = Brush(Blue);
-            }
-
-            _chevron.Text = expanded ? "" : "";
-            _headerBg.Background = expanded
-                ? Brush(WithAlpha(Track, 0x0A))
-                : Brushes.Transparent;
-            _detail.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
-        }
-
-        public void CollapseDetail()
-        {
-            _detail.Visibility = Visibility.Collapsed;
-            _statusExpanded.Visibility = Visibility.Collapsed;
-            _statusChevron.Text = "";
         }
 
         public void UpdateDetail(
@@ -1260,7 +1246,6 @@ public partial class PopoverWindow : Window
             _onToggleStatus = onToggleStatus;
             _onToggleEmail = onToggleEmail;
             _onOpenStatus = onOpenStatus;
-            _detail.Visibility = Visibility.Visible;
 
             // Account row: masked email (tap to reveal) + plan chip.
             if (string.IsNullOrEmpty(email))

@@ -93,12 +93,19 @@ public sealed class ClaudeUsage : IDisposable
         }
     }
 
-    public void Start()
+    public void Start() => SetEnabled(true);
+
+    public void SetEnabled(bool enabled)
     {
-        // Prefer a slightly longer first delay when we already have a cache hit,
-        // so we don't immediately burn a rate-limit slot on every relaunch.
-        var first = Current is null ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(5);
-        _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, first, PollInterval);
+        if (enabled)
+        {
+            if (_timer is not null) return;
+            var first = Current is null ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(5);
+            _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, first, PollInterval);
+            return;
+        }
+        _timer?.Dispose();
+        _timer = null;
     }
 
     /// <summary>Request a refresh (e.g. when the menu opens). Throttled by

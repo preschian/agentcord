@@ -17,7 +17,7 @@ public sealed class AntigravityUsage : IDisposable
 
     public string? AccountEmail { get; private set; }
 
-    public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(60);
+    public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(300);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
 
@@ -29,10 +29,15 @@ public sealed class AntigravityUsage : IDisposable
     private readonly bool _isCustomDir;
     private readonly object _lock = new();
     private readonly Dictionary<string, (DateTime Mtime, List<StepRecord> Steps)> _fileStepsCache = [];
+    private readonly SessionTreeIndex _transcriptTree;
     private DateTime _lastSuccess = DateTime.MinValue;
     private DateTime _lastAttempt = DateTime.MinValue;
     private int _fetching;
     private System.Threading.Timer? _timer;
+    private DateTime? _accountLogsStamp;
+    private (string? Email, string? Plan) _accountCached;
+    private static string? _agyPath;
+    private static bool _agyResolved;
 
     public sealed record StepRecord(long EpochMs, int EstTokens);
 
@@ -40,6 +45,7 @@ public sealed class AntigravityUsage : IDisposable
     {
         _isCustomDir = !string.IsNullOrEmpty(customBaseDir);
         _baseDir = AntigravitySession.ResolveBaseDir(customBaseDir);
+        _transcriptTree = new SessionTreeIndex(Path.Combine(_baseDir, "brain"), "transcript.jsonl");
         if (LoadCache() is { } cached
             && DateTime.UtcNow - cached.FetchedAt <= MaxStaleness)
         {
@@ -49,10 +55,19 @@ public sealed class AntigravityUsage : IDisposable
         }
     }
 
-    public void Start()
+    public void Start() => SetEnabled(true);
+
+    public void SetEnabled(bool enabled)
     {
-        var first = Current is null ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(5);
-        _timer = new System.Threading.Timer(_ => Fetch(), null, first, PollInterval);
+        if (enabled)
+        {
+            if (_timer is not null) return;
+            var first = Current is null ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(5);
+            _timer = new System.Threading.Timer(_ => Fetch(), null, first, PollInterval);
+            return;
+        }
+        _timer?.Dispose();
+        _timer = null;
     }
 
     public void Refresh()
@@ -69,6 +84,7 @@ public sealed class AntigravityUsage : IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
+        _transcriptTree.Dispose();
     }
 
     public void Fetch()
@@ -128,6 +144,14 @@ public sealed class AntigravityUsage : IDisposable
     }
 
     public static string? FindAgyExecutable()
+    {
+        if (_agyResolved) return _agyPath;
+        _agyResolved = true;
+        _agyPath = LocateAgyExecutable();
+        return _agyPath;
+    }
+
+    private static string? LocateAgyExecutable()
     {
         var localApp = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -349,18 +373,11 @@ public sealed class AntigravityUsage : IDisposable
 
     private List<StepRecord> ScanAllSteps()
     {
-        var brainDir = Path.Combine(_baseDir, "brain");
-        if (!Directory.Exists(brainDir)) return [];
-
-        List<string> transcriptPaths;
-        try
-        {
-            transcriptPaths = Directory.EnumerateFiles(brainDir, "transcript.jsonl", SearchOption.AllDirectories).ToList();
-        }
-        catch
-        {
-            return [];
-        }
+        var transcriptPaths = _transcriptTree
+            .Snapshot(TimeSpan.FromDays(7))
+            .Select(f => f.Path)
+            .ToList();
+        if (transcriptPaths.Count == 0) return [];
 
         var results = new List<StepRecord>();
 
@@ -448,6 +465,19 @@ public sealed class AntigravityUsage : IDisposable
             catch { }
         }
 
+        DateTime? newest = null;
+        foreach (var path in logFiles)
+        {
+            try
+            {
+                var mtime = File.GetLastWriteTimeUtc(path);
+                if (newest is null || mtime > newest) newest = mtime;
+            }
+            catch { }
+        }
+        if (newest is not null && newest == _accountLogsStamp)
+            return _accountCached;
+
         string? email = null;
         string? plan = null;
 
@@ -477,7 +507,9 @@ public sealed class AntigravityUsage : IDisposable
         }
 
         if (email is not null && plan is null) plan = "Google AI Pro";
-        return (email, plan);
+        _accountLogsStamp = newest;
+        _accountCached = (email, plan);
+        return _accountCached;
     }
 
     private (bool Exhausted, long? ResetsAtMs) ScanQuotaExhaustion()

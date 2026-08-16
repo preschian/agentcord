@@ -64,11 +64,19 @@ public sealed class CodexUsage : IDisposable
         }
     }
 
-    public void Start()
+    public void Start() => SetEnabled(true);
+
+    public void SetEnabled(bool enabled)
     {
-        var first = Current is null ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(5);
-        _timer = new System.Threading.Timer(
-            _ => _ = FetchAsync(), null, first, PollInterval);
+        if (enabled)
+        {
+            if (_timer is not null) return;
+            var first = Current is null ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(5);
+            _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, first, PollInterval);
+            return;
+        }
+        _timer?.Dispose();
+        _timer = null;
     }
 
     public void Refresh()

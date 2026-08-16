@@ -29,9 +29,17 @@ public sealed class AnthropicStatus : IDisposable
     private DateTime _lastAttempt = DateTime.MinValue;
     private System.Threading.Timer? _timer;
 
-    public void Start()
+    public void Start() => SetEnabled(true);
+
+    public void SetEnabled(bool enabled)
     {
-        _timer = new System.Threading.Timer(_ => _ = FetchAsync(), null, TimeSpan.FromSeconds(1), PollInterval);
+        if (enabled)
+        {
+            _timer ??= new System.Threading.Timer(_ => _ = FetchAsync(), null, TimeSpan.FromSeconds(1), PollInterval);
+            return;
+        }
+        _timer?.Dispose();
+        _timer = null;
     }
 
     /// <summary>Request a refresh (e.g. when the menu opens). Throttled by

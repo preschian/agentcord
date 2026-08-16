@@ -31,6 +31,8 @@ public sealed class GrokSession
     private readonly Dictionary<string, DurationCacheEntry> _durationCache = new(StringComparer.OrdinalIgnoreCase);
     private bool _hasBuiltSummaryIndex;
     private (SessionInfo Info, long ActivityMs)? _lastKnown;
+    private DateTime? _authStamp;
+    private bool _authCached;
 
     public GrokSession(string? grokHome = null)
     {
@@ -66,7 +68,7 @@ public sealed class GrokSession
                 : ReadSignals(Path.GetDirectoryName(summaryPath)!);
             var tokens = signals?.ContextTokensUsed ?? 0;
             var modelRaw = summary?.ModelId ?? signals?.PrimaryModelId;
-            var project = RepoName(entry.Cwd, summary?.GitRemotes);
+            var project = ResolveRepoName(entry.Cwd, summary?.GitRemotes);
 
             var info = new SessionInfo
             {
@@ -110,10 +112,20 @@ public sealed class GrokSession
         try
         {
             var path = Path.Combine(_grokHome, "auth.json");
-            if (!File.Exists(path)) return false;
+            if (!File.Exists(path))
+            {
+                _authStamp = null;
+                _authCached = false;
+                return false;
+            }
+            var stamp = File.GetLastWriteTimeUtc(path);
+            if (_authCached && stamp == _authStamp) return true;
             using var doc = JsonDocument.Parse(ReadAllShared(path));
-            return doc.RootElement.ValueKind == JsonValueKind.Object
+            var ok = doc.RootElement.ValueKind == JsonValueKind.Object
                 && doc.RootElement.EnumerateObject().Any();
+            _authStamp = stamp;
+            _authCached = ok;
+            return ok;
         }
         catch
         {
@@ -180,41 +192,6 @@ public sealed class GrokSession
         public long? LastActiveMs;
     }
 
-    private sealed class JsonlCursor
-    {
-        public long Offset;
-        public string Leftover = "";
-
-        public (List<string> Lines, bool DidReset) PullLines(string path)
-        {
-            using var stream = new FileStream(
-                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            var size = stream.Length;
-            var didReset = false;
-            if (size < Offset)
-            {
-                Offset = 0;
-                Leftover = "";
-                didReset = true;
-            }
-            stream.Seek(Offset, SeekOrigin.Begin);
-            using var reader = new StreamReader(stream);
-            var text = Leftover + reader.ReadToEnd();
-            Offset = size;
-
-            var lines = new List<string>();
-            var start = 0;
-            for (var i = 0; i < text.Length; i++)
-            {
-                if (text[i] != '\n') continue;
-                var line = text[start..i].TrimEnd('\r');
-                if (line.Length > 0) lines.Add(line);
-                start = i + 1;
-            }
-            Leftover = text[start..];
-            return (lines, didReset);
-        }
-    }
     private sealed record SignalsMeta(long? ContextTokensUsed, long? ContextWindowTokens, string? PrimaryModelId);
 
     private string? FindSummary(string sessionId, string cwd)
@@ -352,7 +329,7 @@ public sealed class GrokSession
             var cwd = summary?.Cwd
                 ?? (encodedGroup is null ? null : Uri.UnescapeDataString(encodedGroup))
                 ?? "";
-            var project = RepoName(cwd, summary?.GitRemotes);
+            var project = ResolveRepoName(cwd, summary?.GitRemotes);
             var modelRaw = summary?.ModelId ?? signals?.PrimaryModelId;
             var info = new SessionInfo
             {
@@ -424,13 +401,14 @@ public sealed class GrokSession
             {
                 try
                 {
-                    var (lines, didReset) = entry.Cursor.PullLines(eventsPath);
-                    if (didReset) entry.StampsMs.Clear();
-                    foreach (var line in lines)
-                    {
-                        if (EventTimestampMs(line) is long ms)
-                            entry.StampsMs.Add(ms);
-                    }
+                    entry.Cursor.PullLines(
+                        eventsPath,
+                        line =>
+                        {
+                            if (EventTimestampMs(line) is long ms)
+                                entry.StampsMs.Add(ms);
+                        },
+                        () => entry.StampsMs.Clear());
                     entry.EventsMtime = eventsMtime;
                 }
                 catch
@@ -476,7 +454,7 @@ public sealed class GrokSession
 
     // --- Project name
 
-    private string RepoName(string cwd, IReadOnlyList<string>? remotes)
+    private string ResolveRepoName(string cwd, IReadOnlyList<string>? remotes)
     {
         if (remotes is { Count: > 0 })
         {
@@ -485,62 +463,10 @@ public sealed class GrokSession
         }
 
         if (string.IsNullOrWhiteSpace(cwd)) return "";
-        if (_repoNameCache.TryGetValue(cwd, out var cached)) return cached;
-
-        var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-        if (string.IsNullOrEmpty(name)) name = cwd;
-
-        if (RunGit(["-C", cwd, "config", "--get", "remote.origin.url"]) is { } remote)
-        {
-            var baseName = RepoNameFromRemote(remote);
-            if (baseName.Length > 0) name = baseName;
-        }
-        else if (RunGit(["-C", cwd, "rev-parse", "--show-toplevel"]) is { } top)
-        {
-            var baseName = Path.GetFileName(top.TrimEnd('\\', '/'));
-            if (!string.IsNullOrEmpty(baseName)) name = baseName;
-        }
-
-        _repoNameCache[cwd] = name;
-        return name;
+        return RepoNames.FromCwd(cwd, _repoNameCache);
     }
 
-    internal static string RepoNameFromRemote(string remote)
-    {
-        var baseName = remote.Split('/', '\\', ':')[^1];
-        if (baseName.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
-            baseName = baseName[..^4];
-        return baseName;
-    }
-
-    private static string? RunGit(string[] args)
-    {
-        try
-        {
-            var start = new ProcessStartInfo("git")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            foreach (var arg in args) start.ArgumentList.Add(arg);
-
-            using var process = Process.Start(start);
-            if (process is null) return null;
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            if (!process.WaitForExit(5000))
-            {
-                process.Kill();
-                return null;
-            }
-            return process.ExitCode == 0 && output.Length > 0 ? output : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    internal static string RepoNameFromRemote(string remote) => RepoNames.FromRemote(remote);
 
     // --- Helpers
 

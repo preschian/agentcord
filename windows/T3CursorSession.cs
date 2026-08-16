@@ -19,6 +19,8 @@ public sealed class T3CursorSession
 
     private readonly string _dbPath;
     private readonly Dictionary<string, string> _repoNameCache = [];
+    private DateTime? _stamp;
+    private SessionInfo? _cached;
 
     public T3CursorSession()
     {
@@ -28,19 +30,26 @@ public sealed class T3CursorSession
 
     public SessionInfo? Scan()
     {
-        if (!File.Exists(_dbPath)) return null;
+        if (!File.Exists(_dbPath))
+        {
+            _stamp = null;
+            _cached = null;
+            return null;
+        }
+
+        var stamp = LocalSqlite.DbStamp(_dbPath);
+        if (stamp == _stamp)
+        {
+            if (_cached is null) return null;
+            return SessionActivity.IsWithinWindow(_cached.LastModifiedMs, ActiveWindowSeconds)
+                ? _cached
+                : null;
+        }
+        _stamp = stamp;
 
         try
         {
-            var cs = new SqliteConnectionStringBuilder
-            {
-                DataSource = _dbPath,
-                Mode = SqliteOpenMode.ReadOnly,
-                Cache = SqliteCacheMode.Shared,
-            }.ToString();
-
-            using var conn = new SqliteConnection(cs);
-            conn.Open();
+            using var conn = LocalSqlite.OpenReadOnly(_dbPath);
 
             // Prefer an explicitly running Cursor turn; otherwise the newest
             // Cursor runtime that was seen inside the idle window.
@@ -86,11 +95,12 @@ public sealed class T3CursorSession
                 if (best is null || info.LastModifiedMs > best.LastModifiedMs)
                     best = info;
             }
+            _cached = best;
             return best;
         }
         catch
         {
-            return null;
+            return _cached;
         }
     }
 
@@ -135,7 +145,13 @@ public sealed class T3CursorSession
 
         var project = reader["project_title"] as string;
         if (string.IsNullOrWhiteSpace(project) && !string.IsNullOrWhiteSpace(cwd))
-            project = RepoName(cwd!);
+        {
+            project = RepoNames.FromCwd(cwd, _repoNameCache);
+            var parent = Path.GetFileName(Path.GetDirectoryName(cwd.TrimEnd('\\', '/')));
+            if (project.StartsWith("t3code-", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrEmpty(parent))
+                project = parent;
+        }
         if (string.IsNullOrWhiteSpace(project)) project = "Cursor";
 
         if (string.IsNullOrWhiteSpace(model) && reader["model_selection_json"] is string sel)
@@ -183,54 +199,4 @@ public sealed class T3CursorSession
         return dto.ToUnixTimeMilliseconds();
     }
 
-    private string RepoName(string cwd)
-    {
-        if (_repoNameCache.TryGetValue(cwd, out var cached)) return cached;
-        var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-        if (string.IsNullOrEmpty(name)) name = cwd;
-
-        // Prefer git remote like the other scanners, without flashing a console.
-        try
-        {
-            var start = new System.Diagnostics.ProcessStartInfo("git")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            start.ArgumentList.Add("-C");
-            start.ArgumentList.Add(cwd);
-            start.ArgumentList.Add("config");
-            start.ArgumentList.Add("--get");
-            start.ArgumentList.Add("remote.origin.url");
-            using var process = System.Diagnostics.Process.Start(start);
-            if (process is not null)
-            {
-                var output = process.StandardOutput.ReadToEnd().Trim();
-                if (process.WaitForExit(3000) && process.ExitCode == 0 && output.Length > 0)
-                {
-                    var baseName = output.Split('/', '\\')[^1];
-                    if (baseName.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
-                        baseName = baseName[..^4];
-                    if (baseName.Length > 0) name = baseName;
-                }
-            }
-        }
-        catch
-        {
-            // Directory name is fine.
-        }
-
-        // T3 worktrees look like .../agentcord/t3code-xxxx — prefer the repo folder.
-        var parent = Path.GetFileName(Path.GetDirectoryName(cwd.TrimEnd('\\', '/')));
-        if (name.StartsWith("t3code-", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrEmpty(parent))
-        {
-            name = parent;
-        }
-
-        _repoNameCache[cwd] = name;
-        return name;
-    }
 }

@@ -2,14 +2,13 @@
 // under %USERPROFILE%\.gemini\antigravity-cli\brain (or %ANTIGRAVITY_CLI_HOME%)
 // and tracking presence lock files and history.
 
-using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace AgentCord;
 
-public sealed class AntigravitySession
+public sealed class AntigravitySession : IDisposable
 {
     public double ActiveWindowSeconds { get; set; } = 60;
 
@@ -17,15 +16,21 @@ public sealed class AntigravitySession
     public string? PlanType { get; private set; }
 
     private readonly string _baseDir;
+    private readonly SessionTreeIndex _transcriptTree;
     private readonly Dictionary<string, CacheEntry> _cache = [];
     private readonly Dictionary<string, string> _repoNameCache = [];
     private readonly Dictionary<string, (string Workspace, long Timestamp)> _historyByConvId = [];
     private DateTime _historyCacheMtime = DateTime.MinValue;
+    private DateTime? _accountLogsStamp;
+    private bool _accountLogsScanned;
 
     public AntigravitySession(string? baseDir = null)
     {
         _baseDir = ResolveBaseDir(baseDir);
+        _transcriptTree = new SessionTreeIndex(Path.Combine(_baseDir, "brain"), "transcript.jsonl");
     }
+
+    public void Dispose() => _transcriptTree.Dispose();
 
     public static string ResolveBaseDir(string? customBaseDir = null)
     {
@@ -61,25 +66,9 @@ public sealed class AntigravitySession
         RefreshHistory();
         RefreshAccountInfo();
 
-        var brainDir = Path.Combine(_baseDir, "brain");
         var presenceDir = Path.Combine(_baseDir, "presence");
 
-        List<(string Path, DateTime Mtime)> transcriptFiles = [];
-        if (Directory.Exists(brainDir))
-        {
-            try
-            {
-                transcriptFiles = Directory
-                    .EnumerateFiles(brainDir, "transcript.jsonl", SearchOption.AllDirectories)
-                    .Select(p => (Path: p, Mtime: File.GetLastWriteTimeUtc(p)))
-                    .OrderByDescending(f => f.Mtime)
-                    .ToList();
-            }
-            catch
-            {
-                return null;
-            }
-        }
+        var transcriptFiles = _transcriptTree.Snapshot(TimeSpan.FromMilliseconds(SessionActivity.LookbackMs));
 
         // Check active presence locks
         var presenceLocks = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
@@ -121,7 +110,7 @@ public sealed class AntigravitySession
                 workspace = hist.Workspace;
 
             var project = !string.IsNullOrWhiteSpace(workspace)
-                ? RepoName(workspace)
+                ? RepoNames.FromCwd(workspace, _repoNameCache)
                 : "Antigravity";
 
             var info = new SessionInfo
@@ -146,7 +135,7 @@ public sealed class AntigravitySession
         return best is null ? null : WithRollingStart(best, transcriptFiles);
     }
 
-    private SessionInfo WithRollingStart(SessionInfo info, List<(string Path, DateTime Mtime)> files)
+    private SessionInfo WithRollingStart(SessionInfo info, IReadOnlyList<(string Path, DateTime Mtime)> files)
     {
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var cutoffMs = nowMs - SessionActivity.LookbackMs;
@@ -223,23 +212,20 @@ public sealed class AntigravitySession
     {
         if (AccountEmail is not null && PlanType is not null) return;
 
-        var logFiles = new List<string>();
-        var cliLog = Path.Combine(_baseDir, "cli.log");
-        if (File.Exists(cliLog)) logFiles.Add(cliLog);
-
-        var logDir = Path.Combine(_baseDir, "log");
-        if (Directory.Exists(logDir))
+        var logFiles = ListCliLogs();
+        DateTime? newest = null;
+        foreach (var path in logFiles)
         {
             try
             {
-                var files = Directory.EnumerateFiles(logDir, "cli-*.log")
-                    .Select(p => (Path: p, Mtime: File.GetLastWriteTimeUtc(p)))
-                    .OrderByDescending(f => f.Mtime)
-                    .Select(f => f.Path);
-                logFiles.AddRange(files);
+                var mtime = File.GetLastWriteTimeUtc(path);
+                if (newest is null || mtime > newest) newest = mtime;
             }
             catch { }
         }
+        if (_accountLogsScanned && newest == _accountLogsStamp) return;
+        _accountLogsScanned = true;
+        _accountLogsStamp = newest;
 
         foreach (var logFile in logFiles)
         {
@@ -300,159 +286,135 @@ public sealed class AntigravitySession
         public List<long> StampsMs = [];
     }
 
-    private sealed record CacheEntry(DateTime Mtime, TranscriptState State);
+    private List<string> ListCliLogs()
+    {
+        var logFiles = new List<string>();
+        var cliLog = Path.Combine(_baseDir, "cli.log");
+        if (File.Exists(cliLog)) logFiles.Add(cliLog);
+
+        var logDir = Path.Combine(_baseDir, "log");
+        if (!Directory.Exists(logDir)) return logFiles;
+        try
+        {
+            logFiles.AddRange(Directory.EnumerateFiles(logDir, "cli-*.log")
+                .Select(p => (Path: p, Mtime: File.GetLastWriteTimeUtc(p)))
+                .OrderByDescending(f => f.Mtime)
+                .Select(f => f.Path));
+        }
+        catch { }
+        return logFiles;
+    }
+
+    private sealed class CacheEntry
+    {
+        public DateTime Mtime;
+        public JsonlCursor Cursor = new();
+        public TranscriptState State = new();
+    }
 
     private TranscriptState ReadTranscript(string path, DateTime mtime, string? convId)
     {
-        if (_cache.TryGetValue(path, out var cached) && cached.Mtime == mtime)
+        if (!_cache.TryGetValue(path, out var cached))
+            cached = new CacheEntry();
+        if (cached.Mtime == mtime && _cache.ContainsKey(path))
             return cached.State;
 
-        var state = new TranscriptState();
-        if (convId is not null && _historyByConvId.TryGetValue(convId, out var hist) && !string.IsNullOrEmpty(hist.Workspace))
+        if (cached.State.Cwd is null
+            && convId is not null
+            && _historyByConvId.TryGetValue(convId, out var hist)
+            && !string.IsNullOrEmpty(hist.Workspace))
         {
-            state.Cwd = hist.Workspace;
+            cached.State.Cwd = hist.Workspace;
             if (hist.Timestamp > 0)
             {
-                state.StartedAtMs = hist.Timestamp;
-                state.LastEventAtMs = hist.Timestamp;
+                cached.State.StartedAtMs ??= hist.Timestamp;
+                cached.State.LastEventAtMs = Math.Max(cached.State.LastEventAtMs ?? hist.Timestamp, hist.Timestamp);
             }
         }
 
         try
         {
-            using var stream = new FileStream(
-                path, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-
-            while (reader.ReadLine() is { } line)
-            {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                JsonDocument doc;
-                try { doc = JsonDocument.Parse(line); }
-                catch { continue; }
-
-                using (doc)
-                {
-                    var root = doc.RootElement;
-                    if (root.ValueKind != JsonValueKind.Object) continue;
-
-                    long? lineMs = null;
-                    if (root.TryGetProperty("created_at", out var createdAt) && createdAt.ValueKind == JsonValueKind.String)
-                        lineMs = ClaudeSession.EpochMsFromIso(createdAt.GetString());
-
-                    if (lineMs is long eventMs)
-                    {
-                        state.StartedAtMs ??= eventMs;
-                        state.LastEventAtMs = Math.Max(state.LastEventAtMs ?? eventMs, eventMs);
-                        state.StampsMs.Add(eventMs);
-                    }
-
-                    if (root.TryGetProperty("content", out var contentElement) && contentElement.ValueKind == JsonValueKind.String)
-                    {
-                        var content = contentElement.GetString();
-                        if (!string.IsNullOrEmpty(content))
-                        {
-                            if (state.Model is null)
-                            {
-                                var modelMatch = Regex.Match(content, @"(?i)(?:Model Selection[`'""\s]*(?:from\s+[^`'""]+\s+)?to\s+|model[:=\s]+['""]?)(Gemini[^\r\n`'""<]+|gemini-[a-z0-9.-]+)");
-                                if (modelMatch.Success)
-                                    state.Model = modelMatch.Groups[1].Value;
-                            }
-
-                            if (state.Cwd is null)
-                            {
-                                var wsMatch = Regex.Match(content, @"([A-Za-z]:\\[^-\r\n\t]+|\/[^-\r\n\t]+)\s*->");
-                                if (wsMatch.Success)
-                                    state.Cwd = wsMatch.Groups[1].Value.Trim();
-                            }
-                        }
-                    }
-
-                    if (root.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var tool in toolCalls.EnumerateArray())
-                        {
-                            if (tool.TryGetProperty("args", out var args) && args.ValueKind == JsonValueKind.Object)
-                            {
-                                if (state.Cwd is null)
-                                {
-                                    var dir = StringProp(args, "DirectoryPath")
-                                        ?? StringProp(args, "SearchPath")
-                                        ?? StringProp(args, "Cwd");
-                                    if (!string.IsNullOrWhiteSpace(dir))
-                                        state.Cwd = dir;
-                                }
-                            }
-                        }
-                    }
-
-                    if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
-                    {
-                        var total = IntProp(usage, "total_tokens");
-                        if (total == 0) total = IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
-                        if (total > 0) state.TotalTokens += total;
-                    }
-                }
-            }
+            cached.Cursor.PullLines(
+                path,
+                line => ConsumeLine(line, cached.State),
+                () => cached.State = new TranscriptState());
         }
         catch { }
 
-        _cache[path] = new CacheEntry(mtime, state);
-        return state;
+        cached.Mtime = mtime;
+        _cache[path] = cached;
+        return cached.State;
     }
 
-    private string RepoName(string cwd)
+    private static void ConsumeLine(string line, TranscriptState state)
     {
-        if (_repoNameCache.TryGetValue(cwd, out var cached)) return cached;
+        if (string.IsNullOrWhiteSpace(line)) return;
 
-        var name = Path.GetFileName(cwd.TrimEnd('\\', '/'));
-        if (string.IsNullOrEmpty(name)) name = cwd;
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(line); }
+        catch { return; }
 
-        if (RunGit(["-C", cwd, "config", "--get", "remote.origin.url"]) is { } remote)
+        using (doc)
         {
-            var baseName = remote.Split('/', '\\')[^1];
-            if (baseName.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
-                baseName = baseName[..^4];
-            if (baseName.Length > 0) name = baseName;
-        }
-        else if (RunGit(["-C", cwd, "rev-parse", "--show-toplevel"]) is { } top)
-        {
-            var baseName = Path.GetFileName(top.TrimEnd('\\', '/'));
-            if (!string.IsNullOrEmpty(baseName)) name = baseName;
-        }
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return;
 
-        _repoNameCache[cwd] = name;
-        return name;
-    }
+            long? lineMs = null;
+            if (root.TryGetProperty("created_at", out var createdAt) && createdAt.ValueKind == JsonValueKind.String)
+                lineMs = ClaudeSession.EpochMsFromIso(createdAt.GetString());
 
-    private static string? RunGit(string[] args)
-    {
-        try
-        {
-            var start = new ProcessStartInfo("git")
+            if (lineMs is long eventMs)
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            foreach (var arg in args) start.ArgumentList.Add(arg);
-
-            using var process = Process.Start(start);
-            if (process is null) return null;
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            if (!process.WaitForExit(5000))
-            {
-                process.Kill();
-                return null;
+                state.StartedAtMs ??= eventMs;
+                state.LastEventAtMs = Math.Max(state.LastEventAtMs ?? eventMs, eventMs);
+                state.StampsMs.Add(eventMs);
             }
-            return process.ExitCode == 0 && output.Length > 0 ? output : null;
-        }
-        catch
-        {
-            return null;
+
+            if (root.TryGetProperty("content", out var contentElement) && contentElement.ValueKind == JsonValueKind.String)
+            {
+                var content = contentElement.GetString();
+                if (!string.IsNullOrEmpty(content))
+                {
+                    if (state.Model is null)
+                    {
+                        var modelMatch = Regex.Match(content, @"(?i)(?:Model Selection[`'""\s]*(?:from\s+[^`'""]+\s+)?to\s+|model[:=\s]+['""]?)(Gemini[^\r\n`'""<]+|gemini-[a-z0-9.-]+)");
+                        if (modelMatch.Success)
+                            state.Model = modelMatch.Groups[1].Value;
+                    }
+
+                    if (state.Cwd is null)
+                    {
+                        var wsMatch = Regex.Match(content, @"([A-Za-z]:\\[^-\r\n\t]+|\/[^-\r\n\t]+)\s*->");
+                        if (wsMatch.Success)
+                            state.Cwd = wsMatch.Groups[1].Value.Trim();
+                    }
+                }
+            }
+
+            if (root.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var tool in toolCalls.EnumerateArray())
+                {
+                    if (tool.TryGetProperty("args", out var args) && args.ValueKind == JsonValueKind.Object)
+                    {
+                        if (state.Cwd is null)
+                        {
+                            var dir = StringProp(args, "DirectoryPath")
+                                ?? StringProp(args, "SearchPath")
+                                ?? StringProp(args, "Cwd");
+                            if (!string.IsNullOrWhiteSpace(dir))
+                                state.Cwd = dir;
+                        }
+                    }
+                }
+            }
+
+            if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+            {
+                var total = IntProp(usage, "total_tokens");
+                if (total == 0) total = IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
+                if (total > 0) state.TotalTokens += total;
+            }
         }
     }
 

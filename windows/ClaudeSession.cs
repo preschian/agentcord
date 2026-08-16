@@ -116,7 +116,7 @@ public sealed class ClaudeSession : IDisposable
     {
         if (!_aggregateCache.TryGetValue(path, out var entry))
             entry = new CacheEntry { DayStartMs = dayStartMs };
-        else if (entry.Mtime == mtime && entry.DayStartMs == dayStartMs)
+        else if (entry.Mtime == mtime && entry.DayStartMs == dayStartMs && entry.Cursor.IsCurrent(path))
             return entry.Aggregate;
 
         if (entry.DayStartMs != dayStartMs)

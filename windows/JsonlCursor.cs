@@ -25,6 +25,15 @@ internal sealed class JsonlCursor
         Leftover = "";
     }
 
+    /// <summary>True when the file has not grown past the last pull. NTFS
+    /// mtime can stay put for appends in the same second, so callers must
+    /// not treat an unchanged mtime as "nothing new".</summary>
+    public bool IsCurrent(string path)
+    {
+        try { return new FileInfo(path).Length <= Offset; }
+        catch { return true; }
+    }
+
     /// <summary>Calls <paramref name="consume"/> for each newly completed
     /// line. <paramref name="onReset"/> runs first when the file shrank
     /// (rotated / rewritten) so the caller can drop stale aggregates before

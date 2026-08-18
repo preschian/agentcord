@@ -11,6 +11,7 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Codex scan: newest `~/.codex/sessions/**/*.jsonl` (`CODEX_HOME` honored), tail parse for `session_meta` / `turn_context` / `token_count`
 - Winner = newest `activity_ms`; presence payload uses production Discord app id `1517099756063686677`
 - Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Claude/Codex/Cursor/Grok toggles), agent detail, Quit
+- Window height follows content (`Window::resize` after layout); width stays 307
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
 - Parser / presence unit tests: `cargo test`
 
@@ -56,7 +57,7 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 
 ### UI polish
 
-- [ ] Size-to-content height (production popover is `Width=330` + `SizeToContent=Height`)
+- Size-to-content height: window width stays 307; height is measured from layout and `Window::resize`d (WPF `SizeToContent=Height`)
 - [ ] Segoe Fluent / MDL2 glyphs — GPUI cannot render those PUA codepoints (they became boxes); current UI uses `⚙ › ‹ ⊞`
 - [ ] Window-chrome corner radius 12 to match the WPF card (tried, reverted)
 - [ ] Hide-on-close / stay running in tray
@@ -71,7 +72,7 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 
 - `gpui::Window::start_window_move` is not a Windows API. Do not call it; it can panic. Native move is `PostMessage(WM_SYSCOMMAND, SC_MOVE | HTCAPTION)` **after** the mouse-down handler returns (`cx.defer`). `SendMessage` re-enters GPUI and crashes.
 - Launch the debug exe via Explorer (see root `AGENTS.md`). `cargo run` / a job-owned process can die with the agent session.
-- Outer HWND is ~13px wider than the client. Current request is 307×380 so four agent rows fit.
+- Outer HWND is ~13px wider than the client. Width request is 307; height follows content.
 - Discord Rich Presence needs the desktop client, not the browser.
 
 ## Run

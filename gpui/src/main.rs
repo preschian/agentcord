@@ -37,6 +37,7 @@ const OFF_PILL_BORDER: u32 = 0xd8d8dc;
 const TRACK: u32 = 0xd5d5d7;
 const DISCORD: u32 = 0x5865f2;
 const LOGO: u32 = 0x1b1b1d;
+const WINDOW_WIDTH: f32 = 307.;
 
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -197,19 +198,43 @@ impl Render for AgentCord {
         div()
             .flex()
             .flex_col()
-            .size_full()
+            .w_full()
             .bg(rgb(SHELL))
             .text_color(rgb(TEXT))
             .font_family("Segoe UI")
+            .on_children_prepainted(|children, window, cx| {
+                let Some(child) = children.first() else {
+                    return;
+                };
+                fit_window_height(window, cx, child.size.height);
+            })
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .size_full()
+                    .w_full()
+                    .flex_shrink_0()
                     .p(px(13.))
                     .child(body),
             )
     }
+}
+
+fn fit_window_height(window: &mut Window, cx: &mut App, height: gpui::Pixels) {
+    if height < px(80.) {
+        return;
+    }
+    let current = window.viewport_size().height;
+    if (current - height).abs() < px(1.) {
+        return;
+    }
+    window.defer(cx, move |window, _| {
+        let current = window.viewport_size().height;
+        if (current - height).abs() < px(1.) {
+            return;
+        }
+        window.resize(size(px(WINDOW_WIDTH), height));
+    });
 }
 
 fn main_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement {
@@ -223,7 +248,8 @@ fn main_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement
     div()
         .flex()
         .flex_col()
-        .size_full()
+        .w_full()
+        .flex_shrink_0()
         .child(header(app.presence_on, &snap, agents.len(), active, cx))
         .child(agent_list(app, &agents, cx))
         .child(settings_row(agents.len(), cx))
@@ -235,7 +261,8 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
     div()
         .flex()
         .flex_col()
-        .size_full()
+        .w_full()
+        .flex_shrink_0()
         .child(nav_header(
             "Settings",
             cx.listener(|this, _, _, cx| {
@@ -358,7 +385,8 @@ fn detail_screen(
     div()
         .flex()
         .flex_col()
-        .size_full()
+        .w_full()
+        .flex_shrink_0()
         .child(nav_header(
             agent.display_name(),
             cx.listener(|this, _, _, cx| {
@@ -858,8 +886,8 @@ mod native {
 
 fn main() {
     Application::new().run(|cx: &mut App| {
-        // Frame adds ~13px. 307 client → ~320 outer.
-        let bounds = Bounds::centered(None, size(px(307.), px(380.)), cx);
+        // Width is fixed; height starts large enough to measure, then fits content.
+        let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(500.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

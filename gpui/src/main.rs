@@ -4,9 +4,8 @@
 
 use agentcord_gpui::discord::{Client, ConnState};
 use agentcord_gpui::session::{
-    build_activity, claude_linked, codex_linked, cursor_linked, format_clock, format_tokens,
-    grok_linked, now_ms, pick_winner, scan_claude, scan_codex, scan_cursor, scan_grok, AgentKind,
-    LiveSessions, SessionInfo, DISCORD_CLIENT_ID,
+    build_activity, format_clock, format_tokens, now_ms, pick_winner, AgentKind, LiveSessions,
+    ScanHandle, ScanWanted, SessionInfo, DISCORD_CLIENT_ID,
 };
 use agentcord_gpui::settings::{self, Settings};
 use agentcord_gpui::status::{self, StatusInfo};
@@ -76,6 +75,7 @@ struct AgentCord {
     screen: Screen,
     usage: Arc<Mutex<UsageSnapshot>>,
     status: Arc<Mutex<Option<StatusInfo>>>,
+    scans: ScanHandle,
     expand_status: bool,
     revealed_email: bool,
     _tray: Option<tray::Tray>,
@@ -98,6 +98,7 @@ impl AgentCord {
             .ok();
         })
         .detach();
+        let scans = ScanHandle::spawn(ScanWanted::from_settings(&settings));
         let mut app = Self {
             discord,
             settings,
@@ -109,6 +110,7 @@ impl AgentCord {
             screen: Screen::Main,
             usage: usage::spawn(),
             status: status::spawn(),
+            scans,
             expand_status: false,
             revealed_email: false,
             _tray: tray,
@@ -123,32 +125,20 @@ impl AgentCord {
     }
 
     fn tick(&mut self) {
-        self.claude_is_linked = claude_linked();
-        self.codex_is_linked = codex_linked();
-        self.grok_is_linked = grok_linked();
-        self.cursor_is_linked = cursor_linked();
+        self.scans
+            .set_wanted(ScanWanted::from_settings(&self.settings));
+        let snap = self.scans.snapshot();
+        self.sessions = snap.sessions;
+        self.claude_is_linked = snap.claude_linked;
+        self.codex_is_linked = snap.codex_linked;
+        self.grok_is_linked = snap.grok_linked;
+        self.cursor_is_linked = snap.cursor_linked;
 
-        let idle = self.settings.idle_window_seconds;
-        let mut sessions = LiveSessions::default();
-        if self.settings.agent_claude_enabled {
-            sessions.claude = scan_claude(idle);
-        }
-        if self.settings.agent_codex_enabled {
-            sessions.codex = scan_codex(idle);
-        }
-        if self.settings.agent_grok_enabled {
-            sessions.grok = scan_grok(idle);
-        }
-        if self.settings.agent_cursor_enabled {
-            sessions.cursor = scan_cursor(idle);
-        }
-        self.sessions = sessions;
-
-        let snap = self.discord.snapshot();
+        let discord_snap = self.discord.snapshot();
         let winner = pick_winner(&self.sessions).cloned();
         if self.settings.presence_enabled {
             self.discord.connect(DISCORD_CLIENT_ID);
-            if snap.ready {
+            if discord_snap.ready {
                 self.discord.set_activity(
                     winner
                         .as_ref()
@@ -157,9 +147,9 @@ impl AgentCord {
                 );
             }
         }
-        let discord = if snap.ready || snap.state == ConnState::Connected {
+        let discord = if discord_snap.ready || discord_snap.state == ConnState::Connected {
             "Connected"
-        } else if snap.state == ConnState::Connecting {
+        } else if discord_snap.state == ConnState::Connecting {
             "Connecting"
         } else {
             "Disconnected"
@@ -170,7 +160,7 @@ impl AgentCord {
             tray.set_tip(&usage::tray_tip(
                 winner.as_ref(),
                 discord,
-                snap.last_error.as_deref(),
+                discord_snap.last_error.as_deref(),
                 &usage,
                 &enabled,
                 &self.settings,

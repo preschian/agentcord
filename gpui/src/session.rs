@@ -7,8 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const DISCORD_CLIENT_ID: &str = "1517099756063686677";
 pub const IDLE_WINDOW_SECS: f64 = 300.0;
@@ -81,6 +82,101 @@ impl LiveSessions {
         ]
         .into_iter()
         .flatten()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ScanWanted {
+    pub idle_secs: f64,
+    pub claude: bool,
+    pub codex: bool,
+    pub grok: bool,
+    pub cursor: bool,
+}
+
+impl Default for ScanWanted {
+    fn default() -> Self {
+        Self {
+            idle_secs: IDLE_WINDOW_SECS,
+            claude: true,
+            codex: true,
+            grok: true,
+            cursor: true,
+        }
+    }
+}
+
+impl ScanWanted {
+    pub fn from_settings(s: &Settings) -> Self {
+        Self {
+            idle_secs: s.idle_window_seconds,
+            claude: s.agent_claude_enabled,
+            codex: s.agent_codex_enabled,
+            grok: s.agent_grok_enabled,
+            cursor: s.agent_cursor_enabled,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ScanSnapshot {
+    pub sessions: LiveSessions,
+    pub claude_linked: bool,
+    pub codex_linked: bool,
+    pub grok_linked: bool,
+    pub cursor_linked: bool,
+}
+
+pub struct ScanHandle {
+    inner: Arc<Mutex<(ScanWanted, ScanSnapshot)>>,
+}
+
+impl ScanHandle {
+    pub fn spawn(wanted: ScanWanted) -> Self {
+        let snap = scan_wanted(wanted);
+        let inner = Arc::new(Mutex::new((wanted, snap)));
+        let bg = inner.clone();
+        thread::Builder::new()
+            .name("agentcord-session".into())
+            .spawn(move || loop {
+                thread::sleep(Duration::from_secs(1));
+                let wanted = bg.lock().ok().map(|g| g.0).unwrap_or_default();
+                let snap = scan_wanted(wanted);
+                if let Ok(mut g) = bg.lock() {
+                    g.1 = snap;
+                }
+            })
+            .ok();
+        Self { inner }
+    }
+
+    pub fn set_wanted(&self, wanted: ScanWanted) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.0 = wanted;
+        }
+    }
+
+    pub fn snapshot(&self) -> ScanSnapshot {
+        self.inner
+            .lock()
+            .ok()
+            .map(|g| g.1.clone())
+            .unwrap_or_default()
+    }
+}
+
+fn scan_wanted(w: ScanWanted) -> ScanSnapshot {
+    ScanSnapshot {
+        sessions: LiveSessions {
+            claude: w.claude.then(|| scan_claude(w.idle_secs)).flatten(),
+            codex: w.codex.then(|| scan_codex(w.idle_secs)).flatten(),
+            grok: w.grok.then(|| scan_grok(w.idle_secs)).flatten(),
+            cursor: w.cursor.then(|| scan_cursor(w.idle_secs)).flatten(),
+        },
+        claude_linked: claude_linked(),
+        codex_linked: codex_linked(),
+        grok_linked: grok_linked(),
+        cursor_linked: cursor_linked(),
     }
 }
 

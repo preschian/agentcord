@@ -307,6 +307,73 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Cursor_counts_a_live_agent_turn_longer_than_the_five_minute_gap()
+    {
+        using var dir = TempDir.Create();
+        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
+        Directory.CreateDirectory(transcripts);
+        var transcript = Path.Combine(transcripts, "abc123.jsonl");
+
+        // One user stamp 12 minutes ago, then 12 minutes of agent writes.
+        // The 5-minute gap cap used to treat that as idle and reset Discord to 00:00.
+        var started = DateTimeOffset.Now.AddMinutes(-12);
+        File.WriteAllText(transcript, CursorUserLine(started, "long turn"));
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
+
+        var createdAtMs = started.ToUnixTimeMilliseconds();
+        var updatedAtMs = DateTimeOffset.UtcNow.AddSeconds(-5).ToUnixTimeMilliseconds();
+        var chatDir = Path.Combine(dir.Root, "chats", "workspace", "abc123");
+        Directory.CreateDirectory(chatDir);
+        File.WriteAllText(Path.Combine(chatDir, "meta.json"),
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"createdAtMs\":" + createdAtMs +
+            ",\"updatedAtMs\":" + updatedAtMs + "}");
+
+        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        Assert.InRange(elapsed, 10 * 60_000L, 14 * 60_000L);
+    }
+
+    [Fact]
+    public void Cursor_sums_working_time_across_sessions_in_the_last_24_hours()
+    {
+        using var dir = TempDir.Create();
+        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
+        Directory.CreateDirectory(transcripts);
+        var now = DateTimeOffset.Now;
+
+        File.WriteAllText(Path.Combine(transcripts, "morning.jsonl"), CursorBurst(now.AddHours(-6), now.AddHours(-5)));
+        File.WriteAllText(Path.Combine(transcripts, "evening.jsonl"), CursorBurst(now.AddHours(-1), now.AddSeconds(-8)));
+        File.SetLastWriteTimeUtc(Path.Combine(transcripts, "morning.jsonl"), now.AddHours(-5).UtcDateTime);
+        File.SetLastWriteTimeUtc(Path.Combine(transcripts, "evening.jsonl"), now.AddSeconds(-8).UtcDateTime);
+
+        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        Assert.InRange(elapsed, 2 * 3600_000L - 90_000, 2 * 3600_000L + 90_000);
+    }
+
+    private static string CursorBurst(DateTimeOffset start, DateTimeOffset end)
+    {
+        var text = "";
+        foreach (var ts in Burst(start, end))
+            text += CursorUserLine(ts, "hi");
+        return text;
+    }
+
+    private static string CursorUserLine(DateTimeOffset local, string text)
+    {
+        var stamp = local.ToString("dddd, MMM d, yyyy, h:mm tt", CultureInfo.GetCultureInfo("en-US"));
+        var offsetLabel = FormatUtcOffset(local.Offset);
+        return "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<timestamp>" +
+            stamp + " (UTC" + offsetLabel + ")</timestamp>\\n" + text + "\"}]}}\n";
+    }
+
+    [Fact]
     public void Antigravity_detects_active_session_from_transcript_and_history()
     {
         using var dir = TempDir.Create();

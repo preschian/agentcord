@@ -253,12 +253,13 @@ final class CursorSession: ObservableObject {
         let recentURLs = Set(recentFiles.map(\.url))
         transcriptCache = transcriptCache.filter { recentURLs.contains($0.key) }
 
+        // Newest transcript is already inside the 60s active window, so the
+        // open gap since the last user stamp is the current agent turn — not
+        // idle. Capping it at 5 minutes made Discord's timer snap back to 0.
         var elapsedMs = totalActiveMs
         if let last = activeLastMs {
             let tail = nowMs - last
-            if tail > 0 && tail <= Self.activeGapToleranceMs {
-                elapsedMs += tail
-            }
+            if tail > 0 { elapsedMs += tail }
         }
         let startMs = nowMs - elapsedMs
 
@@ -290,10 +291,13 @@ final class CursorSession: ObservableObject {
     // MARK: 24h duration
 
     private func transcriptAggregate(url: URL, mtime: Date) -> TranscriptCacheEntry {
-        var entry = transcriptCache[url] ?? TranscriptCacheEntry(mtime: mtime)
-        if entry.mtime == mtime {
-            return entry
+        // Seeding a miss with the current mtime makes the equality check a
+        // false hit, so the JSONL is never parsed and Discord's start stays
+        // "now" (elapsed 00:00).
+        if let cached = transcriptCache[url], cached.mtime == mtime {
+            return cached
         }
+        var entry = transcriptCache[url] ?? TranscriptCacheEntry(mtime: mtime)
 
         let sessionID = url.deletingPathExtension().lastPathComponent
         let meta = readMeta(sessionID: sessionID, includeModel: false)
@@ -330,20 +334,19 @@ final class CursorSession: ObservableObject {
             return (end - start, end)
         }
 
+        // User-turn stamps only (minute resolution). Do not drop `updatedAt`
+        // into the 5-minute gap-sum: while the agent is writing it sits at
+        // "now", the gap looks idle, and elapsed collapses to 0.
         var points = inWindowConversational
         if let createdAtMs, createdAtMs >= cutoffMs && createdAtMs <= nowMs {
             points.append(createdAtMs)
         }
-        if let updatedAtMs, updatedAtMs >= cutoffMs && updatedAtMs <= nowMs {
-            points.append(updatedAtMs)
-        }
         if let createdAtMs, let updatedAtMs, createdAtMs < cutoffMs, updatedAtMs >= cutoffMs {
             points.append(cutoffMs)
-            points.append(min(updatedAtMs, nowMs))
         }
 
         let unique = Array(Set(points)).sorted()
-        guard let last = unique.last else { return (0, nil) }
+        guard let lastStamp = unique.last else { return (0, nil) }
 
         var active: Int64 = 0
         for index in 1..<unique.count {
@@ -352,7 +355,10 @@ final class CursorSession: ObservableObject {
                 active += delta
             }
         }
-        return (active, last)
+
+        let endMs = min(updatedAtMs ?? lastStamp, nowMs)
+        if endMs > lastStamp { active += endMs - lastStamp }
+        return (active, max(lastStamp, endMs))
     }
 
     private static let timestampRegex: NSRegularExpression = {

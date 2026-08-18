@@ -253,10 +253,10 @@ final class ClaudeSession: ObservableObject {
     private var aggregateCache: [URL: CacheEntry] = [:]
 
     private func aggregate(url: URL, mtime: Date, dayStartMs: Int64) -> DayAggregate {
-        var entry = aggregateCache[url] ?? CacheEntry(mtime: mtime, dayStartMs: dayStartMs)
-        if entry.mtime == mtime, entry.dayStartMs == dayStartMs {
-            return entry.aggregate
+        if let cached = aggregateCache[url], cached.mtime == mtime, cached.dayStartMs == dayStartMs {
+            return cached.aggregate
         }
+        var entry = aggregateCache[url] ?? CacheEntry(mtime: mtime, dayStartMs: dayStartMs)
 
         if entry.dayStartMs != dayStartMs {
             entry = CacheEntry(mtime: mtime, dayStartMs: dayStartMs)

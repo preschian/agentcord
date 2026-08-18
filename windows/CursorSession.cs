@@ -125,11 +125,13 @@ public sealed class CursorSession
         if (bestPath is null) return null;
         if (!SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds)) return null;
 
+        // Newest transcript is already inside the active window, so the open
+        // gap since the last user stamp is the current agent turn — not idle.
         var elapsedMs = totalActiveMs;
         if (activeLastMs is long last)
         {
             var tail = nowMs - last;
-            if (tail > 0 && tail <= ActiveGapToleranceMs) elapsedMs += tail;
+            if (tail > 0) elapsedMs += tail;
         }
 
         var sessionId = Path.GetFileNameWithoutExtension(bestPath);
@@ -288,14 +290,14 @@ public sealed class CursorSession
             return end > start ? (end - start, end) : (0, null);
         }
 
+        // User-turn stamps only. Leave updatedAt out of the 5-minute gap-sum —
+        // while the agent is writing it sits at "now" and elapsed collapses to 0.
         var points = new HashSet<long>(inWindow);
         if (createdAtMs is long c && c >= cutoffMs && c <= nowMs) points.Add(c);
-        if (updatedAtMs is long u && u >= cutoffMs && u <= nowMs) points.Add(u);
         if (createdAtMs is long createdBefore && updatedAtMs is long updatedAfter
             && createdBefore < cutoffMs && updatedAfter >= cutoffMs)
         {
             points.Add(cutoffMs);
-            points.Add(Math.Min(updatedAfter, nowMs));
         }
 
         var unique = points.OrderBy(ms => ms).ToList();
@@ -307,7 +309,11 @@ public sealed class CursorSession
             var delta = unique[i] - unique[i - 1];
             if (delta > 0 && delta <= ActiveGapToleranceMs) active += delta;
         }
-        return (active, unique[^1]);
+
+        var lastStamp = unique[^1];
+        var endMs = Math.Min(updatedAtMs ?? lastStamp, nowMs);
+        if (endMs > lastStamp) active += endMs - lastStamp;
+        return (active, Math.Max(lastStamp, endMs));
     }
 
     private static IEnumerable<long> TimestampsInJsonlLine(string line)

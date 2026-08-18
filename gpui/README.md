@@ -2,7 +2,7 @@
 
 Windows-first AgentCord on [GPUI](https://gpui.rs): Claude, Codex, Cursor, and Grok sessions → Discord Rich Presence.
 
-Lives next to the production C# app in [`../windows`](../windows). Leftover ship work: [#115](https://github.com/preschian/agentcord/issues/115).
+**Prototype.** Production Windows remains the C# tray app in [`../windows`](../windows). Releases attach `agentcord-gpui.exe` next to `agentcord.exe`; the `agentcord.exe` download URL stays the C# build.
 
 - Discord IPC on `\\.\pipe\discord-ipc-{0..9}`
 - Claude / Codex / Cursor / Grok session scans; Cursor turn times from user hooks

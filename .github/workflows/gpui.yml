@@ -1,0 +1,39 @@
+name: GPUI CI
+
+on:
+  push:
+    paths:
+      - "gpui/**"
+      - ".github/workflows/gpui.yml"
+  pull_request:
+    paths:
+      - "gpui/**"
+      - ".github/workflows/gpui.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: gpui
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpui
+
+      - name: Test
+        run: cargo test
+
+      - name: Build release
+        run: cargo build --release

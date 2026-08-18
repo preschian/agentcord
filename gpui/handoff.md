@@ -21,7 +21,7 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Tray tooltip: session line + compact usage, 63-char cap
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
 - Settings persist to `%APPDATA%\AgentCord\settings.json`; launch at login; prevent sleep; display toggles; activity type cycle; idle window ticks 0–30 min
-- `WindowKind::PopUp` (no taskbar); close hides to tray; Quit / logoff clears presence; single-instance mutex
+- `WindowKind::Normal` (stays on the taskbar so the prototype is findable); close hides to tray; Quit / logoff clears presence; single-instance mutex
 - Parser / presence unit tests: `cargo test`
 
 ## Not done

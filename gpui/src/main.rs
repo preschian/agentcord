@@ -1456,7 +1456,7 @@ fn main() {
                     traffic_light_position: None,
                 }),
                 window_decorations: Some(WindowDecorations::Client),
-                kind: WindowKind::PopUp,
+                kind: WindowKind::Normal,
                 is_resizable: false,
                 ..Default::default()
             },

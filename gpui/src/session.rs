@@ -496,8 +496,13 @@ fn note_stamp(agg: &mut JsonlAgg, ms: i64) {
 }
 
 // ponytail: 30s tree walk, watcher if new sessions lag
-fn tree_snapshot(root: &Path, max_depth: usize, keep: impl Fn(&Path) -> bool) -> Vec<(PathBuf, i64)> {
-    let key = root.to_string_lossy().into_owned();
+fn tree_snapshot(
+    root: &Path,
+    tag: &str,
+    max_depth: usize,
+    keep: impl Fn(&Path) -> bool,
+) -> Vec<(PathBuf, i64)> {
+    let key = format!("{}\0{tag}", root.to_string_lossy());
     let now = now_ms();
     let mut trees = TREES.lock().unwrap();
     let snap = trees.entry(key).or_insert(TreeSnap {
@@ -698,7 +703,7 @@ fn grok_newest_recent(home: &Path, idle_secs: f64, now: i64) -> Option<SessionIn
     if !sessions.is_dir() {
         return None;
     }
-    let files = tree_snapshot(&sessions, 8, |p| {
+    let files = tree_snapshot(&sessions, "grok-summary", 8, |p| {
         p.file_name().and_then(|n| n.to_str()) == Some("summary.json")
     });
     let mut best: Option<SessionInfo> = None;
@@ -797,7 +802,7 @@ fn grok_rolling_start(home: &Path) -> i64 {
     if !sessions.is_dir() {
         return now_ms();
     }
-    let files = tree_snapshot(&sessions, 8, |p| {
+    let files = tree_snapshot(&sessions, "grok-events", 8, |p| {
         p.file_name().and_then(|n| n.to_str()) == Some("events.jsonl")
     });
     rolling_start(&files, parse_grok_event_line)
@@ -825,7 +830,7 @@ fn scan_claude_from(projects: &Path, idle_secs: f64) -> Option<SessionInfo> {
         return None;
     }
     let now = now_ms();
-    let files = tree_snapshot(projects, 8, |p| {
+    let files = tree_snapshot(projects, "claude-jsonl", 8, |p| {
         p.extension().and_then(|e| e.to_str()) == Some("jsonl")
     });
     let mut best: Option<(PathBuf, i64, JsonlAgg)> = None;
@@ -865,7 +870,7 @@ fn scan_codex_from(sessions: &Path, idle_secs: f64) -> Option<SessionInfo> {
         return None;
     }
     let now = now_ms();
-    let files = tree_snapshot(sessions, 8, |p| {
+    let files = tree_snapshot(sessions, "codex-jsonl", 8, |p| {
         p.extension().and_then(|e| e.to_str()) == Some("jsonl")
     });
     let mut best: Option<(PathBuf, i64, JsonlAgg)> = None;
@@ -910,7 +915,7 @@ fn scan_cursor_from(home: &Path, idle_secs: f64) -> Option<SessionInfo> {
     }
     let now = now_ms();
     let chats = home.join("chats");
-    let files = tree_snapshot(&projects, 12, |p| {
+    let files = tree_snapshot(&projects, "cursor-jsonl", 12, |p| {
         let s = p.to_string_lossy();
         s.contains("agent-transcripts") && s.ends_with(".jsonl")
     });
@@ -1293,7 +1298,7 @@ fn find_cursor_meta(chats: &Path, session_id: &str) -> Option<PathBuf> {
     if !chats.is_dir() || session_id.is_empty() {
         return None;
     }
-    tree_snapshot(chats, 8, |p| {
+    tree_snapshot(chats, "cursor-meta", 8, |p| {
         p.file_name().and_then(|n| n.to_str()) == Some("meta.json")
     })
     .into_iter()
@@ -1841,6 +1846,58 @@ mod tests {
         let info = scan_cursor_from(&home, 180.0).unwrap();
         assert_eq!(info.agent, AgentKind::Cursor);
         assert!(within_idle(info.activity_ms, now_ms(), 180.0));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn tree_snapshot_isolates_filters_on_same_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentcord-tree-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("session.jsonl"), "{}\n").unwrap();
+        fs::write(dir.join("summary.json"), "{}\n").unwrap();
+        let jsonl = tree_snapshot(&dir, "jsonl", 2, |p| {
+            p.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        });
+        let summary = tree_snapshot(&dir, "summary", 2, |p| {
+            p.file_name().and_then(|n| n.to_str()) == Some("summary.json")
+        });
+        assert_eq!(jsonl.len(), 1);
+        assert_eq!(summary.len(), 1);
+        assert!(jsonl[0].0.ends_with("session.jsonl"));
+        assert!(summary[0].0.ends_with("summary.json"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn grok_elapsed_uses_events_after_summary_walk() {
+        let home = std::env::temp_dir().join(format!(
+            "agentcord-grok-elapsed-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let sess = home.join("sessions").join("proj").join("sid");
+        fs::create_dir_all(&sess).unwrap();
+        fs::write(sess.join("summary.json"), "{}\n").unwrap();
+        let now = now_ms();
+        fs::write(
+            sess.join("events.jsonl"),
+            format!("{{\"ts\":{}}}\n{{\"ts\":{}}}\n", now - 60_000, now - 5_000),
+        )
+        .unwrap();
+        let sessions = home.join("sessions");
+        let _ = tree_snapshot(&sessions, "grok-summary", 8, |p| {
+            p.file_name().and_then(|n| n.to_str()) == Some("summary.json")
+        });
+        let start = grok_rolling_start(&home);
+        let elapsed = now_ms() - start;
+        assert!(
+            elapsed >= 50_000 && elapsed < 90_000,
+            "elapsed={elapsed}"
+        );
         let _ = fs::remove_dir_all(&home);
     }
 

@@ -12,6 +12,7 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Winner = newest `activity_ms`; presence payload uses production Discord app id `1517099756063686677`
 - Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Claude/Codex/Cursor/Grok toggles), agent detail, Quit
 - Window height follows content (`Window::resize` after layout); width stays 307
+- `WindowKind::Normal` so the prototype appears on the taskbar (`PopUp` is `WS_EX_TOOLWINDOW` and stays hidden until tray exists)
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
 - Parser / presence unit tests: `cargo test`
 

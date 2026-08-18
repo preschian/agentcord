@@ -19,7 +19,6 @@ public sealed class CursorSession : IDisposable
     /// <summary>A transcript counts as active if modified within this window.</summary>
     public double ActiveWindowSeconds { get; set; } = 60;
 
-    private const long ActiveGapToleranceMs = 5 * 60 * 1000;
     private const long LookbackMs = 24 * 60 * 60 * 1000;
 
     private static readonly Regex TimestampRegex = new(
@@ -65,11 +64,18 @@ public sealed class CursorSession : IDisposable
     public SessionInfo? Scan()
     {
         _t3Scanner.ActiveWindowSeconds = ActiveWindowSeconds;
-        var candidates = new List<SessionInfo?> { ScanTranscripts(), ScanAcp() };
+        var transcripts = ScanTranscripts();
+        var candidates = new List<SessionInfo?> { transcripts, ScanAcp() };
         if (_enableT3) candidates.Add(_t3Scanner.Scan());
-        return candidates
+        var best = candidates
             .Where(s => s is not null)
             .MaxBy(s => s!.LastModifiedMs);
+        // T3/ACP win on recency (live turn) but their start is the current
+        // turn / session dir — that snaps Discord back to 00:00. Keep the
+        // 24h transcript clock whenever we have one.
+        if (best is not null && transcripts is not null)
+            return best with { StartEpochMs = transcripts.StartEpochMs };
+        return best;
     }
 
     private SessionInfo? ScanTranscripts()
@@ -286,37 +292,25 @@ public sealed class CursorSession : IDisposable
 
         if (inWindow.Count == 0)
         {
-            if (createdAtMs is not long created || updatedAtMs is not long updated)
+            if (createdAtMs is not long created || updatedAtMs is not long metaUpdated)
                 return (0, null);
-            var start = Math.Max(created, cutoffMs);
-            var end = Math.Min(updated, nowMs);
-            return end > start ? (end - start, end) : (0, null);
+            var metaStart = Math.Max(created, cutoffMs);
+            var metaEnd = Math.Min(metaUpdated, nowMs);
+            return metaEnd > metaStart ? (metaEnd - metaStart, metaEnd) : (0, null);
         }
 
-        // User-turn stamps only. Leave updatedAt out of the 5-minute gap-sum —
-        // while the agent is writing it sits at "now" and elapsed collapses to 0.
-        var points = new HashSet<long>(inWindow);
-        if (createdAtMs is long c && c >= cutoffMs && c <= nowMs) points.Add(c);
-        if (createdAtMs is long createdBefore && updatedAtMs is long updatedAfter
-            && createdBefore < cutoffMs && updatedAfter >= cutoffMs)
-        {
-            points.Add(cutoffMs);
-        }
-
-        var unique = points.OrderBy(ms => ms).ToList();
-        if (unique.Count == 0) return (0, null);
-
-        long active = 0;
-        for (var i = 1; i < unique.Count; i++)
-        {
-            var delta = unique[i] - unique[i - 1];
-            if (delta > 0 && delta <= ActiveGapToleranceMs) active += delta;
-        }
-
-        var lastStamp = unique[^1];
-        var endMs = Math.Min(updatedAtMs ?? lastStamp, nowMs);
-        if (endMs > lastStamp) active += endMs - lastStamp;
-        return (active, Math.Max(lastStamp, endMs));
+        // Cursor only stamps user turns (often >5 min apart). A 5-minute
+        // gap-sum treats that as idle, so elapsed is just the tail since the
+        // last message and snaps to 00:00 on the next one. One span per
+        // transcript: idle between chats is still dropped (separate files).
+        long start = inWindow.Min();
+        if (createdAtMs is long c && c >= cutoffMs && c <= nowMs && c < start)
+            start = c;
+        var lastStamp = inWindow.Max();
+        var endMs = lastStamp;
+        if (updatedAtMs is long updated)
+            endMs = Math.Max(lastStamp, Math.Min(updated, nowMs));
+        return endMs > start ? (endMs - start, endMs) : (0, endMs);
     }
 
     private static IEnumerable<long> TimestampsInJsonlLine(string line)

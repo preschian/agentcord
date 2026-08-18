@@ -6,9 +6,10 @@
 //  ~/.cursor/projects/**/agent-transcripts/*.jsonl and enriching with
 //  ~/.cursor/chats/**/<session-id>/meta.json (cwd, createdAtMs) plus the
 //  sibling store.db (`lastUsedModel`). Elapsed time is the summed working
-//  duration across transcripts that touched the last 24 hours (idle gaps
-//  excluded), matching the other agents. The on-disk schema
-//  is undocumented, so all parsing is defensive.
+//  duration across transcripts that touched the last 24 hours. Cursor only
+//  stamps user turns, so each transcript is one wall-clock span (not a
+//  5-minute gap-sum). The on-disk schema is undocumented, so all parsing
+//  is defensive.
 //
 
 import Foundation
@@ -25,9 +26,6 @@ final class CursorSession: ObservableObject {
     /// A transcript counts as active if it was modified within this window.
     var activeWindowSeconds: TimeInterval = 60
 
-    /// When summing working time, a gap longer than this between consecutive
-    /// activity stamps is treated as idle (same idea as ClaudeSession).
-    private static let activeGapToleranceMs: Int64 = 5 * 60 * 1000
     /// Rolling window for the combined duration shown on Discord / in the UI.
     private static let lookbackMs: Int64 = 24 * 60 * 60 * 1000
 
@@ -334,31 +332,19 @@ final class CursorSession: ObservableObject {
             return (end - start, end)
         }
 
-        // User-turn stamps only (minute resolution). Do not drop `updatedAt`
-        // into the 5-minute gap-sum: while the agent is writing it sits at
-        // "now", the gap looks idle, and elapsed collapses to 0.
-        var points = inWindowConversational
-        if let createdAtMs, createdAtMs >= cutoffMs && createdAtMs <= nowMs {
-            points.append(createdAtMs)
+        // User-turn stamps only (often >5 min apart). One span per transcript
+        // so a new message does not snap elapsed back to 00:00.
+        var start = inWindowConversational.min() ?? 0
+        let lastStamp = inWindowConversational.max() ?? start
+        if let createdAtMs, createdAtMs >= cutoffMs && createdAtMs <= nowMs, createdAtMs < start {
+            start = createdAtMs
         }
-        if let createdAtMs, let updatedAtMs, createdAtMs < cutoffMs, updatedAtMs >= cutoffMs {
-            points.append(cutoffMs)
+        var endMs = lastStamp
+        if let updatedAtMs {
+            endMs = max(lastStamp, min(updatedAtMs, nowMs))
         }
-
-        let unique = Array(Set(points)).sorted()
-        guard let lastStamp = unique.last else { return (0, nil) }
-
-        var active: Int64 = 0
-        for index in 1..<unique.count {
-            let delta = unique[index] - unique[index - 1]
-            if delta > 0 && delta <= activeGapToleranceMs {
-                active += delta
-            }
-        }
-
-        let endMs = min(updatedAtMs ?? lastStamp, nowMs)
-        if endMs > lastStamp { active += endMs - lastStamp }
-        return (active, max(lastStamp, endMs))
+        guard endMs > start else { return (0, endMs) }
+        return (endMs - start, endMs)
     }
 
     private static let timestampRegex: NSRegularExpression = {

@@ -8,13 +8,17 @@ use agentcord_gpui::session::{
     grok_linked, now_ms, pick_winner, scan_claude, scan_codex, scan_cursor, scan_grok, within_idle,
     AgentKind, LiveSessions, SessionInfo, DISCORD_CLIENT_ID,
 };
-use agentcord_gpui::usage::{self, format_window_value, UsageSnapshot, UsageWindow};
+use agentcord_gpui::status::{self, StatusInfo};
+use agentcord_gpui::usage::{
+    self, capitalize_plan, format_window_value, masked_email, UsageSnapshot, UsageWindow,
+};
 use gpui::{
     div, prelude::*, px, relative, rgb, rgba, size, App, Application, Bounds, Context, FontWeight,
     MouseButton, SharedString, TitlebarOptions, Window, WindowBounds, WindowDecorations,
     WindowKind, WindowOptions,
 };
 use std::borrow::Cow;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -46,6 +50,7 @@ const ICON_FONT: &str = "FluentSystemIcons-Regular";
 const ICON_SETTINGS: char = '\u{f6a9}';
 const ICON_CHEVRON_RIGHT: char = '\u{f2b0}';
 const ICON_CHEVRON_LEFT: char = '\u{f2aa}';
+const ICON_CHEVRON_DOWN: char = '\u{f2a3}';
 const ICON_FOLDER: char = '\u{f418}';
 const ICON_SPARKLE: char = '\u{eb33}';
 
@@ -71,6 +76,9 @@ struct AgentCord {
     cursor_is_linked: bool,
     screen: Screen,
     usage: Arc<Mutex<UsageSnapshot>>,
+    status: Arc<Mutex<Option<StatusInfo>>>,
+    expand_status: bool,
+    revealed_email: bool,
     _tray: Option<tray::Tray>,
 }
 
@@ -102,6 +110,9 @@ impl AgentCord {
             cursor_is_linked: false,
             screen: Screen::Main,
             usage: usage::spawn(),
+            status: status::spawn(),
+            expand_status: false,
+            revealed_email: false,
             _tray: tray,
         };
         app.tick();
@@ -147,6 +158,25 @@ impl AgentCord {
                 self.discord
                     .set_activity(winner.as_ref().map(build_activity).as_ref());
             }
+        }
+        let discord = if snap.ready || snap.state == ConnState::Connected {
+            "Connected"
+        } else if snap.state == ConnState::Connecting {
+            "Connecting"
+        } else {
+            "Disconnected"
+        };
+        let usage = self.usage.lock().map(|g| g.clone()).unwrap_or_default();
+        let enabled = self.enabled_agents();
+        if let Some(tray) = &self._tray {
+            tray.set_tip(&usage::tray_tip(
+                winner.as_ref(),
+                discord,
+                snap.last_error.as_deref(),
+                &usage,
+                &enabled,
+                now_ms(),
+            ));
         }
     }
 
@@ -481,7 +511,6 @@ fn detail_screen(
     } else {
         "Waiting for a session"
     };
-    let provider = agent.provider_name();
 
     div()
         .flex()
@@ -492,6 +521,8 @@ fn detail_screen(
             agent.display_name(),
             cx.listener(|this, _, _, cx| {
                 this.screen = Screen::Main;
+                this.expand_status = false;
+                this.revealed_email = false;
                 cx.notify();
             }),
             cx,
@@ -500,7 +531,7 @@ fn detail_screen(
             white_card()
                 .px(px(12.))
                 .py(px(11.))
-                .child(div().text_size(px(13.)).child(provider))
+                .child(account_row(app, agent, cx))
                 .child(div().h(px(1.)).bg(rgb(HAIR)).mt(px(10.)).mb(px(10.)))
                 .child(
                     div()
@@ -557,6 +588,9 @@ fn detail_screen(
                 ),
         )
         .child(agent_usage(app, agent))
+        .when(agent == AgentKind::Claude, |d| {
+            d.child(claude_status(app, cx))
+        })
 }
 
 fn agent_usage(app: &AgentCord, agent: AgentKind) -> impl IntoElement {
@@ -580,6 +614,198 @@ fn agent_usage(app: &AgentCord, agent: AgentKind) -> impl IntoElement {
         }
     }
     white_card().mt(px(11.)).px(px(12.)).py(px(11.)).child(col)
+}
+
+fn account_row(app: &AgentCord, agent: AgentKind, cx: &mut Context<AgentCord>) -> impl IntoElement {
+    let (email, plan) = app
+        .usage
+        .lock()
+        .ok()
+        .map(|g| g.identity(agent))
+        .unwrap_or((None, None));
+    let label = match &email {
+        Some(e) if app.revealed_email => e.clone(),
+        Some(e) => masked_email(e),
+        None => agent.provider_name().to_string(),
+    };
+    let clickable = email.is_some();
+    let mut row = div().flex().items_center().child(
+        div()
+            .id("account")
+            .flex_1()
+            .text_size(px(13.))
+            .when(clickable, |d| {
+                d.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                    this.revealed_email = !this.revealed_email;
+                    cx.notify();
+                }))
+            })
+            .child(label),
+    );
+    if let Some(plan) = plan.filter(|p| !p.trim().is_empty()) {
+        row = row.child(
+            div()
+                .ml(px(8.))
+                .rounded(px(6.))
+                .px(px(6.))
+                .py(px(1.))
+                .bg(rgb(0xf0f0f2))
+                .text_size(px(10.5))
+                .text_color(rgb(SEC))
+                .child(capitalize_plan(&plan)),
+        );
+    }
+    row
+}
+
+fn claude_status(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement {
+    let Some(info) = app.status.lock().ok().and_then(|g| g.clone()) else {
+        return div().into_any_element();
+    };
+    let expand = app.expand_status;
+    let (pill_bg, pill_border, pill_dot, pill_text) = status_pill_colors(&info.indicator);
+    let mut card = white_card()
+        .mt(px(11.))
+        .px(px(12.))
+        .py(px(11.))
+        .child(
+            div()
+                .id("status-toggle")
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.expand_status = !this.expand_status;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.5))
+                        .child("Claude status"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .rounded(px(9.))
+                        .px(px(6.))
+                        .py(px(2.))
+                        .bg(rgb(pill_bg))
+                        .border_1()
+                        .border_color(rgb(pill_border))
+                        .child(dot(pill_dot))
+                        .child(
+                            div()
+                                .ml(px(5.))
+                                .text_size(px(11.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(pill_text))
+                                .child(info.summary_label.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .ml(px(6.))
+                        .text_color(rgb(SEC_FAINT))
+                        .child(icon(
+                            if expand {
+                                ICON_CHEVRON_DOWN
+                            } else {
+                                ICON_CHEVRON_RIGHT
+                            },
+                            12.,
+                        )),
+                ),
+        );
+    if expand {
+        let mut body = div().flex().flex_col().mt(px(8.));
+        for incident in &info.incidents {
+            let tint = match incident.impact.as_str() {
+                "critical" => 0xff3b30,
+                "minor" => YELLOW,
+                "maintenance" => 0x007aff,
+                _ => 0xff9500,
+            };
+            body = body.child(
+                div()
+                    .mb(px(7.))
+                    .px(px(8.))
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .bg(rgb(CARD_SOFT))
+                    .child(div().text_size(px(12.5)).child(incident.name.clone()))
+                    .child(
+                        div()
+                            .mt(px(2.))
+                            .text_size(px(11.))
+                            .text_color(rgb(tint))
+                            .child(capitalize_plan(&incident.status)),
+                    ),
+            );
+        }
+        for component in &info.components {
+            let (color, label) = component_status(&component.status);
+            body = body.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .mb(px(7.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .child(component.name.clone()),
+                    )
+                    .child(dot(color))
+                    .child(
+                        div()
+                            .ml(px(5.))
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(color))
+                            .child(label),
+                    ),
+            );
+        }
+        let footer = info.footer();
+        body = body.child(
+            div()
+                .id("status-open")
+                .cursor_pointer()
+                .on_click(|_, _, _| open_url(StatusInfo::page_url()))
+                .text_size(px(11.))
+                .text_color(rgb(SEC_SOFT))
+                .child(footer),
+        );
+        card = card.child(body);
+    }
+    card.into_any_element()
+}
+
+fn status_pill_colors(indicator: &str) -> (u32, u32, u32, u32) {
+    match indicator {
+        "none" => (GREEN_PILL, GREEN_PILL_BORDER, GREEN, GREEN_TEXT),
+        "minor" | "major" => (0xfff4e5, 0xf5d5a6, 0xff9500, 0xc2660a),
+        "critical" => (0xffecea, 0xf5c4c0, 0xff3b30, 0xc0271f),
+        "maintenance" => (0xe8f3ff, 0xb5d4f5, 0x007aff, 0x0057b6),
+        _ => (OFF_PILL, OFF_PILL_BORDER, TRACK, SEC),
+    }
+}
+
+fn component_status(status: &str) -> (u32, &'static str) {
+    match status {
+        "operational" => (GREEN, "Operational"),
+        "degraded_performance" => (0xff9500, "Degraded"),
+        "partial_outage" => (0xff9500, "Partial Outage"),
+        "major_outage" => (0xff3b30, "Major Outage"),
+        "under_maintenance" => (0x007aff, "Maintenance"),
+        _ => (TRACK, "Unknown"),
+    }
+}
+
+fn open_url(url: &str) {
+    let _ = Command::new("explorer").arg(url).spawn();
 }
 
 fn header(
@@ -744,6 +970,8 @@ fn agent_row(
         .hover(|s| s.bg(rgb(0xf7f7f8)))
         .on_click(cx.listener(move |this, _, _, cx| {
             this.screen = Screen::Detail(agent);
+            this.expand_status = false;
+            this.revealed_email = false;
             cx.notify();
         }))
         .child(

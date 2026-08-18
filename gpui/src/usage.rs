@@ -1,13 +1,15 @@
-//! Cheap usage polls: Claude / Cursor / Grok HTTP + Codex ChatGPT wham.
+//! Cheap usage polls: Claude / Cursor / Grok HTTP + Codex app-server, ChatGPT wham fallback.
 
-use crate::session::{now_ms, parse_iso_ms, AgentKind};
+use crate::session::{format_tokens, now_ms, parse_iso_ms, AgentKind, SessionInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_STALE_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -88,6 +90,10 @@ pub struct ClaudeUsage {
     pub weekly: UsageWindow,
     #[serde(default)]
     pub model_weekly: Vec<(String, UsageWindow)>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub plan_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -96,12 +102,20 @@ pub struct CursorUsage {
     pub auto: Option<UsageWindow>,
     pub api: Option<UsageWindow>,
     pub on_demand: Option<UsageWindow>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub plan_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GrokUsage {
     pub weekly: UsageWindow,
     pub on_demand: Option<UsageWindow>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub plan_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -110,6 +124,10 @@ pub struct CodexUsage {
     pub primary_label: String,
     pub secondary: Option<UsageWindow>,
     pub secondary_label: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub plan_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -127,6 +145,31 @@ impl UsageSnapshot {
             AgentKind::Codex => self.codex.as_ref().map(|c| c.info.primary),
             AgentKind::Cursor => self.cursor.as_ref().map(|c| c.info.included),
             AgentKind::Grok => self.grok.as_ref().map(|c| c.info.weekly),
+        }
+    }
+
+    pub fn identity(&self, agent: AgentKind) -> (Option<String>, Option<String>) {
+        match agent {
+            AgentKind::Claude => self
+                .claude
+                .as_ref()
+                .map(|c| (c.info.email.clone(), c.info.plan_name.clone()))
+                .unwrap_or((None, None)),
+            AgentKind::Codex => self
+                .codex
+                .as_ref()
+                .map(|c| (c.info.email.clone(), c.info.plan_name.clone()))
+                .unwrap_or((None, None)),
+            AgentKind::Cursor => self
+                .cursor
+                .as_ref()
+                .map(|c| (c.info.email.clone(), c.info.plan_name.clone()))
+                .unwrap_or((None, None)),
+            AgentKind::Grok => self
+                .grok
+                .as_ref()
+                .map(|c| (c.info.email.clone(), c.info.plan_name.clone()))
+                .unwrap_or((None, None)),
         }
     }
 
@@ -206,6 +249,153 @@ pub fn spawn() -> Arc<Mutex<UsageSnapshot>> {
     snap
 }
 
+pub const TRAY_TIP_MAX: usize = 63;
+
+pub fn tray_tip(
+    session: Option<&SessionInfo>,
+    discord: &str,
+    last_error: Option<&str>,
+    snap: &UsageSnapshot,
+    enabled: &[AgentKind],
+    now: i64,
+) -> String {
+    let session_line = match session {
+        Some(s) => {
+            let mut parts = vec![
+                s.agent.display_name().to_string(),
+                s.project.clone(),
+            ];
+            if !s.model.is_empty() {
+                parts.push(s.model.clone());
+            }
+            parts.push(elapsed_compact(now.saturating_sub(s.start_epoch_ms)));
+            if s.tokens > 0 {
+                parts.push(format!("{} tokens", format_tokens(s.tokens)));
+            }
+            parts.join(" · ")
+        }
+        None => match last_error.filter(|e| !e.is_empty()) {
+            Some(err) => format!("AgentCord — {err}"),
+            None => format!("AgentCord — Idle · {discord}"),
+        },
+    };
+    let text = match usage_tip(snap, enabled, now) {
+        Some(usage) => format!("{session_line}\n{usage}"),
+        None => session_line,
+    };
+    fit_tip(&text)
+}
+
+pub fn masked_email(email: &str) -> String {
+    let Some(at) = email.find('@') else {
+        return "•".repeat(email.len().max(4));
+    };
+    let local = &email[..at];
+    let domain = &email[at + 1..];
+    let masked_local = if local.is_empty() {
+        "•••".into()
+    } else {
+        format!(
+            "{}{}",
+            local.chars().next().unwrap(),
+            "•".repeat((local.len() - 1).max(3))
+        )
+    };
+    let masked_domain = match domain.rfind('.') {
+        None => "•".repeat(domain.len().max(3)),
+        Some(dot) => {
+            let name = &domain[..dot];
+            let tld = &domain[dot..];
+            if name.is_empty() {
+                format!("••{tld}")
+            } else {
+                format!(
+                    "{}{}{tld}",
+                    name.chars().next().unwrap(),
+                    "•".repeat((name.len() - 1).max(2))
+                )
+            }
+        }
+    };
+    format!("{masked_local}@{masked_domain}")
+}
+
+pub fn capitalize_plan(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn usage_tip(snap: &UsageSnapshot, enabled: &[AgentKind], now: i64) -> Option<String> {
+    let rows: Vec<_> = enabled
+        .iter()
+        .copied()
+        .filter_map(|agent| snap.primary(agent).map(|window| (agent, window)))
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let labeled = rows.len() > 1;
+    let codex_label = snap.codex.as_ref().map(|c| c.info.primary_label.as_str());
+    Some(
+        rows.into_iter()
+            .map(|(agent, window)| compact_usage(agent, &window, labeled, codex_label, now))
+            .collect::<Vec<_>>()
+            .join(" · "),
+    )
+}
+
+fn compact_usage(
+    agent: AgentKind,
+    window: &UsageWindow,
+    labeled: bool,
+    codex_label: Option<&str>,
+    now: i64,
+) -> String {
+    let text = if labeled {
+        format!("{} {}%", agent.display_name(), window.percent)
+    } else {
+        match agent {
+            AgentKind::Claude => format!("5h {}%", window.percent),
+            AgentKind::Codex
+                if codex_label.is_some_and(|s| s.to_ascii_lowercase().contains("5-hour")) =>
+            {
+                format!("Codex 5h {}%", window.percent)
+            }
+            AgentKind::Codex => format!("Codex {}%", window.percent),
+            AgentKind::Cursor => format!("Cursor {}%", window.percent),
+            AgentKind::Grok => format!("Grok {}%", window.percent),
+        }
+    };
+    if !labeled {
+        if let Some(ms) = window.resets_at_ms {
+            return format!("{text} ({})", format_reset_in_at(ms, now));
+        }
+    }
+    text
+}
+
+fn elapsed_compact(ms: i64) -> String {
+    let total_minutes = (ms / 60_000).max(0);
+    let h = total_minutes / 60;
+    let m = total_minutes % 60;
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else {
+        format!("{m}m")
+    }
+}
+
+fn fit_tip(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= TRAY_TIP_MAX {
+        return text.to_string();
+    }
+    chars[..TRAY_TIP_MAX - 1].iter().collect::<String>() + "…"
+}
+
 pub fn format_window_value(window: &UsageWindow) -> String {
     match window.resets_at_ms {
         Some(ms) => {
@@ -245,7 +435,10 @@ fn fetch_claude(prev: &Option<Cached<ClaudeUsage>>) -> Option<Cached<ClaudeUsage
         ],
     );
     match body.and_then(|b| parse_claude_usage(&b)) {
-        Some(info) => Some(Cached::fresh(info)),
+        Some(mut info) => {
+            apply_claude_profile(&token, &mut info, prev);
+            Some(Cached::fresh(info))
+        }
         None => keep_stale(prev),
     }
 }
@@ -273,7 +466,10 @@ fn fetch_cursor(prev: &Option<Cached<CursorUsage>>) -> Option<Cached<CursorUsage
         )
     });
     match body.and_then(|b| parse_cursor_usage(&b)) {
-        Some(info) => Some(Cached::fresh(info)),
+        Some(mut info) => {
+            apply_cursor_profile(&auth, &mut info, prev);
+            Some(Cached::fresh(info))
+        }
         None => keep_stale(prev),
     }
 }
@@ -312,12 +508,30 @@ fn fetch_grok(prev: &Option<Cached<GrokUsage>>) -> Option<Cached<GrokUsage>> {
         _ => None,
     };
     match body.and_then(|b| parse_grok_billing(&b)) {
-        Some(info) => Some(Cached::fresh(info)),
+        Some(mut info) => {
+            info.email = auth.email.clone().filter(|s| !s.is_empty());
+            info.plan_name = grok_plan(&auth).or_else(|| {
+                prev.as_ref()
+                    .and_then(|p| p.info.plan_name.clone())
+            });
+            if info.email.is_none() {
+                info.email = prev.as_ref().and_then(|p| p.info.email.clone());
+            }
+            Some(Cached::fresh(info))
+        }
         None => keep_stale(prev),
     }
 }
 
 fn fetch_codex(prev: &Option<Cached<CodexUsage>>) -> Option<Cached<CodexUsage>> {
+    if let Some(mut info) = fetch_codex_appserver() {
+        keep_identity(
+            &mut info.email,
+            &mut info.plan_name,
+            prev.as_ref().map(|p| (p.info.email.clone(), p.info.plan_name.clone())),
+        );
+        return Some(Cached::fresh(info));
+    }
     let auth = codex_auth()?;
     let bearer = format!("Bearer {}", auth.access);
     let mut headers: Vec<(&str, &str)> = vec![
@@ -329,7 +543,14 @@ fn fetch_codex(prev: &Option<Cached<CodexUsage>>) -> Option<Cached<CodexUsage>> 
     }
     let body = get("https://chatgpt.com/backend-api/wham/usage", &headers);
     match body.and_then(|b| parse_codex_wham(&b)) {
-        Some(info) => Some(Cached::fresh(info)),
+        Some(mut info) => {
+            keep_identity(
+                &mut info.email,
+                &mut info.plan_name,
+                prev.as_ref().map(|p| (p.info.email.clone(), p.info.plan_name.clone())),
+            );
+            Some(Cached::fresh(info))
+        }
         None => keep_stale(prev),
     }
 }
@@ -372,6 +593,7 @@ pub fn parse_claude_usage(json: &str) -> Option<ClaudeUsage> {
         five_hour: claude_window(session, five_hour),
         weekly: claude_window(weekly, seven_day),
         model_weekly,
+        ..Default::default()
     })
 }
 
@@ -422,6 +644,7 @@ pub fn parse_cursor_usage(json: &str) -> Option<CursorUsage> {
             auto: extra("autoPercentUsed"),
             api: extra("apiPercentUsed"),
             on_demand,
+            ..Default::default()
         });
     }
     let mut best: Option<(f64, f64)> = None;
@@ -454,6 +677,7 @@ pub fn parse_cursor_usage(json: &str) -> Option<CursorUsage> {
         auto: None,
         api: None,
         on_demand: None,
+        ..Default::default()
     })
 }
 
@@ -480,21 +704,27 @@ pub fn parse_grok_billing(json: &str) -> Option<GrokUsage> {
     Some(GrokUsage {
         weekly: UsageWindow::new(clamp_pct(percent), resets),
         on_demand,
+        ..Default::default()
     })
 }
 
 pub fn parse_codex_wham(json: &str) -> Option<CodexUsage> {
-    let v: Value = serde_json::from_str(json).ok()?;
+    let root: Value = serde_json::from_str(json).ok()?;
+    let v = root.get("result").unwrap_or(&root);
     let rate = v
         .get("rate_limit")
         .or_else(|| v.get("rateLimits"))
-        .unwrap_or(&v);
+        .unwrap_or(v);
     let primary = rate.get("primary_window").or_else(|| rate.get("primary"))?;
     let primary_window = codex_window(primary)?;
     let secondary = rate
         .get("secondary_window")
         .or_else(|| rate.get("secondary"))
         .and_then(codex_window);
+    let plan_name = json_str(root.get("plan_type"))
+        .or_else(|| json_str(v.get("plan_type")))
+        .or_else(|| json_str(rate.get("planType")))
+        .map(str::to_string);
     Some(CodexUsage {
         primary_label: window_label(primary, "Primary limit"),
         primary: primary_window,
@@ -507,6 +737,8 @@ pub fn parse_codex_wham(json: &str) -> Option<CodexUsage> {
             )
         }),
         secondary,
+        plan_name,
+        ..Default::default()
     })
 }
 
@@ -539,6 +771,294 @@ fn window_label(v: &Value, fallback: &str) -> String {
     } else {
         fallback.into()
     }
+}
+
+fn keep_identity(
+    email: &mut Option<String>,
+    plan: &mut Option<String>,
+    prev: Option<(Option<String>, Option<String>)>,
+) {
+    let Some((prev_email, prev_plan)) = prev else {
+        return;
+    };
+    if email.is_none() {
+        *email = prev_email;
+    }
+    if plan.is_none() {
+        *plan = prev_plan;
+    }
+}
+
+fn apply_claude_profile(
+    token: &str,
+    info: &mut ClaudeUsage,
+    prev: &Option<Cached<ClaudeUsage>>,
+) {
+    keep_identity(
+        &mut info.email,
+        &mut info.plan_name,
+        prev.as_ref()
+            .map(|p| (p.info.email.clone(), p.info.plan_name.clone())),
+    );
+    let body = get(
+        "https://api.anthropic.com/api/oauth/profile",
+        &[
+            ("Authorization", &format!("Bearer {token}")),
+            ("anthropic-beta", "oauth-2025-04-20"),
+            ("anthropic-version", "2023-06-01"),
+        ],
+    );
+    if let Some((email, plan)) = body.as_deref().and_then(parse_claude_profile) {
+        if email.is_some() {
+            info.email = email;
+        }
+        if plan.is_some() {
+            info.plan_name = plan;
+        }
+    }
+}
+
+pub fn parse_claude_profile(json: &str) -> Option<(Option<String>, Option<String>)> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    let email = json_str(v.get("account").and_then(|a| a.get("email")))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let plan = json_str(
+        v.get("organization")
+            .and_then(|o| o.get("organization_type")),
+    )
+    .map(claude_plan_label)
+    .or_else(|| {
+        let account = v.get("account")?;
+        if account.get("has_claude_max").and_then(|x| x.as_bool()) == Some(true) {
+            Some("Max".into())
+        } else if account.get("has_claude_pro").and_then(|x| x.as_bool()) == Some(true) {
+            Some("Pro".into())
+        } else {
+            None
+        }
+    });
+    Some((email, plan))
+}
+
+fn claude_plan_label(raw: &str) -> String {
+    let stripped = raw.strip_prefix("claude_").unwrap_or(raw).replace('_', " ");
+    stripped
+        .split_whitespace()
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn apply_cursor_profile(
+    auth: &str,
+    info: &mut CursorUsage,
+    prev: &Option<Cached<CursorUsage>>,
+) {
+    keep_identity(
+        &mut info.email,
+        &mut info.plan_name,
+        prev.as_ref()
+            .map(|p| (p.info.email.clone(), p.info.plan_name.clone())),
+    );
+    if let Some(body) = post_json(
+        "https://api2.cursor.sh/aiserver.v1.AuthService/GetEmail",
+        "{}",
+        &[
+            ("Authorization", auth),
+            ("Content-Type", "application/json"),
+            ("Connect-Protocol-Version", "1"),
+            ("User-Agent", "AgentCord"),
+        ],
+    ) {
+        if let Some(email) = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| json_str(v.get("email")).map(str::to_string))
+            .filter(|s| !s.is_empty())
+        {
+            info.email = Some(email);
+        }
+    }
+    if let Some(body) = get(
+        "https://api2.cursor.sh/auth/full_stripe_profile",
+        &[("Authorization", auth), ("User-Agent", "AgentCord")],
+    ) {
+        if let Some(plan) = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| json_str(v.get("membershipType")).map(str::to_string))
+            .filter(|s| !s.is_empty())
+        {
+            info.plan_name = Some(plan);
+        }
+    }
+}
+
+fn grok_plan(auth: &GrokAuth) -> Option<String> {
+    let bearer = format!("Bearer {}", auth.access);
+    let mut headers: Vec<(&str, &str)> = vec![
+        ("Authorization", bearer.as_str()),
+        ("Accept", "application/json"),
+        ("X-XAI-Token-Auth", "xai-grok-cli"),
+        ("User-Agent", "GrokCLI"),
+    ];
+    if !auth.user_id.is_empty() {
+        headers.push(("x-userid", auth.user_id.as_str()));
+    }
+    let body = get("https://cli-chat-proxy.grok.com/v1/settings", &headers).or_else(|| {
+        get(
+            "https://cli-chat-proxy.grok.com/v1/user?include=subscription",
+            &headers,
+        )
+    })?;
+    parse_grok_plan(&body)
+}
+
+pub fn parse_grok_plan(json: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    if let Some(display) = json_str(v.get("subscription_tier_display")).filter(|s| !s.is_empty()) {
+        return Some(display.trim().to_string());
+    }
+    json_str(v.get("subscriptionTier")).map(map_grok_tier)
+}
+
+fn map_grok_tier(raw: &str) -> String {
+    match raw.trim() {
+        "SuperGrokPro" | "SuperGrokHeavy" | "GrokHeavy" => "SuperGrok Heavy".into(),
+        "GrokPro" | "SuperGrok" => "SuperGrok".into(),
+        "Free" | "GrokFree" => "Free".into(),
+        other => other.to_string(),
+    }
+}
+
+fn fetch_codex_appserver() -> Option<CodexUsage> {
+    let exe = codex_exe()?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("app-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    if let Some(home) = std::env::var_os("CODEX_HOME") {
+        cmd.env("CODEX_HOME", home);
+    }
+    let mut child = cmd.spawn().ok()?;
+    {
+        let stdin = child.stdin.as_mut()?;
+        stdin
+            .write_all(
+                br#"{"method":"initialize","id":0,"params":{"clientInfo":{"name":"agentcord","title":"AgentCord","version":"0.4.0"}}}
+{"method":"account/read","id":1,"params":{"refreshToken":false}}
+{"method":"account/rateLimits/read","id":2,"params":null}
+"#,
+            )
+            .ok()?;
+        stdin.flush().ok()?;
+    }
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            match stdout.read(&mut tmp) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                        let line = String::from_utf8_lossy(&buf[..=pos]).into_owned();
+                        buf.drain(..=pos);
+                        if tx.send(line).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if !buf.is_empty() {
+            let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut usage = None;
+    let mut email = None;
+    while Instant::now() < deadline {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(line) => {
+                if let Some(e) = parse_codex_account(&line) {
+                    email = e;
+                }
+                if let Some(info) = parse_codex_wham(&line) {
+                    usage = Some(info);
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut info = usage?;
+    if email.is_some() {
+        info.email = email;
+    }
+    Some(info)
+}
+
+fn parse_codex_account(line: &str) -> Option<Option<String>> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v.get("id").and_then(|x| x.as_i64()) != Some(1) {
+        return None;
+    }
+    let account = v.get("result")?.get("account")?;
+    Some(
+        json_str(account.get("email"))
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    )
+}
+
+fn codex_exe() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("CODEX_BINARY").map(PathBuf::from) {
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let exe = dir.join("codex.exe");
+            if exe.is_file() {
+                return Some(exe);
+            }
+        }
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let cand = PathBuf::from(local)
+            .join("Programs")
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin")
+            .join("codex.exe");
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    let cand = PathBuf::from(home)
+        .join(".local")
+        .join("bin")
+        .join("codex.exe");
+    cand.is_file().then_some(cand)
 }
 
 fn load_cache() -> UsageSnapshot {
@@ -691,6 +1211,7 @@ struct GrokAuth {
     client_id: String,
     issuer: String,
     user_id: String,
+    email: Option<String>,
 }
 
 fn grok_auth() -> Option<GrokAuth> {
@@ -731,6 +1252,9 @@ fn grok_auth() -> Option<GrokAuth> {
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string(),
+            email: json_str(val.get("email"))
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         });
     }
     None
@@ -881,5 +1405,100 @@ mod tests {
             format_reset_in_at(now + (6 * 24 * 60 + 22 * 60) * 60_000, now),
             "6d 22h"
         );
+    }
+
+    #[test]
+    fn claude_profile_plan_and_email() {
+        let json = r#"{"account":{"email":"a@b.com","has_claude_max":true},"organization":{"organization_type":"claude_pro"}}"#;
+        let (email, plan) = parse_claude_profile(json).unwrap();
+        assert_eq!(email.as_deref(), Some("a@b.com"));
+        assert_eq!(plan.as_deref(), Some("Pro"));
+    }
+
+    #[test]
+    fn grok_plan_display_and_tier() {
+        assert_eq!(
+            parse_grok_plan(r#"{"subscription_tier_display":"SuperGrok"}"#).as_deref(),
+            Some("SuperGrok")
+        );
+        assert_eq!(
+            parse_grok_plan(r#"{"subscriptionTier":"GrokPro"}"#).as_deref(),
+            Some("SuperGrok")
+        );
+    }
+
+    #[test]
+    fn codex_appserver_rate_limits() {
+        let json = r#"{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":42.4,"windowDurationMins":300,"resetsAt":1785000000},"secondary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":1785600000},"planType":"pro"}}}"#;
+        let info = parse_codex_wham(json).unwrap();
+        assert_eq!(info.primary.percent, 42);
+        assert_eq!(info.primary_label, "5-hour session");
+        assert_eq!(info.secondary.unwrap().percent, 12);
+        assert_eq!(info.plan_name.as_deref(), Some("pro"));
+        assert_eq!(
+            parse_codex_account(
+                r#"{"id":1,"result":{"account":{"email":"dev@openai.com","type":"chatgpt"}}}"#
+            ),
+            Some(Some("dev@openai.com".into()))
+        );
+    }
+
+    #[test]
+    fn masked_email_keeps_first_chars() {
+        assert_eq!(masked_email("pres@example.com"), "p•••@e••••••.com");
+        assert_eq!(masked_email("ab@x.io"), "a•••@x••.io");
+    }
+
+    #[test]
+    fn tray_tip_idle_and_usage_fit() {
+        let snap = UsageSnapshot {
+            claude: Some(Cached {
+                fetched_at_ms: 0,
+                info: ClaudeUsage {
+                    five_hour: UsageWindow::new(45, Some(1_000_000_000_000 + 2 * 3600 * 1000)),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        };
+        let idle = tray_tip(
+            None,
+            "Connected",
+            None,
+            &UsageSnapshot::default(),
+            &[],
+            1_000_000_000_000,
+        );
+        assert_eq!(idle, "AgentCord — Idle · Connected");
+        let one = tray_tip(
+            None,
+            "Connected",
+            None,
+            &snap,
+            &[AgentKind::Claude],
+            1_000_000_000_000,
+        );
+        assert!(one.contains("5h 45%"));
+        assert!(one.contains("2h 0m"));
+        assert!(one.chars().count() <= TRAY_TIP_MAX);
+        let session = SessionInfo {
+            agent: AgentKind::Claude,
+            project: "a-very-long-project-name-that-would-exceed-the-limit-if-not-truncated"
+                .into(),
+            model: "Opus".into(),
+            start_epoch_ms: 1_000_000_000_000,
+            activity_ms: 1_000_000_000_000,
+            tokens: 12_000,
+        };
+        let long = tray_tip(
+            Some(&session),
+            "Connected",
+            None,
+            &snap,
+            &[AgentKind::Claude],
+            1_000_000_000_000,
+        );
+        assert_eq!(long.chars().count(), TRAY_TIP_MAX);
+        assert!(long.ends_with('…'));
     }
 }

@@ -15,6 +15,10 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - `WindowKind::Normal` so the prototype appears on the taskbar (`PopUp` is `WS_EX_TOOLWINDOW` and stays hidden until tray exists)
 - Window / taskbar / tray icon from `assets/agentcord.ico` (same file as `windows/assets/agentcord.ico`)
 - Unified usage card: Claude 5h, Codex ChatGPT window, Cursor period, Grok weekly credits; agent detail shows the extra windows; disk cache + 24h staleness
+- Plan name / account email on agent detail (masked email, tap to reveal)
+- Codex app-server `account/rateLimits/read` first, ChatGPT `wham/usage` fallback
+- Claude status card on Claude detail (`status.claude.com` summary, expand + open page)
+- Tray tooltip: session line + compact usage, 63-char cap
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
 - Parser / presence unit tests: `cargo test`
 
@@ -38,17 +42,6 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 - [ ] Cursor embedded `<timestamp>` stamps + tree index memoization (`JsonlCursor.cs`, `SessionTreeIndex.cs`)
 - [ ] Repo name from `.git/config` origin (`RepoNames.cs`) — GPUI only uses first `git_remotes` entry or basename
 - [ ] Claude/Codex: prefer parsed event timestamps over mtime when picking which transcript is newest (today: newest by mtime, then tail timestamps for idle)
-
-### Usage + status
-
-- Unified usage card on the main screen (enabled when more than one agent is on)
-- Agent detail usage rows (Claude 5h + weekly + per-model, Cursor included/auto/API/on-demand, Grok weekly + on-demand, Codex primary + secondary)
-- Reset countdown + severity colors on each window
-- Disk cache + 24h staleness (`%APPDATA%\AgentCord\gpui-usage-cache.json`); a failed poll keeps the last snapshot
-- [ ] Claude status page (`windows/AnthropicStatus.cs`)
-- [ ] Plan name / account email (extra profile HTTP; production `ClaudeUsage` / `CursorUsage` / `GrokUsage`)
-- [ ] Codex app-server `account/rateLimits/read` (GPUI still uses ChatGPT `wham/usage`)
-- [ ] Tray tooltip compact usage (`windows/TrayStatusText.cs`)
 
 ### App shell
 

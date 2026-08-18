@@ -4,6 +4,7 @@ use std::mem::size_of;
 use std::ptr;
 
 const NIM_ADD: u32 = 0;
+const NIM_MODIFY: u32 = 1;
 const NIM_DELETE: u32 = 2;
 const NIF_MESSAGE: u32 = 0x01;
 const NIF_ICON: u32 = 0x02;
@@ -193,6 +194,14 @@ impl Tray {
             icon_large: large,
             icon_small: small,
         })
+    }
+
+    pub fn set_tip(&self, text: &str) {
+        let mut nid = empty_nid(self.tray_hwnd, self.icon_small);
+        set_tip(&mut nid, text);
+        unsafe {
+            Shell_NotifyIconW(NIM_MODIFY, &mut nid);
+        }
     }
 }
 

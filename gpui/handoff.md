@@ -47,7 +47,7 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 
 ### App shell
 
-- [ ] System tray, no taskbar entry (`windows/TrayApplicationContext.cs`)
+- [ ] System tray, no taskbar entry (`windows/TrayApplicationContext.cs`) — prototype currently uses `WindowKind::Normal` so it stays findable
 - [ ] Settings persistence (`%APPDATA%\AgentCord\settings.json`, `windows/Settings.cs`)
 - [ ] Launch at login (`windows/Autostart.cs`)
 - [ ] Prevent sleep (`windows/SleepGuard.cs`)

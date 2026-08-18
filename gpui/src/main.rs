@@ -205,7 +205,7 @@ impl Render for AgentCord {
             .w_full()
             .bg(rgb(SHELL))
             .text_color(rgb(TEXT))
-            .font_family("Segoe UI")
+            .font_family("Consolas")
             .on_children_prepainted(|children, window, cx| {
                 let Some(child) = children.first() else {
                     return;

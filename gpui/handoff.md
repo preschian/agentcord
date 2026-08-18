@@ -10,7 +10,7 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Claude scan: newest `~/.claude/projects/**/*.jsonl`, tail parse for cwd / model / tokens / event timestamps
 - Codex scan: newest `~/.codex/sessions/**/*.jsonl` (`CODEX_HOME` honored), tail parse for `session_meta` / `turn_context` / `token_count`
 - Winner = newest `activity_ms`; presence payload uses production Discord app id `1517099756063686677`
-- Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Claude/Codex/Cursor/Grok toggles), agent detail, Quit
+- Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Claude/Codex/Cursor/Grok toggles), agent detail, Quit; all text is Consolas
 - Window height follows content (`Window::resize` after layout); width stays 307
 - `WindowKind::Normal` so the prototype appears on the taskbar (`PopUp` is `WS_EX_TOOLWINDOW` and stays hidden until tray exists)
 - Window / taskbar / tray icon from `assets/agentcord.ico` (same file as `windows/assets/agentcord.ico`)
@@ -64,6 +64,7 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 ### UI polish
 
 - Size-to-content height: window width stays 307; height is measured from layout and `Window::resize`d (WPF `SizeToContent=Height`)
+- Popover text is Consolas (was Segoe UI)
 - [ ] Segoe Fluent / MDL2 glyphs — GPUI cannot render those PUA codepoints (they became boxes); current UI uses `⚙ › ‹ ⊞`
 - [ ] Window-chrome corner radius 12 to match the WPF card (tried, reverted)
 - [ ] Hide-on-close / stay running in tray

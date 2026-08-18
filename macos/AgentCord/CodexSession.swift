@@ -465,8 +465,10 @@ final class CodexSession: ObservableObject {
     }
 
     private func transcriptState(at url: URL, mtime: Date) -> TranscriptState {
+        if let cached = transcriptCache[url], cached.mtime == mtime {
+            return cached.state
+        }
         var entry = transcriptCache[url] ?? CacheEntry(mtime: mtime)
-        if entry.mtime == mtime { return entry.state }
 
         let pulled = entry.cursor.pullLines(from: url)
         if pulled.didReset { entry.state = TranscriptState() }

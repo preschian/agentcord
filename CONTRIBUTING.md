@@ -29,7 +29,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The [release workflow](.github/workflows/release.yml) builds both platforms and attaches `AgentCord.dmg` and `agentcord.exe` to the release. You can also trigger it manually from the Actions tab with a tag name.
+The [release workflow](.github/workflows/release.yml) attaches `AgentCord.dmg` plus two Windows builds: `agentcord.exe` (C#) and `agentcord-gpui.exe` (prototype). Do not replace one with the other. You can also trigger it manually from the Actions tab with a tag name.
 
 Windows install notes (including SmartScreen) live in [windows/dist/README.md](windows/dist/README.md).
 

@@ -41,6 +41,26 @@ jobs:
           path: windows/publish/agentcord.exe
           if-no-files-found: error
 
+  build-windows-gpui:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gpui
+
+      - name: Build agentcord-gpui.exe
+        run: cargo build --release --manifest-path gpui/Cargo.toml
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agentcord-windows-gpui
+          path: gpui/target/release/agentcord-gpui.exe
+          if-no-files-found: error
+
   build-macos:
     runs-on: macos-latest
     steps:
@@ -77,7 +97,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [build-windows, build-macos]
+    needs: [build-windows, build-windows-gpui, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -101,4 +121,5 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/agentcord-windows/agentcord.exe
+            artifacts/agentcord-windows-gpui/agentcord-gpui.exe
             artifacts/agentcord-macos/AgentCord.dmg

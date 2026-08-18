@@ -4,15 +4,15 @@
 
 use agentcord_gpui::discord::{Client, ConnState};
 use agentcord_gpui::session::{
-    AgentKind, DISCORD_CLIENT_ID, LiveSessions, SessionInfo, build_activity, claude_linked,
-    codex_linked, cursor_linked, format_clock, format_tokens, grok_linked, now_ms, pick_winner,
-    scan_claude, scan_codex, scan_cursor, scan_grok, within_idle,
+    build_activity, claude_linked, codex_linked, cursor_linked, format_clock, format_tokens,
+    grok_linked, now_ms, pick_winner, scan_claude, scan_codex, scan_cursor, scan_grok, within_idle,
+    AgentKind, LiveSessions, SessionInfo, DISCORD_CLIENT_ID,
 };
-use agentcord_gpui::usage::{self, UsageSnapshot};
+use agentcord_gpui::usage::{self, format_window_value, UsageSnapshot, UsageWindow};
 use gpui::{
-    App, Application, Bounds, Context, FontWeight, MouseButton, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowDecorations, WindowKind, WindowOptions, div, prelude::*, px, rgb,
-    rgba, relative, size,
+    div, prelude::*, px, relative, rgb, rgba, size, App, Application, Bounds, Context, FontWeight,
+    MouseButton, SharedString, TitlebarOptions, Window, WindowBounds, WindowDecorations,
+    WindowKind, WindowOptions,
 };
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,7 +41,6 @@ const TRACK: u32 = 0xd5d5d7;
 const DISCORD: u32 = 0x5865f2;
 const LOGO: u32 = 0x1b1b1d;
 const WINDOW_WIDTH: f32 = 307.;
-
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -72,15 +71,13 @@ impl AgentCord {
     fn new(cx: &mut Context<Self>, tray: Option<tray::Tray>) -> Self {
         let discord = Arc::new(Client::new());
         discord.connect(DISCORD_CLIENT_ID);
-        cx.spawn(async move |this, cx| {
-            loop {
-                gpui::Timer::after(Duration::from_secs(1)).await;
-                this.update(cx, |this, cx| {
-                    this.tick();
-                    cx.notify();
-                })
-                .ok();
-            }
+        cx.spawn(async move |this, cx| loop {
+            gpui::Timer::after(Duration::from_secs(1)).await;
+            this.update(cx, |this, cx| {
+                this.tick();
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
         let mut app = Self {
@@ -272,15 +269,15 @@ fn unified_usage(app: &AgentCord, agents: &[AgentKind]) -> impl IntoElement {
     let snap = app.usage.lock().map(|g| g.clone()).unwrap_or_default();
     let mut col = div().flex().flex_col();
     let mut any = false;
-    for (i, agent) in agents.iter().copied().enumerate() {
-        let Some(bar) = snap.for_agent(agent) else {
+    for agent in agents.iter().copied() {
+        let Some(window) = snap.primary(agent) else {
             continue;
         };
-        any = true;
-        if i > 0 {
-            col = col.child(div().h(px(8.)));
+        if any {
+            col = col.child(div().h(px(10.)));
         }
-        col = col.child(usage_row(agent.display_name(), bar.percent));
+        any = true;
+        col = col.child(usage_row(agent.display_name(), Some(&window)));
     }
     if !any {
         col = col.child(
@@ -306,46 +303,51 @@ fn unified_usage(app: &AgentCord, agents: &[AgentKind]) -> impl IntoElement {
         .into_any_element()
 }
 
-fn usage_row(name: &'static str, percent: i64) -> impl IntoElement {
-    let fill = (percent as f32 / 100.0).clamp(0.0, 1.0);
-    let color = if percent >= 95 {
-        0xff3b30
-    } else if percent >= 80 {
-        YELLOW
-    } else {
-        GREEN
+fn usage_row(label: impl Into<SharedString>, window: Option<&UsageWindow>) -> impl IntoElement {
+    let (value, fill, color) = match window {
+        Some(w) => (
+            format_window_value(w),
+            (w.percent as f32 / 100.0).clamp(0.015, 1.0),
+            w.severity.color(),
+        ),
+        None => ("—".into(), 0.015, TRACK),
     };
     div()
         .flex()
-        .items_center()
+        .flex_col()
         .child(
             div()
-                .w(px(52.))
-                .text_size(px(11.))
-                .text_color(rgb(SEC))
-                .child(name),
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.5))
+                        .text_color(rgb(TEXT))
+                        .child(label.into()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(TEXT))
+                        .child(value),
+                ),
         )
         .child(
             div()
-                .flex_1()
-                .h(px(4.))
-                .rounded(px(2.))
-                .bg(rgb(TRACK))
+                .mt(px(5.))
+                .h(px(6.))
+                .rounded(px(3.))
+                .bg(rgba(0x78788029))
                 .overflow_hidden()
                 .child(
                     div()
                         .h_full()
                         .w(relative(fill))
-                        .rounded(px(2.))
+                        .rounded(px(3.))
                         .bg(rgb(color)),
                 ),
-        )
-        .child(
-            div()
-                .ml(px(8.))
-                .text_size(px(11.))
-                .text_color(rgb(TEXT))
-                .child(format!("{percent}%")),
         )
 }
 
@@ -491,11 +493,7 @@ fn detail_screen(
             white_card()
                 .px(px(12.))
                 .py(px(11.))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .child(provider),
-                )
+                .child(div().text_size(px(13.)).child(provider))
                 .child(div().h(px(1.)).bg(rgb(HAIR)).mt(px(10.)).mb(px(10.)))
                 .child(
                     div()
@@ -552,6 +550,30 @@ fn detail_screen(
                         ),
                 ),
         )
+        .child(agent_usage(app, agent))
+}
+
+fn agent_usage(app: &AgentCord, agent: AgentKind) -> impl IntoElement {
+    let snap = app.usage.lock().map(|g| g.clone()).unwrap_or_default();
+    let rows = snap.rows(agent);
+    let mut col = div().flex().flex_col();
+    if rows.is_empty() {
+        col = col.child(
+            div()
+                .text_size(px(12.5))
+                .italic()
+                .text_color(rgb(SEC_SOFT))
+                .child(format!("Waiting for {} usage…", agent.display_name())),
+        );
+    } else {
+        for (i, (label, window)) in rows.into_iter().enumerate() {
+            if i > 0 {
+                col = col.child(div().h(px(10.)));
+            }
+            col = col.child(usage_row(label, window.as_ref()));
+        }
+    }
+    white_card().mt(px(11.)).px(px(12.)).py(px(11.)).child(col)
 }
 
 fn header(
@@ -562,7 +584,13 @@ fn header(
     cx: &mut Context<AgentCord>,
 ) -> impl IntoElement {
     let (pill_bg, pill_border, pill_dot, pill_text, label) = if !presence_on {
-        (OFF_PILL, OFF_PILL_BORDER, 0x787880, SEC, SharedString::from("Off"))
+        (
+            OFF_PILL,
+            OFF_PILL_BORDER,
+            0x787880,
+            SEC,
+            SharedString::from("Off"),
+        )
     } else if enabled > 1 {
         if active > 0 {
             (
@@ -608,7 +636,10 @@ fn header(
         .flex()
         .items_center()
         .mb(px(11.))
-        .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| start_native_drag(cx)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|_, _, _, cx| start_native_drag(cx)),
+        )
         .child(
             div()
                 .size(px(26.))
@@ -762,43 +793,41 @@ fn settings_row(enabled: usize, cx: &mut Context<AgentCord>) -> impl IntoElement
     } else {
         format!("{enabled} agents on")
     };
-    soft_card()
-        .mb(px(0.))
-        .child(
-            div()
-                .id("settings")
-                .flex()
-                .items_center()
-                .px(px(11.))
-                .py(px(8.))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(0xf3f3f5)))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.screen = Screen::Settings;
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(rgb(SEC))
-                        .mr(px(7.))
-                        .child("⚙"),
-                )
-                .child(div().flex_1().text_size(px(13.)).child("Settings"))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(SEC_SOFT))
-                        .child(summary),
-                )
-                .child(
-                    div()
-                        .ml(px(6.))
-                        .text_size(px(12.))
-                        .text_color(rgb(SEC_FAINT))
-                        .child("›"),
-                ),
-        )
+    soft_card().mb(px(0.)).child(
+        div()
+            .id("settings")
+            .flex()
+            .items_center()
+            .px(px(11.))
+            .py(px(8.))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(0xf3f3f5)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.screen = Screen::Settings;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .text_color(rgb(SEC))
+                    .mr(px(7.))
+                    .child("⚙"),
+            )
+            .child(div().flex_1().text_size(px(13.)).child("Settings"))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(rgb(SEC_SOFT))
+                    .child(summary),
+            )
+            .child(
+                div()
+                    .ml(px(6.))
+                    .text_size(px(12.))
+                    .text_color(rgb(SEC_FAINT))
+                    .child("›"),
+            ),
+    )
 }
 
 fn quit_row(cx: &mut Context<AgentCord>) -> impl IntoElement {
@@ -840,7 +869,10 @@ fn nav_header(
         .flex()
         .items_center()
         .mb(px(11.))
-        .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| start_native_drag(cx)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|_, _, _, cx| start_native_drag(cx)),
+        )
         .child(
             div()
                 .id("back")

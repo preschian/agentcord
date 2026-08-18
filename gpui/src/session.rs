@@ -132,7 +132,10 @@ pub fn format_tokens(count: i64) -> String {
 }
 
 pub fn pretty_grok_model(raw: &str) -> String {
-    if let Some(rest) = raw.strip_prefix("grok-").or_else(|| raw.strip_prefix("Grok-")) {
+    if let Some(rest) = raw
+        .strip_prefix("grok-")
+        .or_else(|| raw.strip_prefix("Grok-"))
+    {
         if rest.is_empty() {
             "Grok".into()
         } else {
@@ -192,7 +195,10 @@ fn claude_version(raw: &str) -> Option<String> {
 }
 
 pub fn pretty_codex_model(raw: &str) -> String {
-    let rest = match raw.strip_prefix("gpt-").or_else(|| raw.strip_prefix("GPT-")) {
+    let rest = match raw
+        .strip_prefix("gpt-")
+        .or_else(|| raw.strip_prefix("GPT-"))
+    {
         Some(r) => r,
         None => return raw.to_string(),
     };
@@ -252,10 +258,7 @@ pub fn pretty_cursor_model(raw: &str) -> String {
 }
 
 pub fn repo_name_from_remote(remote: &str) -> String {
-    let base = remote
-        .rsplit(['/', '\\', ':'])
-        .next()
-        .unwrap_or(remote);
+    let base = remote.rsplit(['/', '\\', ':']).next().unwrap_or(remote);
     base.strip_suffix(".git")
         .or_else(|| base.strip_suffix(".GIT"))
         .unwrap_or(base)
@@ -377,7 +380,10 @@ pub fn scan_grok() -> Option<SessionInfo> {
             activity_ms: activity,
             tokens,
         };
-        if best.as_ref().is_none_or(|b| info.activity_ms >= b.activity_ms) {
+        if best
+            .as_ref()
+            .is_none_or(|b| info.activity_ms >= b.activity_ms)
+        {
             best = Some(info);
         }
     }
@@ -460,7 +466,9 @@ pub fn scan_cursor() -> Option<SessionInfo> {
         if !p.contains("agent-transcripts") || !p.ends_with(".jsonl") {
             return;
         }
-        let Some(mtime) = file_mtime_ms(path) else { return };
+        let Some(mtime) = file_mtime_ms(path) else {
+            return;
+        };
         if newest.as_ref().is_none_or(|(_, t)| mtime > *t) {
             newest = Some((path.to_path_buf(), mtime));
         }
@@ -509,7 +517,10 @@ fn codex_home() -> Option<PathBuf> {
 }
 
 fn env_home(key: &str) -> Option<PathBuf> {
-    std::env::var(key).ok().filter(|s| !s.is_empty()).map(PathBuf::from)
+    std::env::var(key)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
 }
 
 fn dirs_home() -> Option<PathBuf> {
@@ -538,7 +549,9 @@ fn find_grok_summary(home: &Path, cwd: &str, sid: &str) -> Option<PathBuf> {
     None
 }
 
-fn read_grok_summary(path: &Path) -> Option<(Option<String>, Vec<String>, Option<i64>, Option<i64>)> {
+fn read_grok_summary(
+    path: &Path,
+) -> Option<(Option<String>, Vec<String>, Option<i64>, Option<i64>)> {
     let v: Value = serde_json::from_str(&read_to_string(path)?).ok()?;
     let model = str_field(&v, "current_model_id");
     let last = str_field(&v, "last_active_at")
@@ -637,7 +650,9 @@ fn parse_claude_tail(path: &Path) -> TailMeta {
         let Some(message) = v.get("message") else {
             continue;
         };
-        if let Some(model) = str_field(message, "model").filter(|m| m != "<synthetic>" && !m.is_empty()) {
+        if let Some(model) =
+            str_field(message, "model").filter(|m| m != "<synthetic>" && !m.is_empty())
+        {
             meta.model = Some(pretty_claude_model(&model));
         }
         if let Some(usage) = message.get("usage") {
@@ -688,9 +703,7 @@ fn parse_codex_tail(path: &Path) -> TailMeta {
                 }
             }
         }
-        if ty == "event_msg"
-            && str_field(payload, "type").as_deref() == Some("token_count")
-        {
+        if ty == "event_msg" && str_field(payload, "type").as_deref() == Some("token_count") {
             if let Some(usage) = payload.get("info").and_then(|i| i.get("last_token_usage")) {
                 let total = usage.get("total_tokens").and_then(json_i64).unwrap_or(0);
                 meta.tokens = if total > 0 {
@@ -705,7 +718,11 @@ fn parse_codex_tail(path: &Path) -> TailMeta {
     meta
 }
 
-fn newest_jsonl(root: &Path, max_depth: usize, must_contain: Option<&str>) -> Option<(PathBuf, i64)> {
+fn newest_jsonl(
+    root: &Path,
+    max_depth: usize,
+    must_contain: Option<&str>,
+) -> Option<(PathBuf, i64)> {
     let mut newest: Option<(PathBuf, i64)> = None;
     walk_files(root, max_depth, &mut |path| {
         let p = path.to_string_lossy();
@@ -717,7 +734,9 @@ fn newest_jsonl(root: &Path, max_depth: usize, must_contain: Option<&str>) -> Op
                 return;
             }
         }
-        let Some(mtime) = file_mtime_ms(path) else { return };
+        let Some(mtime) = file_mtime_ms(path) else {
+            return;
+        };
         if newest.as_ref().is_none_or(|(_, t)| mtime > *t) {
             newest = Some((path.to_path_buf(), mtime));
         }
@@ -746,7 +765,10 @@ fn find_cursor_meta(chats: &Path, session_id: &str) -> Option<PathBuf> {
         if path.file_name().and_then(|n| n.to_str()) != Some("meta.json") {
             return;
         }
-        let parent = path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str());
+        let parent = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str());
         if parent == Some(session_id) {
             found = Some(path.to_path_buf());
         }
@@ -755,8 +777,12 @@ fn find_cursor_meta(chats: &Path, session_id: &str) -> Option<PathBuf> {
 }
 
 fn apply_cursor_meta(path: &Path, info: &mut SessionInfo, transcript_mtime: i64) {
-    let Some(text) = read_to_string(path) else { return };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else { return };
+    let Some(text) = read_to_string(path) else {
+        return;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
     if let Some(cwd) = str_field(&v, "cwd") {
         if let Some(base) = basename(&cwd) {
             if !base.is_empty() {
@@ -800,7 +826,9 @@ fn walk_files(root: &Path, max_depth: usize, visit: &mut dyn FnMut(&Path)) {
         if depth > max_depth {
             return;
         }
-        let Ok(entries) = fs::read_dir(dir) else { return };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let Ok(ft) = entry.file_type() else { continue };
@@ -827,7 +855,7 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-fn parse_iso_ms(iso: &str) -> Option<i64> {
+pub fn parse_iso_ms(iso: &str) -> Option<i64> {
     // 2026-07-22T04:20:53.376422Z or with offset. Seconds precision is enough.
     if iso.len() < 19 {
         return None;

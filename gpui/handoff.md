@@ -14,7 +14,7 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Window height follows content (`Window::resize` after layout); width stays 307
 - `WindowKind::Normal` so the prototype appears on the taskbar (`PopUp` is `WS_EX_TOOLWINDOW` and stays hidden until tray exists)
 - Window / taskbar / tray icon from `assets/agentcord.ico` (same file as `windows/assets/agentcord.ico`)
-- Unified usage card: Claude 5h, Codex ChatGPT window, Cursor period, Grok weekly credits
+- Unified usage card: Claude 5h, Codex ChatGPT window, Cursor period, Grok weekly credits; agent detail shows the extra windows; disk cache + 24h staleness
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
 - Parser / presence unit tests: `cargo test`
 
@@ -42,9 +42,13 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 ### Usage + status
 
 - Unified usage card on the main screen (enabled when more than one agent is on)
-- Grok weekly credits, Cursor period usage, Claude 5-hour limit, Codex ChatGPT `wham/usage`
+- Agent detail usage rows (Claude 5h + weekly + per-model, Cursor included/auto/API/on-demand, Grok weekly + on-demand, Codex primary + secondary)
+- Reset countdown + severity colors on each window
+- Disk cache + 24h staleness (`%APPDATA%\AgentCord\gpui-usage-cache.json`); a failed poll keeps the last snapshot
 - [ ] Claude status page (`windows/AnthropicStatus.cs`)
-- [ ] Disk cache + 24h staleness for usage snapshots
+- [ ] Plan name / account email (extra profile HTTP; production `ClaudeUsage` / `CursorUsage` / `GrokUsage`)
+- [ ] Codex app-server `account/rateLimits/read` (GPUI still uses ChatGPT `wham/usage`)
+- [ ] Tray tooltip compact usage (`windows/TrayStatusText.cs`)
 
 ### App shell
 

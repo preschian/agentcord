@@ -2,7 +2,7 @@
 //! Wire: `[opcode: u32 LE][length: u32 LE][json]`.
 
 use crate::session::Activity;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -385,7 +385,11 @@ fn peek_avail(pipe: &File) -> Option<u32> {
             std::ptr::null_mut(),
         )
     };
-    if ok == 0 { None } else { Some(avail) }
+    if ok == 0 {
+        None
+    } else {
+        Some(avail)
+    }
 }
 
 #[cfg(not(windows))]

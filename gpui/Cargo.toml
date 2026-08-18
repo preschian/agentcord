@@ -1,0 +1,29 @@
+[package]
+name = "agentcord-gpui"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal AgentCord for Windows (GPUI): Claude, Codex, Cursor, Grok Discord presence"
+license = "MIT"
+publish = false
+
+[lib]
+name = "agentcord_gpui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agentcord-gpui"
+path = "src/main.rs"
+required-features = ["ui"]
+
+[features]
+default = ["ui"]
+ui = ["dep:gpui"]
+
+[dependencies]
+gpui = { version = "0.2.2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "2.12"
+
+[build-dependencies]
+winresource = "0.1"

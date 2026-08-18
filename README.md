@@ -12,4 +12,4 @@ The app lives in the macOS menu bar or Windows system tray with no window in the
 > [!NOTE]
 > The macOS app isn't signed or notarized by Apple yet, so the first time you open it macOS will block it. To open it anyway: open the app once (macOS shows a warning and refuses), then go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the AgentCord message. This is only needed the first time.
 
-Curious how it's built, or want to set it up and run it yourself? See [CONTRIBUTING.md](CONTRIBUTING.md).
+Curious how it's built, or want to set it up and run it yourself? See [CONTRIBUTING.md](CONTRIBUTING.md). A Windows GPUI prototype (Grok + Cursor only) lives in [`gpui/`](gpui/).

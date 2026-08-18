@@ -262,14 +262,8 @@ pub fn active_duration(
 }
 
 pub fn elapsed_start_ms(total_active_ms: i64, last_ms: Option<i64>, now_ms: i64) -> i64 {
-    let mut elapsed = total_active_ms;
-    if let Some(last) = last_ms {
-        let tail = now_ms - last;
-        if tail > 0 && tail <= GAP_TOLERANCE_MS {
-            elapsed += tail;
-        }
-    }
-    now_ms - elapsed
+    let end = last_ms.filter(|l| *l > 0).unwrap_or(now_ms).min(now_ms);
+    end - total_active_ms.max(0)
 }
 
 pub fn pick_winner(sessions: &LiveSessions) -> Option<&SessionInfo> {
@@ -1837,6 +1831,16 @@ mod tests {
             elapsed_start_ms(3_600_000, Some(now - 4_000), now),
             now - 3_604_000
         );
+    }
+
+    #[test]
+    fn elapsed_start_does_not_crawl_forward() {
+        let last = 1_000_000i64;
+        let total = 60_000;
+        let a = elapsed_start_ms(total, Some(last), last + 10_000);
+        let b = elapsed_start_ms(total, Some(last), last + 120_000);
+        assert_eq!(a, b);
+        assert_eq!(a, last - total);
     }
 
     #[test]

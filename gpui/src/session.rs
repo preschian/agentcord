@@ -1,5 +1,5 @@
-//! Grok + Cursor session scans and Discord activity. Cheap: stat/read only
-//! the files needed for the current decision.
+//! Session scans and Discord activity. Cheap: stat/read only the files
+//! needed for the current decision. Agents: Claude, Codex, Cursor, Grok.
 
 use serde_json::Value;
 use std::fs::{self, File};
@@ -12,22 +12,37 @@ pub const IDLE_WINDOW_SECS: f64 = 300.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentKind {
-    Grok,
+    Claude,
+    Codex,
     Cursor,
+    Grok,
 }
 
 impl AgentKind {
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Grok => "Grok",
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
             Self::Cursor => "Cursor",
+            Self::Grok => "Grok",
+        }
+    }
+
+    pub fn provider_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Anthropic",
+            Self::Codex => "OpenAI",
+            Self::Cursor => "Cursor",
+            Self::Grok => "xAI",
         }
     }
 
     pub fn large_image(self) -> &'static str {
         match self {
-            Self::Grok => "logo-grok",
+            Self::Claude => "logo-claude",
+            Self::Codex => "logo-chatgpt",
             Self::Cursor => "logo-cursor",
+            Self::Grok => "logo-grok",
         }
     }
 }
@@ -44,8 +59,23 @@ pub struct SessionInfo {
 
 #[derive(Clone, Debug, Default)]
 pub struct LiveSessions {
-    pub grok: Option<SessionInfo>,
+    pub claude: Option<SessionInfo>,
+    pub codex: Option<SessionInfo>,
     pub cursor: Option<SessionInfo>,
+    pub grok: Option<SessionInfo>,
+}
+
+impl LiveSessions {
+    fn iter(&self) -> impl Iterator<Item = &SessionInfo> {
+        [
+            self.claude.as_ref(),
+            self.codex.as_ref(),
+            self.cursor.as_ref(),
+            self.grok.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,18 +99,7 @@ pub fn within_idle(activity_ms: i64, now: i64) -> bool {
 }
 
 pub fn pick_winner(sessions: &LiveSessions) -> Option<&SessionInfo> {
-    match (&sessions.grok, &sessions.cursor) {
-        (None, None) => None,
-        (Some(g), None) => Some(g),
-        (None, Some(c)) => Some(c),
-        (Some(g), Some(c)) => {
-            if c.activity_ms >= g.activity_ms {
-                Some(c)
-            } else {
-                Some(g)
-            }
-        }
-    }
+    sessions.iter().max_by_key(|s| s.activity_ms)
 }
 
 pub fn build_activity(info: &SessionInfo) -> Activity {
@@ -126,6 +145,84 @@ pub fn pretty_grok_model(raw: &str) -> String {
     }
 }
 
+pub fn pretty_claude_model(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    let family = if lower.contains("opus") {
+        "Opus"
+    } else if lower.contains("sonnet") {
+        "Sonnet"
+    } else if lower.contains("haiku") {
+        "Haiku"
+    } else if lower.contains("fable") {
+        "Fable"
+    } else {
+        return raw.to_string();
+    };
+    match claude_version(raw) {
+        Some(ver) => format!("{family} {ver}"),
+        None => family.into(),
+    }
+}
+
+fn claude_version(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && !bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == bytes.len() {
+        return None;
+    }
+    let start = i;
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i + 1 < bytes.len()
+        && (bytes[i] == b'.' || bytes[i] == b'-')
+        && bytes[i + 1].is_ascii_digit()
+    {
+        i += 2;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        return Some(raw[start..i].replace('-', "."));
+    }
+    Some(raw[start..i].to_string())
+}
+
+pub fn pretty_codex_model(raw: &str) -> String {
+    let rest = match raw.strip_prefix("gpt-").or_else(|| raw.strip_prefix("GPT-")) {
+        Some(r) => r,
+        None => return raw.to_string(),
+    };
+    let mut version = Vec::new();
+    let mut suffix = Vec::new();
+    for part in rest.split('-').filter(|p| !p.is_empty()) {
+        if suffix.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            version.push(part);
+        } else {
+            let mut chars = part.chars();
+            let pretty = match chars.next() {
+                Some(c) => format!("{}{}", c.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            };
+            suffix.push(pretty);
+        }
+    }
+    let ver = version.join(".");
+    let suf = if suffix.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", suffix.join(" "))
+    };
+    if ver.is_empty() {
+        format!("GPT{suf}")
+    } else {
+        format!("GPT-{ver}{suf}")
+    }
+}
+
 pub fn pretty_cursor_model(raw: &str) -> String {
     if raw.eq_ignore_ascii_case("default") {
         return "Auto".into();
@@ -167,6 +264,8 @@ pub fn repo_name_from_remote(remote: &str) -> String {
 
 pub fn scan_all() -> LiveSessions {
     LiveSessions {
+        claude: scan_claude(),
+        codex: scan_codex(),
         grok: scan_grok(),
         cursor: scan_cursor(),
     }
@@ -180,6 +279,14 @@ pub fn grok_linked() -> bool {
 
 pub fn cursor_linked() -> bool {
     dirs_home().is_some_and(|home| home.join(".cursor").join("projects").is_dir())
+}
+
+pub fn claude_linked() -> bool {
+    claude_home().is_some_and(|home| home.join("projects").is_dir())
+}
+
+pub fn codex_linked() -> bool {
+    codex_home().is_some_and(|home| home.join("sessions").is_dir())
 }
 
 /// Ticking clock like the production popover: "1:02:03" / "2:03".
@@ -277,6 +384,69 @@ pub fn scan_grok() -> Option<SessionInfo> {
     best
 }
 
+pub fn scan_claude() -> Option<SessionInfo> {
+    scan_claude_from(&claude_home()?.join("projects"))
+}
+
+pub fn scan_codex() -> Option<SessionInfo> {
+    scan_codex_from(&codex_home()?.join("sessions"))
+}
+
+fn scan_claude_from(projects: &Path) -> Option<SessionInfo> {
+    if !projects.is_dir() {
+        return None;
+    }
+    let now = now_ms();
+    let (transcript, mtime) = newest_jsonl(projects, 8, None)?;
+    let tail = parse_claude_tail(&transcript);
+    let activity = tail.last_event_ms.unwrap_or(mtime);
+    if !within_idle(activity, now) {
+        return None;
+    }
+    let project = tail
+        .cwd
+        .as_deref()
+        .and_then(basename)
+        .filter(|s| !s.is_empty())
+        .or_else(|| claude_project_from_dir(&transcript))
+        .unwrap_or_else(|| "Claude".into());
+    Some(SessionInfo {
+        agent: AgentKind::Claude,
+        project,
+        model: tail.model.unwrap_or_default(),
+        start_epoch_ms: tail.first_event_ms.unwrap_or(mtime),
+        activity_ms: activity,
+        tokens: tail.tokens,
+    })
+}
+
+fn scan_codex_from(sessions: &Path) -> Option<SessionInfo> {
+    if !sessions.is_dir() {
+        return None;
+    }
+    let now = now_ms();
+    let (transcript, mtime) = newest_jsonl(sessions, 8, None)?;
+    let tail = parse_codex_tail(&transcript);
+    let activity = tail.last_event_ms.unwrap_or(mtime);
+    if !within_idle(activity, now) {
+        return None;
+    }
+    let project = tail
+        .cwd
+        .as_deref()
+        .and_then(basename)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Codex".into());
+    Some(SessionInfo {
+        agent: AgentKind::Codex,
+        project,
+        model: tail.model.unwrap_or_else(|| "Codex".into()),
+        start_epoch_ms: tail.first_event_ms.unwrap_or(mtime),
+        activity_ms: activity,
+        tokens: tail.tokens,
+    })
+}
+
 pub fn scan_cursor() -> Option<SessionInfo> {
     let home = dirs_home()?.join(".cursor");
     let projects = home.join("projects");
@@ -327,12 +497,19 @@ pub fn scan_cursor() -> Option<SessionInfo> {
 }
 
 fn grok_home() -> Option<PathBuf> {
-    if let Ok(env) = std::env::var("GROK_HOME") {
-        if !env.is_empty() {
-            return Some(PathBuf::from(env));
-        }
-    }
-    Some(dirs_home()?.join(".grok"))
+    env_home("GROK_HOME").or_else(|| Some(dirs_home()?.join(".grok")))
+}
+
+fn claude_home() -> Option<PathBuf> {
+    env_home("CLAUDE_HOME").or_else(|| Some(dirs_home()?.join(".claude")))
+}
+
+fn codex_home() -> Option<PathBuf> {
+    env_home("CODEX_HOME").or_else(|| Some(dirs_home()?.join(".codex")))
+}
+
+fn env_home(key: &str) -> Option<PathBuf> {
+    std::env::var(key).ok().filter(|s| !s.is_empty()).map(PathBuf::from)
 }
 
 fn dirs_home() -> Option<PathBuf> {
@@ -397,23 +574,164 @@ fn is_open_turn(session_dir: &Path) -> bool {
 }
 
 fn last_jsonl_type(path: &Path) -> Option<String> {
+    let text = read_tail(path, 8192)?;
+    let last = text.lines().rev().find(|l| !l.trim().is_empty())?;
+    let v: Value = serde_json::from_str(last.trim()).ok()?;
+    str_field(&v, "type")
+}
+
+fn read_tail(path: &Path, max: u64) -> Option<String> {
     let mut file = open_shared(path)?;
     let len = file.metadata().ok()?.len();
     if len == 0 {
         return None;
     }
-    let take = len.min(8192);
+    let take = len.min(max);
     file.seek(SeekFrom::End(-(take as i64))).ok()?;
     let mut buf = vec![0u8; take as usize];
     let n = file.read(&mut buf).ok()?;
     let mut text = String::from_utf8_lossy(&buf[..n]).into_owned();
     if len > take {
-        let cut = text.find('\n')?;
-        text = text[cut + 1..].to_string();
+        if let Some(cut) = text.find('\n') {
+            text = text[cut + 1..].to_string();
+        }
     }
-    let last = text.lines().rev().find(|l| !l.trim().is_empty())?;
-    let v: Value = serde_json::from_str(last.trim()).ok()?;
-    str_field(&v, "type")
+    Some(text)
+}
+
+#[derive(Default)]
+struct TailMeta {
+    cwd: Option<String>,
+    model: Option<String>,
+    first_event_ms: Option<i64>,
+    last_event_ms: Option<i64>,
+    tokens: i64,
+}
+
+fn note_event(meta: &mut TailMeta, ms: i64) {
+    meta.first_event_ms = Some(meta.first_event_ms.map_or(ms, |f| f.min(ms)));
+    meta.last_event_ms = Some(meta.last_event_ms.map_or(ms, |l| l.max(ms)));
+}
+
+fn parse_claude_tail(path: &Path) -> TailMeta {
+    let mut meta = TailMeta::default();
+    let Some(text) = read_tail(path, 256 * 1024) else {
+        return meta;
+    };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if meta.cwd.is_none() {
+            if let Some(cwd) = str_field(&v, "cwd").filter(|s| !s.is_empty()) {
+                meta.cwd = Some(cwd);
+            }
+        }
+        if let Some(ms) = str_field(&v, "timestamp").as_deref().and_then(parse_iso_ms) {
+            note_event(&mut meta, ms);
+        }
+        let Some(message) = v.get("message") else {
+            continue;
+        };
+        if let Some(model) = str_field(message, "model").filter(|m| m != "<synthetic>" && !m.is_empty()) {
+            meta.model = Some(pretty_claude_model(&model));
+        }
+        if let Some(usage) = message.get("usage") {
+            meta.tokens += usage.get("input_tokens").and_then(json_i64).unwrap_or(0)
+                + usage.get("output_tokens").and_then(json_i64).unwrap_or(0);
+        }
+    }
+    meta
+}
+
+fn parse_codex_tail(path: &Path) -> TailMeta {
+    let mut meta = TailMeta::default();
+    let Some(text) = read_tail(path, 256 * 1024) else {
+        return meta;
+    };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if let Some(ms) = str_field(&v, "timestamp").as_deref().and_then(parse_iso_ms) {
+            note_event(&mut meta, ms);
+        }
+        let Some(ty) = str_field(&v, "type") else {
+            continue;
+        };
+        let Some(payload) = v.get("payload") else {
+            continue;
+        };
+        if ty == "session_meta" || ty == "turn_context" {
+            if let Some(cwd) = str_field(payload, "cwd").filter(|s| !s.is_empty()) {
+                meta.cwd = Some(cwd);
+            }
+            if ty == "turn_context" {
+                if let Some(model) = str_field(payload, "model").filter(|s| !s.is_empty()) {
+                    meta.model = Some(pretty_codex_model(&model));
+                }
+            }
+            if ty == "session_meta" {
+                if let Some(ms) = str_field(payload, "timestamp")
+                    .as_deref()
+                    .and_then(parse_iso_ms)
+                {
+                    meta.first_event_ms = Some(meta.first_event_ms.map_or(ms, |f| f.min(ms)));
+                }
+            }
+        }
+        if ty == "event_msg"
+            && str_field(payload, "type").as_deref() == Some("token_count")
+        {
+            if let Some(usage) = payload.get("info").and_then(|i| i.get("last_token_usage")) {
+                let total = usage.get("total_tokens").and_then(json_i64).unwrap_or(0);
+                meta.tokens = if total > 0 {
+                    total
+                } else {
+                    usage.get("input_tokens").and_then(json_i64).unwrap_or(0)
+                        + usage.get("output_tokens").and_then(json_i64).unwrap_or(0)
+                };
+            }
+        }
+    }
+    meta
+}
+
+fn newest_jsonl(root: &Path, max_depth: usize, must_contain: Option<&str>) -> Option<(PathBuf, i64)> {
+    let mut newest: Option<(PathBuf, i64)> = None;
+    walk_files(root, max_depth, &mut |path| {
+        let p = path.to_string_lossy();
+        if !p.ends_with(".jsonl") {
+            return;
+        }
+        if let Some(needle) = must_contain {
+            if !p.contains(needle) {
+                return;
+            }
+        }
+        let Some(mtime) = file_mtime_ms(path) else { return };
+        if newest.as_ref().is_none_or(|(_, t)| mtime > *t) {
+            newest = Some((path.to_path_buf(), mtime));
+        }
+    });
+    newest
+}
+
+fn claude_project_from_dir(transcript: &Path) -> Option<String> {
+    let dir = transcript.parent()?.file_name()?.to_str()?;
+    dir.rsplit_once('-')
+        .map(|(_, tail)| tail)
+        .filter(|t| !t.is_empty())
+        .or(Some(dir))
+        .map(str::to_string)
 }
 
 fn find_cursor_meta(chats: &Path, session_id: &str) -> Option<PathBuf> {
@@ -610,6 +928,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pretty_claude_formats_id() {
+        assert_eq!(pretty_claude_model("claude-opus-4-5-20260101"), "Opus 4.5");
+        assert_eq!(pretty_claude_model("claude-sonnet-4"), "Sonnet 4");
+        assert_eq!(pretty_claude_model("claude-fable-5"), "Fable 5");
+    }
+
+    #[test]
+    fn pretty_codex_formats_id() {
+        assert_eq!(pretty_codex_model("gpt-5.2"), "GPT-5.2");
+        assert_eq!(pretty_codex_model("gpt-5-2-codex"), "GPT-5.2 Codex");
+    }
+
+    #[test]
     fn pretty_grok_formats_id() {
         assert_eq!(pretty_grok_model("grok-4.5"), "Grok 4.5");
         assert_eq!(pretty_grok_model("grok-"), "Grok");
@@ -681,6 +1012,7 @@ mod tests {
         let sessions = LiveSessions {
             grok: Some(grok),
             cursor: Some(cursor.clone()),
+            ..Default::default()
         };
         assert_eq!(pick_winner(&sessions).unwrap().agent, AgentKind::Cursor);
     }
@@ -706,6 +1038,7 @@ mod tests {
         let sessions = LiveSessions {
             grok: Some(grok),
             cursor: Some(cursor),
+            ..Default::default()
         };
         assert_eq!(pick_winner(&sessions).unwrap().agent, AgentKind::Grok);
     }
@@ -736,5 +1069,51 @@ mod tests {
             r"C:\Users\p\.cursor\projects\D-Workspace-agentcord\agent-transcripts\a\a.jsonl",
         );
         assert_eq!(project_from_transcript(&p).as_deref(), Some("agentcord"));
+    }
+
+    #[test]
+    fn scan_claude_from_newest_jsonl() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentcord-claude-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let project = dir.join("C-Users-test-agentcord");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("session.jsonl"),
+            r#"{"cwd":"D:\\Workspace\\agentcord","message":{"model":"claude-opus-4-5","usage":{"input_tokens":3,"output_tokens":5}}}"#,
+        )
+        .unwrap();
+        let info = scan_claude_from(&dir).unwrap();
+        assert_eq!(info.agent, AgentKind::Claude);
+        assert_eq!(info.project, "agentcord");
+        assert_eq!(info.model, "Opus 4.5");
+        assert_eq!(info.tokens, 8);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_codex_from_newest_jsonl() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentcord-codex-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let day = dir.join("2026").join("08").join("18");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(
+            day.join("rollout.jsonl"),
+            r#"{"type":"session_meta","payload":{"cwd":"D:\\Workspace\\agentcord"}}
+{"type":"turn_context","payload":{"cwd":"D:\\Workspace\\agentcord","model":"gpt-5.2"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":42}}}}"#,
+        )
+        .unwrap();
+        let info = scan_codex_from(&dir).unwrap();
+        assert_eq!(info.agent, AgentKind::Codex);
+        assert_eq!(info.project, "agentcord");
+        assert_eq!(info.model, "GPT-5.2");
+        assert_eq!(info.tokens, 42);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

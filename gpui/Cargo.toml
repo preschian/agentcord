@@ -2,7 +2,7 @@
 name = "agentcord-gpui"
 version = "0.1.0"
 edition = "2021"
-description = "Minimal AgentCord for Windows (GPUI): Grok + Cursor Discord presence"
+description = "Minimal AgentCord for Windows (GPUI): Claude, Codex, Cursor, Grok Discord presence"
 license = "MIT"
 publish = false
 

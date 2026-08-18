@@ -1,15 +1,17 @@
 # AgentCord GPUI (Windows)
 
-Minimal AgentCord on [GPUI](https://gpui.rs): Grok + Cursor sessions → Discord Rich Presence.
+Minimal AgentCord on [GPUI](https://gpui.rs): Claude, Codex, Cursor, and Grok sessions → Discord Rich Presence.
 
-Lives next to the production C# app in [`../windows`](../windows). This tree is Windows-first and only those two agents.
+Lives next to the production C# app in [`../windows`](../windows). This tree is Windows-first.
 
 - Discord IPC on `\\.\pipe\discord-ipc-{0..9}`
+- Claude: newest `~/.claude/projects/**/*.jsonl` (idle window 5 min)
+- Codex: newest `~/.codex/sessions/**/*.jsonl` (`CODEX_HOME` honored)
+- Cursor: newest `~/.cursor/projects/**/agent-transcripts/**/*.jsonl`
 - Grok: `~/.grok/active_sessions.json` + `summary.json` / `signals.json`
-- Cursor: newest `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` (idle window 5 min)
 - Compact GPUI window: presence toggle, live session, per-agent idle/live
 
-Not yet: usage bars, Claude/Codex/Antigravity, tray icon, settings persistence. Full leftover list: [handoff.md](handoff.md).
+Not yet: usage bars, tray icon, settings persistence. Full leftover list: [handoff.md](handoff.md).
 
 ## Prerequisites
 
@@ -29,7 +31,7 @@ cd gpui
 cargo run --release
 ```
 
-Uses the production AgentCord Discord Application ID. Large-image assets: `logo-grok`, `logo-cursor`.
+Uses the production AgentCord Discord Application ID. Large-image assets: `logo-claude`, `logo-chatgpt`, `logo-cursor`, `logo-grok`.
 
 ## Test
 

@@ -1,12 +1,12 @@
-//! Minimal AgentCord on GPUI (Windows): Grok + Cursor → Discord Rich Presence.
+//! Minimal AgentCord on GPUI (Windows): Claude, Codex, Cursor, Grok → Discord Rich Presence.
 //! Popover chrome matches the production light iOS-style card.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
 use agentcord_gpui::discord::{Client, ConnState};
 use agentcord_gpui::session::{
-    AgentKind, DISCORD_CLIENT_ID, LiveSessions, SessionInfo, build_activity, cursor_linked,
-    format_clock, format_tokens, grok_linked, now_ms, pick_winner, scan_cursor, scan_grok,
-    within_idle,
+    AgentKind, DISCORD_CLIENT_ID, LiveSessions, SessionInfo, build_activity, claude_linked,
+    codex_linked, cursor_linked, format_clock, format_tokens, grok_linked, now_ms, pick_winner,
+    scan_claude, scan_codex, scan_cursor, scan_grok, within_idle,
 };
 use gpui::{
     App, Application, Bounds, Context, FontWeight, MouseButton, SharedString, TitlebarOptions,
@@ -49,10 +49,14 @@ enum Screen {
 struct AgentCord {
     discord: Arc<Client>,
     presence_on: bool,
+    claude_on: bool,
+    codex_on: bool,
     grok_on: bool,
     cursor_on: bool,
     sessions: LiveSessions,
     last_grok: Option<SessionInfo>,
+    claude_is_linked: bool,
+    codex_is_linked: bool,
     grok_is_linked: bool,
     cursor_is_linked: bool,
     screen: Screen,
@@ -76,10 +80,14 @@ impl AgentCord {
         let mut app = Self {
             discord,
             presence_on: true,
+            claude_on: true,
+            codex_on: true,
             grok_on: true,
             cursor_on: true,
             sessions: LiveSessions::default(),
             last_grok: None,
+            claude_is_linked: false,
+            codex_is_linked: false,
             grok_is_linked: false,
             cursor_is_linked: false,
             screen: Screen::Main,
@@ -89,10 +97,18 @@ impl AgentCord {
     }
 
     fn tick(&mut self) {
+        self.claude_is_linked = claude_linked();
+        self.codex_is_linked = codex_linked();
         self.grok_is_linked = grok_linked();
         self.cursor_is_linked = cursor_linked();
 
         let mut sessions = LiveSessions::default();
+        if self.claude_on {
+            sessions.claude = scan_claude();
+        }
+        if self.codex_on {
+            sessions.codex = scan_codex();
+        }
         if self.grok_on {
             sessions.grok = scan_grok();
             if sessions.grok.is_none() {
@@ -136,6 +152,8 @@ impl AgentCord {
 
     fn session_for(&self, agent: AgentKind) -> Option<&SessionInfo> {
         match agent {
+            AgentKind::Claude => self.sessions.claude.as_ref(),
+            AgentKind::Codex => self.sessions.codex.as_ref(),
             AgentKind::Grok => self.sessions.grok.as_ref(),
             AgentKind::Cursor => self.sessions.cursor.as_ref(),
         }
@@ -143,6 +161,8 @@ impl AgentCord {
 
     fn linked(&self, agent: AgentKind) -> bool {
         match agent {
+            AgentKind::Claude => self.claude_is_linked,
+            AgentKind::Codex => self.codex_is_linked,
             AgentKind::Grok => self.grok_is_linked,
             AgentKind::Cursor => self.cursor_is_linked,
         }
@@ -150,6 +170,12 @@ impl AgentCord {
 
     fn enabled_agents(&self) -> Vec<AgentKind> {
         let mut out = Vec::new();
+        if self.claude_on {
+            out.push(AgentKind::Claude);
+        }
+        if self.codex_on {
+            out.push(AgentKind::Codex);
+        }
         if self.cursor_on {
             out.push(AgentKind::Cursor);
         }
@@ -239,6 +265,30 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                         .child("AGENTS"),
                 )
                 .child(agent_toggle(
+                    "claude-toggle",
+                    AgentKind::Claude,
+                    0xd97757,
+                    app.claude_on,
+                    cx.listener(|this, _, _, cx| {
+                        this.claude_on = !this.claude_on;
+                        this.tick();
+                        cx.notify();
+                    }),
+                ))
+                .child(div().h(px(1.)).bg(rgb(HAIR)))
+                .child(agent_toggle(
+                    "codex-toggle",
+                    AgentKind::Codex,
+                    0x10a37f,
+                    app.codex_on,
+                    cx.listener(|this, _, _, cx| {
+                        this.codex_on = !this.codex_on;
+                        this.tick();
+                        cx.notify();
+                    }),
+                ))
+                .child(div().h(px(1.)).bg(rgb(HAIR)))
+                .child(agent_toggle(
                     "cursor-toggle",
                     AgentKind::Cursor,
                     0x111111,
@@ -303,10 +353,7 @@ fn detail_screen(
     } else {
         "Waiting for a session"
     };
-    let provider = match agent {
-        AgentKind::Grok => "xAI",
-        AgentKind::Cursor => "Cursor",
-    };
+    let provider = agent.provider_name();
 
     div()
         .flex()
@@ -812,7 +859,7 @@ mod native {
 fn main() {
     Application::new().run(|cx: &mut App| {
         // Frame adds ~13px. 307 client → ~320 outer.
-        let bounds = Bounds::centered(None, size(px(307.), px(292.)), cx);
+        let bounds = Bounds::centered(None, size(px(307.), px(380.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

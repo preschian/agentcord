@@ -1,14 +1,16 @@
 # GPUI prototype — what's left
 
-Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tray app in [`../windows`](../windows). This tree only ships Grok + Cursor.
+Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tray app in [`../windows`](../windows). This tree ships Claude, Codex, Cursor, and Grok. Antigravity is out of scope.
 
 ## Done
 
 - Discord IPC on `\\.\pipe\discord-ipc-{0..9}` (`src/discord.rs`): handshake, READY, SET_ACTIVITY, ping/pong, reconnect with backoff, clear on quit
 - Grok scan (`src/session.rs`): live PID + `last_active_at` / event-file mtimes + open-turn, `summary.json` / `signals.json`
 - Cursor scan: newest `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` within a 5-minute idle window, `meta.json` cwd / timestamps
+- Claude scan: newest `~/.claude/projects/**/*.jsonl`, tail parse for cwd / model / tokens / event timestamps
+- Codex scan: newest `~/.codex/sessions/**/*.jsonl` (`CODEX_HOME` honored), tail parse for `session_meta` / `turn_context` / `token_count`
 - Winner = newest `activity_ms`; presence payload uses production Discord app id `1517099756063686677`
-- Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Grok/Cursor toggles), agent detail, Quit
+- Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Claude/Codex/Cursor/Grok toggles), agent detail, Quit
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
 - Parser / presence unit tests: `cargo test`
 
@@ -18,27 +20,27 @@ Parity gaps vs [`../windows`](../windows). Check those files before reinventing.
 
 ### Agents
 
-- [ ] Claude Code (`windows/ClaudeSession.cs`)
-- [ ] Codex (`windows/CodexSession.cs`)
-- [ ] Antigravity (`windows/AntigravitySession.cs`)
-- [ ] Cursor via T3 Code sqlite (`windows/T3CursorSession.cs`)
-- [ ] Cursor ACP live-turn (`windows/CursorSession.cs` `ScanAcp`)
-- [ ] Cursor model from `store.db` `lastUsedModel` (`LocalSqlite.cs`)
+Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
+
+- Cursor via T3 Code sqlite (`windows/T3CursorSession.cs`)
+- Cursor ACP live-turn (`windows/CursorSession.cs` `ScanAcp`)
+- Cursor model from `store.db` `lastUsedModel` (`LocalSqlite.cs`)
 
 ### Session fidelity
 
 - [ ] Configurable idle window (production default 300s is hardcoded; Settings slider 0–30 min)
-- [ ] 24h rolling working duration / Discord elapsed (`windows/SessionActivity.cs`) — GPUI uses `opened_at` / `createdAtMs` wall clock
+- [ ] 24h rolling working duration / Discord elapsed (`windows/SessionActivity.cs`) — GPUI uses `opened_at` / `createdAtMs` / first tail timestamp
 - [ ] Grok last-known grace after `active_sessions.json` clears (`GrokSession.cs`)
 - [ ] Cursor embedded `<timestamp>` stamps + tree index memoization (`JsonlCursor.cs`, `SessionTreeIndex.cs`)
 - [ ] Repo name from `.git/config` origin (`RepoNames.cs`) — GPUI only uses first `git_remotes` entry or basename
+- [ ] Claude/Codex: prefer parsed event timestamps over mtime when picking which transcript is newest (today: newest by mtime, then tail timestamps for idle)
 
 ### Usage + status
 
 - [ ] Unified usage card on the main screen
 - [ ] Grok weekly credits (`windows/GrokUsage.cs`)
 - [ ] Cursor period usage (`windows/CursorUsage.cs`)
-- [ ] Claude / Codex / Antigravity usage pollers
+- [ ] Claude / Codex usage pollers
 - [ ] Claude status page (`windows/AnthropicStatus.cs`)
 
 ### App shell
@@ -69,7 +71,7 @@ Parity gaps vs [`../windows`](../windows). Check those files before reinventing.
 
 - `gpui::Window::start_window_move` is not a Windows API. Do not call it; it can panic. Native move is `PostMessage(WM_SYSCOMMAND, SC_MOVE | HTCAPTION)` **after** the mouse-down handler returns (`cx.defer`). `SendMessage` re-enters GPUI and crashes.
 - Launch the debug exe via Explorer (see root `AGENTS.md`). `cargo run` / a job-owned process can die with the agent session.
-- Outer HWND is ~13px wider than the client. Current request is 307×292 so the visible frame is about 320×300.
+- Outer HWND is ~13px wider than the client. Current request is 307×380 so four agent rows fit.
 - Discord Rich Presence needs the desktop client, not the browser.
 
 ## Run

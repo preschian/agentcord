@@ -110,6 +110,13 @@ impl Settings {
     pub fn set_idle_minutes(&mut self, minutes: i32) {
         self.idle_window_seconds = minutes.max(0) as f64 * 60.0;
     }
+
+    pub fn idle_label(&self) -> String {
+        match self.idle_minutes() {
+            0 => "off".into(),
+            m => format!("{m}m"),
+        }
+    }
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -490,6 +497,8 @@ mod tests {
         assert_eq!(s.idle_minutes(), 0);
         s.idle_window_seconds = 200.0;
         assert_eq!(s.idle_minutes(), 5);
+        s.set_idle_minutes(0);
+        assert_eq!(s.idle_label(), "off");
     }
 
     #[test]

@@ -102,7 +102,7 @@ pub fn now_ms() -> i64 {
 }
 
 pub fn within_idle(activity_ms: i64, now: i64, window_secs: f64) -> bool {
-    activity_ms > 0 && (now - activity_ms) as f64 / 1000.0 <= window_secs
+    window_secs > 0.0 && activity_ms > 0 && (now - activity_ms) as f64 / 1000.0 <= window_secs
 }
 
 pub fn normalize_ms(event_ms: Option<i64>, mtime_ms: i64) -> i64 {
@@ -521,13 +521,8 @@ fn tree_snapshot(
         snap.files = files;
         snap.walked_at = now;
     } else {
-        let cutoff = now - LOOKBACK_MS;
         let mut i = 0;
         while i < snap.files.len() {
-            if snap.files[i].1 < cutoff {
-                i += 1;
-                continue;
-            }
             match file_mtime_ms(&snap.files[i].0) {
                 Some(m) => {
                     snap.files[i].1 = m;
@@ -941,7 +936,8 @@ fn scan_cursor_from(home: &Path, idle_secs: f64) -> Option<SessionInfo> {
             .into_iter()
             .flatten()
             .max();
-        let activity = normalize_ms(event, *mtime);
+        // Cursor stamps live on user messages; agent turns only bump mtime.
+        let activity = event.map_or(*mtime, |e| e.max(*mtime));
         if best.as_ref().is_none_or(|(_, a, _)| activity >= *a) {
             best = Some((path.clone(), activity, cwd));
         }
@@ -1855,6 +1851,39 @@ mod tests {
         assert_eq!(info.agent, AgentKind::Cursor);
         assert!(within_idle(info.activity_ms, now_ms(), 180.0));
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn cursor_scan_uses_mtime_when_embedded_stamp_is_stale() {
+        let home = std::env::temp_dir().join(format!(
+            "agentcord-cursor-mtime-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let transcripts = home
+            .join("projects")
+            .join("D-Workspace-agentcord")
+            .join("agent-transcripts");
+        fs::create_dir_all(&transcripts).unwrap();
+        let path = transcripts.join("live.jsonl");
+        let stamp = cursor_stamp_near(now_ms() - 2 * 3600_000, 7 * 3600);
+        fs::write(
+            &path,
+            format!(
+                r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"hi <timestamp>{stamp} (UTC+7)</timestamp>"}}]}}}}
+"#
+            ),
+        )
+        .unwrap();
+        let info = scan_cursor_from(&home, 180.0).unwrap();
+        assert_eq!(info.agent, AgentKind::Cursor);
+        assert!(within_idle(info.activity_ms, now_ms(), 180.0));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn zero_idle_window_is_off() {
+        assert!(!within_idle(now_ms(), now_ms(), 0.0));
     }
 
     #[test]

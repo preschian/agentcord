@@ -599,7 +599,7 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                                     div()
                                         .text_size(px(12.5))
                                         .text_color(rgb(SEC))
-                                        .child(format!("{}m", app.settings.idle_minutes())),
+                                        .child(app.settings.idle_label()),
                                 ),
                         )
                         .child({
@@ -625,7 +625,11 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                                             this.tick();
                                             cx.notify();
                                         }))
-                                        .child(format!("{mins}m")),
+                                        .child(if mins == 0 {
+                                            "off".to_string()
+                                        } else {
+                                            format!("{mins}m")
+                                        }),
                                 );
                             }
                             row

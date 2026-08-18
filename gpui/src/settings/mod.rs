@@ -430,6 +430,8 @@ mod tests {
         assert!(s.presence_enabled && s.show_project && s.unified_usage);
         assert_eq!(s.activity_type, 0);
         assert_eq!(s.idle_window_seconds, 300.0);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("prevent_sleep"));
     }
 
     #[test]

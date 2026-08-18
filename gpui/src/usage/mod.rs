@@ -675,6 +675,19 @@ mod tests {
     }
 
     #[test]
+    fn usage_value_omits_resets_in() {
+        let now = now_ms();
+        let pending = UsageWindow::new(46, Some(now + (6 * 24 * 60 + 22 * 60) * 60_000));
+        let text = format_window_value(&pending);
+        assert_eq!(text, "46% · 6d 22h");
+        assert!(!text.contains("resets in"));
+
+        let due = UsageWindow::new(46, Some(now - 1_000));
+        assert_eq!(format_window_value(&due), "46% · resets now");
+        assert_eq!(format_window_value(&UsageWindow::new(10, None)), "10%");
+    }
+
+    #[test]
     fn claude_profile_plan_and_email() {
         let json = r#"{"account":{"email":"a@b.com","has_claude_max":true},"organization":{"organization_type":"claude_pro"}}"#;
         let (email, plan) = parse_claude_profile(json).unwrap();

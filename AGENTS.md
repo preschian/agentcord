@@ -70,3 +70,11 @@ Start-Process explorer.exe -ArgumentList "`"$((Resolve-Path 'windows\bin\Debug\n
 ```
 
 The app lives in the system tray (no taskbar entry) — check the tray to confirm it relaunched.
+
+### GPUI (Windows prototype)
+
+```powershell
+Get-Process -Name agentcord-gpui -ErrorAction SilentlyContinue | Stop-Process -Force
+cargo build --manifest-path gpui/Cargo.toml
+Start-Process explorer.exe -ArgumentList "`"$((Resolve-Path 'gpui\target\debug\agentcord-gpui.exe').Path)`""
+```

@@ -12,7 +12,6 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Winner = newest `activity_ms`; presence payload uses production Discord app id `1517099756063686677`
 - Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Claude/Codex/Cursor/Grok toggles), agent detail, Quit; all text is Consolas
 - Window height follows content (`Window::resize` after layout); width stays 307
-- `WindowKind::Normal` so the prototype appears on the taskbar (`PopUp` is `WS_EX_TOOLWINDOW` and stays hidden until tray exists)
 - Window / taskbar / tray icon from `assets/agentcord.ico` (same file as `windows/assets/agentcord.ico`)
 - Unified usage card: Claude 5h, Codex ChatGPT window, Cursor period, Grok weekly credits; agent detail shows the extra windows; disk cache + 24h staleness
 - Plan name / account email on agent detail (masked email, tap to reveal)
@@ -20,6 +19,8 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Claude status card on Claude detail (`status.claude.com` summary, expand + open page)
 - Tray tooltip: session line + compact usage, 63-char cap
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
+- Settings persist to `%APPDATA%\AgentCord\settings.json`; launch at login; prevent sleep; display toggles; activity type cycle
+- `WindowKind::PopUp` (no taskbar); close hides to tray; Quit / logoff clears presence; single-instance mutex
 - Parser / presence unit tests: `cargo test`
 
 ## Not done
@@ -45,14 +46,7 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 
 ### App shell
 
-- [ ] System tray, no taskbar entry (`windows/TrayApplicationContext.cs`) — tray icon is live; window still uses `WindowKind::Normal` so it stays on the taskbar
-- [ ] Settings persistence (`%APPDATA%\AgentCord\settings.json`, `windows/Settings.cs`)
-- [ ] Launch at login (`windows/Autostart.cs`)
-- [ ] Prevent sleep (`windows/SleepGuard.cs`)
-- [ ] Display toggles: show project / model / tokens / unified usage
-- [ ] Activity type cycle (Playing / Listening / Watching / Competing)
-- [ ] Single-instance mutex
-- [ ] Clear presence on logoff / shutdown with a short sync budget
+Shipped (see Done). Idle-window slider is in Session fidelity.
 
 ### UI polish
 
@@ -60,7 +54,7 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 - Popover text is Consolas (was Segoe UI)
 - Fluent UI System Icons (MIT subset TTF) for settings / chevron / folder / sparkle
 - Window-chrome corner radius 12: skipped (tried, reverted; leave the GPUI chrome)
-- [ ] Hide-on-close / stay running in tray
+- Hide-on-close / stay running in tray (Quit still exits)
 
 ### Ship
 

@@ -131,7 +131,7 @@ impl Drop for Client {
 
 fn activity_json(act: &Activity) -> Value {
     let mut obj = json!({
-        "type": 0,
+        "type": act.activity_type,
         "name": act.name,
         "assets": {
             "large_image": act.large_image,
@@ -410,9 +410,11 @@ mod tests {
             state: Some("Working on: agentcord".into()),
             start_ms: 1_700_000_000_000,
             large_image: AgentKind::Grok.large_image(),
+            activity_type: 3,
         };
         let v = activity_json(&act);
         assert_eq!(v["name"], "Grok");
+        assert_eq!(v["type"], 3);
         assert_eq!(v["details"], "Grok 4.5");
         assert_eq!(v["assets"]["large_image"], "logo-grok");
         assert_eq!(v["timestamps"]["start"], 1_700_000_000_000_i64);

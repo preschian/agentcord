@@ -1,6 +1,7 @@
 //! Session scans and Discord activity. Cheap: stat/read only the files
 //! needed for the current decision. Agents: Claude, Codex, Cursor, Grok.
 
+use crate::settings::Settings;
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -85,6 +86,7 @@ pub struct Activity {
     pub state: Option<String>,
     pub start_ms: i64,
     pub large_image: &'static str,
+    pub activity_type: i32,
 }
 
 pub fn now_ms() -> i64 {
@@ -102,22 +104,26 @@ pub fn pick_winner(sessions: &LiveSessions) -> Option<&SessionInfo> {
     sessions.iter().max_by_key(|s| s.activity_ms)
 }
 
-pub fn build_activity(info: &SessionInfo) -> Activity {
-    let details = if info.model.is_empty() {
-        None
-    } else {
+pub fn build_activity(info: &SessionInfo, settings: &Settings) -> Activity {
+    let details = if settings.show_model && !info.model.is_empty() {
         Some(info.model.clone())
+    } else {
+        None
     };
-    let mut state_parts = vec![format!("Working on: {}", info.project)];
-    if info.tokens > 0 {
+    let mut state_parts = Vec::new();
+    if settings.show_project {
+        state_parts.push(format!("Working on: {}", info.project));
+    }
+    if settings.show_tokens && info.tokens > 0 {
         state_parts.push(format!("{} tokens", format_tokens(info.tokens)));
     }
     Activity {
         name: info.agent.display_name().to_string(),
         details,
-        state: Some(state_parts.join(" · ")),
+        state: (!state_parts.is_empty()).then(|| state_parts.join(" · ")),
         start_ms: info.start_epoch_ms,
         large_image: info.agent.large_image(),
+        activity_type: settings.activity_type(),
     }
 }
 
@@ -1081,7 +1087,7 @@ mod tests {
             activity_ms: 2000,
             tokens: 81200,
         };
-        let act = build_activity(&info);
+        let act = build_activity(&info, &crate::settings::Settings::default());
         assert_eq!(act.name, "Grok");
         assert_eq!(act.details.as_deref(), Some("Grok 4.5"));
         assert_eq!(
@@ -1089,6 +1095,15 @@ mod tests {
             Some("Working on: agentcord · 81.2K tokens")
         );
         assert_eq!(act.large_image, "logo-grok");
+        let mut hidden = crate::settings::Settings::default();
+        hidden.show_model = false;
+        hidden.show_project = false;
+        hidden.show_tokens = false;
+        hidden.activity_type = 2;
+        let quiet = build_activity(&info, &hidden);
+        assert!(quiet.details.is_none());
+        assert!(quiet.state.is_none());
+        assert_eq!(quiet.activity_type, 2);
     }
 
     #[test]

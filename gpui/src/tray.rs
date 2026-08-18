@@ -1,7 +1,11 @@
 //! Windows tray icon using the same .ico as the exe / taskbar.
 
+use agentcord_gpui::discord::Client;
+use agentcord_gpui::settings;
 use std::mem::size_of;
 use std::ptr;
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 const NIM_ADD: u32 = 0;
 const NIM_MODIFY: u32 = 1;
@@ -84,6 +88,7 @@ extern "system" {
     fn DefWindowProcW(hwnd: isize, msg: u32, w: usize, l: isize) -> isize;
     fn SetWindowLongPtrW(hwnd: isize, index: i32, value: isize) -> isize;
     fn GetWindowLongPtrW(hwnd: isize, index: i32) -> isize;
+    fn CallWindowProcW(prev: isize, hwnd: isize, msg: u32, w: usize, l: isize) -> isize;
     fn SendMessageW(hwnd: isize, msg: u32, w: usize, l: isize) -> isize;
     fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
     fn SetForegroundWindow(hwnd: isize) -> i32;
@@ -92,6 +97,42 @@ extern "system" {
 }
 
 const GWLP_USERDATA: i32 = -21;
+const GWLP_WNDPROC: i32 = -4;
+
+static ORIG_WNDPROC: AtomicIsize = AtomicIsize::new(0);
+static SESSION_CLIENT: Mutex<Option<Arc<Client>>> = Mutex::new(None);
+
+pub fn hook_session_end(app_hwnd: isize, discord: Arc<Client>) {
+    if app_hwnd == 0 {
+        return;
+    }
+    if let Ok(mut g) = SESSION_CLIENT.lock() {
+        *g = Some(discord);
+    }
+    let orig = unsafe {
+        SetWindowLongPtrW(app_hwnd, GWLP_WNDPROC, session_proc as *const () as isize)
+    };
+    ORIG_WNDPROC.store(orig, Ordering::SeqCst);
+}
+
+unsafe extern "system" fn session_proc(hwnd: isize, msg: u32, w: usize, l: isize) -> isize {
+    const WM_QUERYENDSESSION: u32 = 0x0011;
+    const WM_ENDSESSION: u32 = 0x0016;
+    if msg == WM_QUERYENDSESSION || (msg == WM_ENDSESSION && w != 0) {
+        if let Ok(g) = SESSION_CLIENT.lock() {
+            if let Some(client) = g.as_ref() {
+                client.disconnect();
+            }
+        }
+        settings::set_prevent_sleep(false);
+    }
+    let orig = ORIG_WNDPROC.load(Ordering::SeqCst);
+    if orig == 0 {
+        DefWindowProcW(hwnd, msg, w, l)
+    } else {
+        CallWindowProcW(orig, hwnd, msg, w, l)
+    }
+}
 
 struct TrayState {
     app_hwnd: isize,

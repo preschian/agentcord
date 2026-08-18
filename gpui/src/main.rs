@@ -8,6 +8,7 @@ use agentcord_gpui::session::{
     grok_linked, now_ms, pick_winner, scan_claude, scan_codex, scan_cursor, scan_grok, within_idle,
     AgentKind, LiveSessions, SessionInfo, DISCORD_CLIENT_ID,
 };
+use agentcord_gpui::settings::{self, Settings};
 use agentcord_gpui::status::{self, StatusInfo};
 use agentcord_gpui::usage::{
     self, capitalize_plan, format_window_value, masked_email, UsageSnapshot, UsageWindow,
@@ -19,6 +20,7 @@ use gpui::{
 };
 use std::borrow::Cow;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -54,6 +56,8 @@ const ICON_CHEVRON_DOWN: char = '\u{f2a3}';
 const ICON_FOLDER: char = '\u{f418}';
 const ICON_SPARKLE: char = '\u{eb33}';
 
+static EXITING: AtomicBool = AtomicBool::new(false);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Main,
@@ -63,11 +67,7 @@ enum Screen {
 
 struct AgentCord {
     discord: Arc<Client>,
-    presence_on: bool,
-    claude_on: bool,
-    codex_on: bool,
-    grok_on: bool,
-    cursor_on: bool,
+    settings: Settings,
     sessions: LiveSessions,
     last_grok: Option<SessionInfo>,
     claude_is_linked: bool,
@@ -84,8 +84,12 @@ struct AgentCord {
 
 impl AgentCord {
     fn new(cx: &mut Context<Self>, tray: Option<tray::Tray>) -> Self {
+        let settings = Settings::load();
+        settings::set_prevent_sleep(settings.prevent_sleep);
         let discord = Arc::new(Client::new());
-        discord.connect(DISCORD_CLIENT_ID);
+        if settings.presence_enabled {
+            discord.connect(DISCORD_CLIENT_ID);
+        }
         cx.spawn(async move |this, cx| loop {
             gpui::Timer::after(Duration::from_secs(1)).await;
             this.update(cx, |this, cx| {
@@ -97,11 +101,7 @@ impl AgentCord {
         .detach();
         let mut app = Self {
             discord,
-            presence_on: true,
-            claude_on: true,
-            codex_on: true,
-            grok_on: true,
-            cursor_on: true,
+            settings,
             sessions: LiveSessions::default(),
             last_grok: None,
             claude_is_linked: false,
@@ -119,6 +119,11 @@ impl AgentCord {
         app
     }
 
+    fn persist(&mut self) {
+        self.settings.save();
+        settings::set_prevent_sleep(self.settings.prevent_sleep);
+    }
+
     fn tick(&mut self) {
         self.claude_is_linked = claude_linked();
         self.codex_is_linked = codex_linked();
@@ -126,13 +131,13 @@ impl AgentCord {
         self.cursor_is_linked = cursor_linked();
 
         let mut sessions = LiveSessions::default();
-        if self.claude_on {
+        if self.settings.agent_claude_enabled {
             sessions.claude = scan_claude();
         }
-        if self.codex_on {
+        if self.settings.agent_codex_enabled {
             sessions.codex = scan_codex();
         }
-        if self.grok_on {
+        if self.settings.agent_grok_enabled {
             sessions.grok = scan_grok();
             if sessions.grok.is_none() {
                 if let Some(prev) = &self.last_grok {
@@ -145,18 +150,22 @@ impl AgentCord {
                 self.last_grok = Some(g.clone());
             }
         }
-        if self.cursor_on {
+        if self.settings.agent_cursor_enabled {
             sessions.cursor = scan_cursor();
         }
         self.sessions = sessions;
 
         let snap = self.discord.snapshot();
         let winner = pick_winner(&self.sessions).cloned();
-        if self.presence_on {
+        if self.settings.presence_enabled {
             self.discord.connect(DISCORD_CLIENT_ID);
             if snap.ready {
-                self.discord
-                    .set_activity(winner.as_ref().map(build_activity).as_ref());
+                self.discord.set_activity(
+                    winner
+                        .as_ref()
+                        .map(|w| build_activity(w, &self.settings))
+                        .as_ref(),
+                );
             }
         }
         let discord = if snap.ready || snap.state == ConnState::Connected {
@@ -175,19 +184,21 @@ impl AgentCord {
                 snap.last_error.as_deref(),
                 &usage,
                 &enabled,
+                &self.settings,
                 now_ms(),
             ));
         }
     }
 
     fn toggle_presence(&mut self, cx: &mut Context<Self>) {
-        self.presence_on = !self.presence_on;
-        if self.presence_on {
+        self.settings.presence_enabled = !self.settings.presence_enabled;
+        if self.settings.presence_enabled {
             self.discord.connect(DISCORD_CLIENT_ID);
         } else {
             self.discord.set_activity(None);
             self.discord.disconnect();
         }
+        self.persist();
         self.tick();
         cx.notify();
     }
@@ -212,16 +223,16 @@ impl AgentCord {
 
     fn enabled_agents(&self) -> Vec<AgentKind> {
         let mut out = Vec::new();
-        if self.claude_on {
+        if self.settings.agent_claude_enabled {
             out.push(AgentKind::Claude);
         }
-        if self.codex_on {
+        if self.settings.agent_codex_enabled {
             out.push(AgentKind::Codex);
         }
-        if self.cursor_on {
+        if self.settings.agent_cursor_enabled {
             out.push(AgentKind::Cursor);
         }
-        if self.grok_on {
+        if self.settings.agent_grok_enabled {
             out.push(AgentKind::Grok);
         }
         out
@@ -291,7 +302,7 @@ fn main_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement
         .flex_col()
         .w_full()
         .flex_shrink_0()
-        .child(header(app.presence_on, &snap, agents.len(), active, cx))
+        .child(header(app.settings.presence_enabled, &snap, agents.len(), active, cx))
         .child(unified_usage(app, &agents))
         .child(agent_list(app, &agents, cx))
         .child(settings_row(agents.len(), cx))
@@ -300,7 +311,7 @@ fn main_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement
 }
 
 fn unified_usage(app: &AgentCord, agents: &[AgentKind]) -> impl IntoElement {
-    if agents.len() <= 1 {
+    if agents.len() <= 1 || !app.settings.unified_usage {
         return div().into_any_element();
     }
     let snap = app.usage.lock().map(|g| g.clone()).unwrap_or_default();
@@ -405,8 +416,28 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
         .child(switch_row(
             "presence",
             "Enable presence",
-            app.presence_on,
+            app.settings.presence_enabled,
             cx.listener(|this, _, _, cx| this.toggle_presence(cx)),
+        ))
+        .child(switch_row(
+            "autostart",
+            "Launch at login",
+            settings::autostart_enabled(),
+            cx.listener(|this, _, _, cx| {
+                settings::set_autostart(!settings::autostart_enabled());
+                this.tick();
+                cx.notify();
+            }),
+        ))
+        .child(switch_row(
+            "sleep",
+            "Prevent sleep",
+            app.settings.prevent_sleep,
+            cx.listener(|this, _, _, cx| {
+                this.settings.prevent_sleep = !this.settings.prevent_sleep;
+                this.persist();
+                cx.notify();
+            }),
         ))
         .child(
             soft_card()
@@ -426,9 +457,10 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                     "claude-toggle",
                     AgentKind::Claude,
                     0xd97757,
-                    app.claude_on,
+                    app.settings.agent_claude_enabled,
                     cx.listener(|this, _, _, cx| {
-                        this.claude_on = !this.claude_on;
+                        this.settings.agent_claude_enabled = !this.settings.agent_claude_enabled;
+                        this.persist();
                         this.tick();
                         cx.notify();
                     }),
@@ -438,9 +470,10 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                     "codex-toggle",
                     AgentKind::Codex,
                     0x10a37f,
-                    app.codex_on,
+                    app.settings.agent_codex_enabled,
                     cx.listener(|this, _, _, cx| {
-                        this.codex_on = !this.codex_on;
+                        this.settings.agent_codex_enabled = !this.settings.agent_codex_enabled;
+                        this.persist();
                         this.tick();
                         cx.notify();
                     }),
@@ -450,9 +483,10 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                     "cursor-toggle",
                     AgentKind::Cursor,
                     0x111111,
-                    app.cursor_on,
+                    app.settings.agent_cursor_enabled,
                     cx.listener(|this, _, _, cx| {
-                        this.cursor_on = !this.cursor_on;
+                        this.settings.agent_cursor_enabled = !this.settings.agent_cursor_enabled;
+                        this.persist();
                         this.tick();
                         cx.notify();
                     }),
@@ -462,13 +496,106 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                     "grok-toggle",
                     AgentKind::Grok,
                     0x1d1d1f,
-                    app.grok_on,
+                    app.settings.agent_grok_enabled,
                     cx.listener(|this, _, _, cx| {
-                        this.grok_on = !this.grok_on;
+                        this.settings.agent_grok_enabled = !this.settings.agent_grok_enabled;
+                        this.persist();
                         this.tick();
                         cx.notify();
                     }),
                 )),
+        )
+        .child(
+            soft_card()
+                .mt(px(11.))
+                .px(px(11.))
+                .py(px(5.))
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(SEC))
+                        .mt(px(1.))
+                        .mb(px(4.))
+                        .child("DISPLAY"),
+                )
+                .child(switch_row(
+                    "unified-usage",
+                    "Show unified usage",
+                    app.settings.unified_usage,
+                    cx.listener(|this, _, _, cx| {
+                        this.settings.unified_usage = !this.settings.unified_usage;
+                        this.persist();
+                        cx.notify();
+                    }),
+                ))
+                .child(div().h(px(1.)).bg(rgb(HAIR)))
+                .child(switch_row(
+                    "show-project",
+                    "Show project",
+                    app.settings.show_project,
+                    cx.listener(|this, _, _, cx| {
+                        this.settings.show_project = !this.settings.show_project;
+                        this.persist();
+                        this.tick();
+                        cx.notify();
+                    }),
+                ))
+                .child(div().h(px(1.)).bg(rgb(HAIR)))
+                .child(switch_row(
+                    "show-model",
+                    "Show model",
+                    app.settings.show_model,
+                    cx.listener(|this, _, _, cx| {
+                        this.settings.show_model = !this.settings.show_model;
+                        this.persist();
+                        this.tick();
+                        cx.notify();
+                    }),
+                ))
+                .child(div().h(px(1.)).bg(rgb(HAIR)))
+                .child(switch_row(
+                    "show-tokens",
+                    "Show tokens",
+                    app.settings.show_tokens,
+                    cx.listener(|this, _, _, cx| {
+                        this.settings.show_tokens = !this.settings.show_tokens;
+                        this.persist();
+                        this.tick();
+                        cx.notify();
+                    }),
+                )),
+        )
+        .child(
+            soft_card()
+                .mt(px(11.))
+                .child(
+                    div()
+                        .id("activity-type")
+                        .flex()
+                        .items_center()
+                        .px(px(11.))
+                        .py(px(8.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.settings.cycle_activity();
+                            this.persist();
+                            this.tick();
+                            cx.notify();
+                        }))
+                        .child(div().flex_1().text_size(px(13.)).child("Activity type"))
+                        .child(
+                            div()
+                                .rounded(px(6.))
+                                .px(px(7.))
+                                .py(px(3.))
+                                .bg(rgba(0x7878801a))
+                                .border_1()
+                                .border_color(rgba(0x0000001f))
+                                .text_size(px(12.5))
+                                .child(app.settings.activity_label().to_string()),
+                        ),
+                ),
         )
 }
 
@@ -479,30 +606,35 @@ fn detail_screen(
 ) -> impl IntoElement {
     let session = app.session_for(agent);
     let sharing = session.is_some()
-        && app.presence_on
+        && app.settings.presence_enabled
         && pick_winner(&app.sessions).is_some_and(|w| w.agent == agent);
     let project = match session {
-        Some(s) => s.project.clone(),
+        Some(s) if app.settings.show_project => s.project.clone(),
+        Some(_) => "Project hidden".into(),
         None => "No active session".into(),
     };
     let meta = match session {
         Some(s) => {
             let mut bits = Vec::new();
-            if !s.model.is_empty() {
+            if app.settings.show_model && !s.model.is_empty() {
                 bits.push(s.model.clone());
             }
-            if s.tokens > 0 {
+            if app.settings.show_tokens && s.tokens > 0 {
                 bits.push(format!("{} tokens", format_tokens(s.tokens)));
             }
             if bits.is_empty() {
-                "Waiting for a session".into()
+                if app.settings.show_model || app.settings.show_tokens {
+                    "Waiting for a session".into()
+                } else {
+                    "Model & tokens hidden".into()
+                }
             } else {
                 bits.join("  ·  ")
             }
         }
         None => "Waiting for a session".into(),
     };
-    let broadcast = if !app.presence_on {
+    let broadcast = if !app.settings.presence_enabled {
         "Presence is off"
     } else if sharing {
         "Sharing to Discord as your status"
@@ -547,12 +679,12 @@ fn detail_screen(
                             div()
                                 .flex_1()
                                 .text_size(px(13.))
-                                .text_color(if session.is_some() {
+                                .text_color(if session.is_some() && app.settings.show_project {
                                     rgb(TEXT)
                                 } else {
                                     rgb(SEC)
                                 })
-                                .when(session.is_none(), |d| d.italic())
+                                .when(session.is_none() || !app.settings.show_project, |d| d.italic())
                                 .child(project),
                         )
                         .child(
@@ -925,7 +1057,13 @@ fn agent_list(
         }
         let session = app.session_for(agent).cloned();
         let linked = app.linked(agent);
-        col = col.child(agent_row(agent, linked, session, cx));
+        col = col.child(agent_row(
+            agent,
+            linked,
+            session,
+            app.settings.show_project,
+            cx,
+        ));
     }
     white_card().mb(px(11.)).child(col)
 }
@@ -934,13 +1072,18 @@ fn agent_row(
     agent: AgentKind,
     linked: bool,
     session: Option<SessionInfo>,
+    show_project: bool,
     cx: &mut Context<AgentCord>,
 ) -> impl IntoElement {
     let name_color = if linked { TEXT } else { SEC };
     let subtitle: SharedString = if !linked {
         "Not connected".into()
     } else if let Some(s) = &session {
-        s.project.clone().into()
+        if show_project {
+            s.project.clone().into()
+        } else {
+            "Project hidden".into()
+        }
     } else {
         "Connected".into()
     };
@@ -1076,6 +1219,8 @@ fn quit_row(cx: &mut Context<AgentCord>) -> impl IntoElement {
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(0xf3f3f5)))
                 .on_click(cx.listener(|this, _, _, cx| {
+                    EXITING.store(true, Ordering::SeqCst);
+                    settings::set_prevent_sleep(false);
                     this.discord.disconnect();
                     cx.quit();
                 }))
@@ -1214,15 +1359,25 @@ mod native {
     extern "system" {
         fn GetActiveWindow() -> isize;
         fn ReleaseCapture() -> i32;
+        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
         fn PostMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> i32;
     }
 
     const WM_SYSCOMMAND: u32 = 0x0112;
     const SC_MOVE: usize = 0xF010;
     const HTCAPTION: usize = 2;
+    const SW_HIDE: i32 = 0;
 
     pub(super) fn active_hwnd() -> isize {
         unsafe { GetActiveWindow() }
+    }
+
+    pub(super) fn hide(hwnd: isize) {
+        if hwnd != 0 {
+            unsafe {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+        }
     }
 
     pub(super) fn start_move(hwnd: isize) {
@@ -1246,6 +1401,9 @@ fn icon(glyph: char, size: f32) -> impl IntoElement {
 }
 
 fn main() {
+    let Some(_instance) = settings::acquire_instance() else {
+        return;
+    };
     Application::new().run(|cx: &mut App| {
         let _ = cx
             .text_system()
@@ -1263,14 +1421,26 @@ fn main() {
                     traffic_light_position: None,
                 }),
                 window_decorations: Some(WindowDecorations::Client),
-                kind: WindowKind::Normal,
+                kind: WindowKind::PopUp,
                 is_resizable: false,
                 ..Default::default()
             },
-            |_window, cx| {
+            |window, cx| {
                 let hwnd = native::active_hwnd();
                 let tray = tray::Tray::attach(hwnd);
-                cx.new(|cx| AgentCord::new(cx, tray))
+                let view = cx.new(|cx| AgentCord::new(cx, tray));
+                view.update(cx, |app, _| {
+                    tray::hook_session_end(hwnd, app.discord.clone());
+                });
+                window.on_window_should_close(cx, move |_, _| {
+                    if EXITING.load(Ordering::SeqCst) {
+                        true
+                    } else {
+                        native::hide(hwnd);
+                        false
+                    }
+                });
+                view
             },
         )
         .unwrap();

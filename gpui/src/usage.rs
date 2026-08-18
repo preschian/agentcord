@@ -1,6 +1,7 @@
 //! Cheap usage polls: Claude / Cursor / Grok HTTP + Codex app-server, ChatGPT wham fallback.
 
 use crate::session::{format_tokens, now_ms, parse_iso_ms, AgentKind, SessionInfo};
+use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -257,19 +258,20 @@ pub fn tray_tip(
     last_error: Option<&str>,
     snap: &UsageSnapshot,
     enabled: &[AgentKind],
+    settings: &Settings,
     now: i64,
 ) -> String {
     let session_line = match session {
         Some(s) => {
-            let mut parts = vec![
-                s.agent.display_name().to_string(),
-                s.project.clone(),
-            ];
-            if !s.model.is_empty() {
+            let mut parts = vec![s.agent.display_name().to_string()];
+            if settings.show_project {
+                parts.push(s.project.clone());
+            }
+            if settings.show_model && !s.model.is_empty() {
                 parts.push(s.model.clone());
             }
             parts.push(elapsed_compact(now.saturating_sub(s.start_epoch_ms)));
-            if s.tokens > 0 {
+            if settings.show_tokens && s.tokens > 0 {
                 parts.push(format!("{} tokens", format_tokens(s.tokens)));
             }
             parts.join(" · ")
@@ -1467,6 +1469,7 @@ mod tests {
             None,
             &UsageSnapshot::default(),
             &[],
+            &crate::settings::Settings::default(),
             1_000_000_000_000,
         );
         assert_eq!(idle, "AgentCord — Idle · Connected");
@@ -1476,6 +1479,7 @@ mod tests {
             None,
             &snap,
             &[AgentKind::Claude],
+            &crate::settings::Settings::default(),
             1_000_000_000_000,
         );
         assert!(one.contains("5h 45%"));
@@ -1496,6 +1500,7 @@ mod tests {
             None,
             &snap,
             &[AgentKind::Claude],
+            &crate::settings::Settings::default(),
             1_000_000_000_000,
         );
         assert_eq!(long.chars().count(), TRAY_TIP_MAX);

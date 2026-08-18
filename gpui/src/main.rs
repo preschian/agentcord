@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-mod tray;
+mod ui;
 
 const SHELL: u32 = 0xf2f2f5;
 const TEXT: u32 = 0x1d1d1f;
@@ -79,13 +79,12 @@ struct AgentCord {
     scans: ScanHandle,
     expand_status: bool,
     revealed_email: bool,
-    _tray: Option<tray::Tray>,
+    _tray: Option<ui::tray::Tray>,
 }
 
 impl AgentCord {
-    fn new(cx: &mut Context<Self>, tray: Option<tray::Tray>) -> Self {
+    fn new(cx: &mut Context<Self>, tray: Option<ui::tray::Tray>) -> Self {
         let settings = Settings::load();
-        settings::set_prevent_sleep(settings.prevent_sleep);
         let discord = Arc::new(Client::new());
         if settings.presence_enabled {
             discord.connect(DISCORD_CLIENT_ID);
@@ -122,7 +121,6 @@ impl AgentCord {
 
     fn persist(&mut self) {
         self.settings.save();
-        settings::set_prevent_sleep(self.settings.prevent_sleep);
     }
 
     fn tick(&mut self) {
@@ -489,16 +487,6 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
             cx.listener(|this, _, _, cx| {
                 settings::set_autostart(!settings::autostart_enabled());
                 this.tick();
-                cx.notify();
-            }),
-        ))
-        .child(switch_row(
-            "sleep",
-            "Prevent sleep",
-            app.settings.prevent_sleep,
-            cx.listener(|this, _, _, cx| {
-                this.settings.prevent_sleep = !this.settings.prevent_sleep;
-                this.persist();
                 cx.notify();
             }),
         ))
@@ -1329,7 +1317,6 @@ fn quit_row(cx: &mut Context<AgentCord>) -> impl IntoElement {
                 .hover(|s| s.bg(rgb(0xf3f3f5)))
                 .on_click(cx.listener(|this, _, _, cx| {
                     EXITING.store(true, Ordering::SeqCst);
-                    settings::set_prevent_sleep(false);
                     this.discord.disconnect();
                     cx.quit();
                 }))
@@ -1460,44 +1447,8 @@ fn dot(color: u32) -> gpui::Div {
 /// Native Windows move: SC_MOVE after this mouse handler returns.
 /// GPUI's start_window_move is Wayland/X11-only; SendMessage re-enters GPUI and crashes.
 fn start_native_drag(cx: &mut Context<AgentCord>) {
-    let hwnd = native::active_hwnd();
-    cx.defer(move |_| native::start_move(hwnd));
-}
-
-mod native {
-    extern "system" {
-        fn GetActiveWindow() -> isize;
-        fn ReleaseCapture() -> i32;
-        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
-        fn PostMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> i32;
-    }
-
-    const WM_SYSCOMMAND: u32 = 0x0112;
-    const SC_MOVE: usize = 0xF010;
-    const HTCAPTION: usize = 2;
-    const SW_HIDE: i32 = 0;
-
-    pub(super) fn active_hwnd() -> isize {
-        unsafe { GetActiveWindow() }
-    }
-
-    pub(super) fn hide(hwnd: isize) {
-        if hwnd != 0 {
-            unsafe {
-                ShowWindow(hwnd, SW_HIDE);
-            }
-        }
-    }
-
-    pub(super) fn start_move(hwnd: isize) {
-        if hwnd == 0 {
-            return;
-        }
-        unsafe {
-            ReleaseCapture();
-            PostMessageW(hwnd, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0);
-        }
-    }
+    let hwnd = ui::native::active_hwnd();
+    cx.defer(move |_| ui::native::start_move(hwnd));
 }
 
 fn icon(glyph: char, size: f32) -> impl IntoElement {
@@ -1536,17 +1487,17 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let hwnd = native::active_hwnd();
-                let tray = tray::Tray::attach(hwnd);
+                let hwnd = ui::native::active_hwnd();
+                let tray = ui::tray::Tray::attach(hwnd);
                 let view = cx.new(|cx| AgentCord::new(cx, tray));
                 view.update(cx, |app, _| {
-                    tray::hook_session_end(hwnd, app.discord.clone());
+                    ui::tray::hook_session_end(hwnd, app.discord.clone());
                 });
                 window.on_window_should_close(cx, move |_, _| {
                     if EXITING.load(Ordering::SeqCst) {
                         true
                     } else {
-                        native::hide(hwnd);
+                        ui::native::hide(hwnd);
                         false
                     }
                 });

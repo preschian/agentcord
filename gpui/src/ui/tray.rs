@@ -1,7 +1,6 @@
 //! Windows tray icon using the same .ico as the exe / taskbar.
 
 use agentcord_gpui::discord::Client;
-use agentcord_gpui::settings;
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -124,7 +123,6 @@ unsafe extern "system" fn session_proc(hwnd: isize, msg: u32, w: usize, l: isize
                 client.disconnect();
             }
         }
-        settings::set_prevent_sleep(false);
     }
     let orig = ORIG_WNDPROC.load(Ordering::SeqCst);
     if orig == 0 {

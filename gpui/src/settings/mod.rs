@@ -1,4 +1,4 @@
-//! `%APPDATA%\AgentCord\settings.json`, launch-at-login, sleep, single-instance.
+//! `%APPDATA%\AgentCord\settings.json`, launch-at-login, single-instance.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -25,7 +25,6 @@ pub struct Settings {
     pub agent_grok_enabled: bool,
     pub activity_type: i32,
     pub idle_window_seconds: f64,
-    pub prevent_sleep: bool,
 }
 
 impl Default for Settings {
@@ -45,7 +44,6 @@ impl Default for Settings {
             agent_grok_enabled: true,
             activity_type: 0,
             idle_window_seconds: 300.0,
-            prevent_sleep: false,
         }
     }
 }
@@ -123,21 +121,6 @@ impl Settings {
 fn config_path() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA").map(PathBuf::from)?;
     Some(base.join("AgentCord").join("settings.json"))
-}
-
-pub fn set_prevent_sleep(on: bool) {
-    const ES_CONTINUOUS: u32 = 0x8000_0000;
-    const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
-    extern "system" {
-        fn SetThreadExecutionState(flags: u32) -> u32;
-    }
-    unsafe {
-        SetThreadExecutionState(if on {
-            ES_CONTINUOUS | ES_SYSTEM_REQUIRED
-        } else {
-            ES_CONTINUOUS
-        });
-    }
 }
 
 pub struct InstanceGuard(isize);
@@ -447,7 +430,6 @@ mod tests {
         assert!(s.presence_enabled && s.show_project && s.unified_usage);
         assert_eq!(s.activity_type, 0);
         assert_eq!(s.idle_window_seconds, 300.0);
-        assert!(!s.prevent_sleep);
     }
 
     #[test]

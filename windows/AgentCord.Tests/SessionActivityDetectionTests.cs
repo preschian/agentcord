@@ -379,6 +379,64 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Cursor_keeps_elapsed_across_sparse_user_turns()
+    {
+        using var dir = TempDir.Create();
+        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
+        Directory.CreateDirectory(transcripts);
+        var transcript = Path.Combine(transcripts, "abc123.jsonl");
+
+        // Two user messages an hour apart — the 5-minute gap-sum used to drop
+        // that hour, then the new stamp snapped Discord to 00:00.
+        var started = DateTimeOffset.Now.AddMinutes(-60);
+        var latest = DateTimeOffset.Now.AddSeconds(-8);
+        File.WriteAllText(transcript, CursorUserLine(started, "first") + CursorUserLine(latest, "second"));
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
+
+        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        Assert.InRange(elapsed, 55 * 60_000L, 65 * 60_000L);
+    }
+
+    [Fact]
+    public void Cursor_keeps_transcript_elapsed_when_acp_is_newer()
+    {
+        using var dir = TempDir.Create();
+        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
+        Directory.CreateDirectory(transcripts);
+        var transcript = Path.Combine(transcripts, "abc123.jsonl");
+
+        var started = DateTimeOffset.Now.AddMinutes(-60);
+        var latest = DateTimeOffset.Now.AddSeconds(-8);
+        File.WriteAllText(transcript, CursorUserLine(started, "first") + CursorUserLine(latest, "second"));
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
+
+        var createdAtMs = started.ToUnixTimeMilliseconds();
+        var updatedAtMs = DateTimeOffset.UtcNow.AddSeconds(-5).ToUnixTimeMilliseconds();
+        var chatDir = Path.Combine(dir.Root, "chats", "workspace", "abc123");
+        Directory.CreateDirectory(chatDir);
+        File.WriteAllText(Path.Combine(chatDir, "meta.json"),
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"createdAtMs\":" + createdAtMs +
+            ",\"updatedAtMs\":" + updatedAtMs + "}");
+
+        var acp = Path.Combine(dir.Root, "acp-sessions", "live-turn");
+        Directory.CreateDirectory(acp);
+        File.WriteAllText(Path.Combine(acp, "store.db"), "x");
+        File.WriteAllText(Path.Combine(acp, "meta.json"), "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}");
+        File.SetLastWriteTimeUtc(Path.Combine(acp, "store.db"), DateTime.UtcNow);
+
+        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
+        var info = scanner.Scan();
+
+        Assert.NotNull(info);
+        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        Assert.InRange(elapsed, 55 * 60_000L, 65 * 60_000L);
+    }
+
+    [Fact]
     public void Cursor_sums_working_time_across_sessions_in_the_last_24_hours()
     {
         using var dir = TempDir.Create();

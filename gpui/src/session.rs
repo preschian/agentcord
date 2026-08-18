@@ -1175,6 +1175,40 @@ fn cursor_hook_duration(cutoff_ms: i64, now_ms: i64) -> Option<(i64, Option<i64>
     Some((total, last))
 }
 
+/// Cursor transcripts only stamp user turns. Span first→last (plus
+/// created/updated) so a new message does not snap elapsed to 0.
+fn cursor_session_span(
+    stamps: &[i64],
+    created_at_ms: Option<i64>,
+    updated_at_ms: Option<i64>,
+    cutoff_ms: i64,
+    now_ms: i64,
+) -> (i64, Option<i64>) {
+    let in_window: Vec<i64> = stamps
+        .iter()
+        .copied()
+        .filter(|ms| *ms >= cutoff_ms && *ms <= now_ms)
+        .collect();
+    if in_window.is_empty() {
+        return active_duration(stamps, created_at_ms, updated_at_ms, cutoff_ms, now_ms);
+    }
+    let mut start = *in_window.iter().min().unwrap();
+    if let Some(c) = created_at_ms {
+        if c >= cutoff_ms && c <= now_ms && c < start {
+            start = c;
+        }
+    }
+    let last_stamp = *in_window.iter().max().unwrap();
+    let end = updated_at_ms
+        .map(|u| last_stamp.max(u.min(now_ms)))
+        .unwrap_or(last_stamp);
+    if end > start {
+        (end - start, Some(end))
+    } else {
+        (0, Some(end))
+    }
+}
+
 fn cursor_rolling_start(files: &[(PathBuf, i64)], chats: &Path) -> i64 {
     let now = now_ms();
     let cutoff = now - LOOKBACK_MS;
@@ -1192,7 +1226,7 @@ fn cursor_rolling_start(files: &[(PathBuf, i64)], chats: &Path) -> i64 {
             .and_then(|p| read_cursor_meta(&p))
             .map(|(_, c, u)| (c, u))
             .unwrap_or((None, None));
-        let (active, last) = active_duration(
+        let (active, last) = cursor_session_span(
             &agg.stamps,
             created.or(agg.created_at_ms),
             updated.or(agg.updated_at_ms),
@@ -1983,6 +2017,16 @@ mod tests {
         assert_eq!(last, Some(last_stamp));
         let shown = now - elapsed_start_ms(active, last, now);
         assert_eq!(shown, active + 5 * 60_000);
+    }
+
+    #[test]
+    fn cursor_span_keeps_elapsed_across_sparse_turns() {
+        let now = 10_000_000i64;
+        let first = now - 60 * 60_000;
+        let last = now - 8_000;
+        let (active, got_last) = cursor_session_span(&[first, last], None, Some(now), 0, now);
+        assert_eq!(got_last, Some(now));
+        assert!((55 * 60_000..=65 * 60_000).contains(&active), "active={active}");
     }
 
     #[test]

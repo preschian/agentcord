@@ -62,6 +62,7 @@ enum Screen {
     Main,
     Settings,
     Detail(AgentKind),
+    Usage,
 }
 
 struct AgentCord {
@@ -224,6 +225,7 @@ impl Render for AgentCord {
             Screen::Main => main_screen(self, cx).into_any_element(),
             Screen::Settings => settings_screen(self, cx).into_any_element(),
             Screen::Detail(agent) => detail_screen(self, agent, cx).into_any_element(),
+            Screen::Usage => usage_screen(self, cx).into_any_element(),
         };
 
         div()
@@ -282,31 +284,60 @@ fn main_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement
         .w_full()
         .flex_shrink_0()
         .child(header(app.settings.presence_enabled, &snap, agents.len(), active, cx))
-        .child(unified_usage(app, &agents))
+        .child(unified_usage(app, &agents, cx))
         .child(agent_list(app, &agents, cx))
         .child(settings_row(agents.len(), cx))
         .child(div().h(px(1.)).bg(rgb(HAIR)).my(px(11.)))
         .child(quit_row(cx))
 }
 
-fn unified_usage(app: &AgentCord, agents: &[AgentKind]) -> impl IntoElement {
+fn unified_usage(
+    app: &AgentCord,
+    agents: &[AgentKind],
+    cx: &mut Context<AgentCord>,
+) -> impl IntoElement {
     if agents.len() <= 1 || !app.settings.unified_usage {
         return div().into_any_element();
     }
     let snap = app.usage.lock().map(|g| g.clone()).unwrap_or_default();
-    let mut col = div().flex().flex_col();
-    let mut any = false;
-    for agent in agents.iter().copied() {
-        let Some(window) = snap.primary(agent) else {
-            continue;
-        };
-        if any {
-            col = col.child(div().h(px(10.)));
+    let rows = primary_windows(&snap, agents);
+    let mut body = div().flex().flex_col();
+    if rows.is_empty() {
+        body = body.child(
+            div()
+                .text_size(px(12.5))
+                .italic()
+                .text_color(rgb(SEC_SOFT))
+                .child("No connected agents"),
+        );
+    } else {
+        for (i, (agent, window)) in rows.into_iter().enumerate() {
+            if i > 0 {
+                body = body.child(div().h(px(7.)));
+            }
+            body = body.child(compact_usage_row(agent.display_name(), &window));
         }
-        any = true;
-        col = col.child(usage_row(agent.display_name(), Some(&window)));
     }
-    if !any {
+    white_card()
+        .id("unified-usage-card")
+        .mb(px(11.))
+        .px(px(12.))
+        .py(px(11.))
+        .cursor_pointer()
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.screen = Screen::Usage;
+            cx.notify();
+        }))
+        .child(body)
+        .into_any_element()
+}
+
+fn usage_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement {
+    let agents = app.enabled_agents();
+    let snap = app.usage.lock().map(|g| g.clone()).unwrap_or_default();
+    let rows = primary_windows(&snap, &agents);
+    let mut col = div().flex().flex_col();
+    if rows.is_empty() {
         col = col.child(
             div()
                 .text_size(px(12.5))
@@ -314,20 +345,73 @@ fn unified_usage(app: &AgentCord, agents: &[AgentKind]) -> impl IntoElement {
                 .text_color(rgb(SEC_SOFT))
                 .child("No connected agents"),
         );
+    } else {
+        for (i, (agent, window)) in rows.into_iter().enumerate() {
+            if i > 0 {
+                col = col.child(div().h(px(10.)));
+            }
+            col = col.child(usage_row(agent.display_name(), Some(&window)));
+        }
     }
-    white_card()
-        .mb(px(11.))
-        .px(px(12.))
-        .py(px(11.))
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .flex_shrink_0()
+        .child(nav_header(
+            "Unified usage",
+            cx.listener(|this, _, _, cx| {
+                this.screen = Screen::Main;
+                cx.notify();
+            }),
+            cx,
+        ))
+        .child(white_card().px(px(12.)).py(px(11.)).child(col))
+}
+
+fn primary_windows(snap: &UsageSnapshot, agents: &[AgentKind]) -> Vec<(AgentKind, UsageWindow)> {
+    agents
+        .iter()
+        .copied()
+        .filter_map(|agent| snap.primary(agent).map(|window| (agent, window)))
+        .collect()
+}
+
+fn compact_usage_row(label: impl Into<SharedString>, window: &UsageWindow) -> impl IntoElement {
+    let fill = (window.percent as f32 / 100.0).clamp(0.015, 1.0);
+    div()
+        .flex()
+        .items_center()
         .child(
             div()
-                .text_size(px(11.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(SEC))
-                .child("UNIFIED USAGE"),
+                .w(px(52.))
+                .text_size(px(12.5))
+                .text_color(rgb(TEXT))
+                .child(label.into()),
         )
-        .child(col.mt(px(10.)))
-        .into_any_element()
+        .child(
+            div()
+                .flex_1()
+                .h(px(6.))
+                .rounded(px(3.))
+                .bg(rgba(0x78788029))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(fill))
+                        .rounded(px(3.))
+                        .bg(rgb(window.severity.color())),
+                ),
+        )
+        .child(
+            div()
+                .ml(px(8.))
+                .text_size(px(12.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(TEXT))
+                .child(format!("{}%", window.percent)),
+        )
 }
 
 fn usage_row(label: impl Into<SharedString>, window: Option<&UsageWindow>) -> impl IntoElement {

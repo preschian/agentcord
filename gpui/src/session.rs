@@ -645,13 +645,16 @@ pub fn format_clock(ms: i64) -> String {
 }
 
 pub fn scan_grok(idle_secs: f64) -> Option<SessionInfo> {
-    let home = grok_home()?;
+    scan_grok_from(&grok_home()?, idle_secs)
+}
+
+fn scan_grok_from(home: &Path, idle_secs: f64) -> Option<SessionInfo> {
     let now = now_ms();
     let mut best: Option<SessionInfo> = None;
     if let Some(json) = read_to_string(&home.join("active_sessions.json")) {
         if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&json) {
             for item in items {
-                let Some(info) = grok_live_item(&home, &item, now, idle_secs) else {
+                let Some(info) = grok_live_item(home, &item, now, idle_secs) else {
                     continue;
                 };
                 if best
@@ -673,10 +676,10 @@ pub fn scan_grok(idle_secs: f64) -> Option<SessionInfo> {
         }
     }
     if best.is_none() {
-        best = grok_newest_recent(&home, idle_secs, now);
+        best = grok_newest_recent(home, idle_secs, now);
     }
     let mut info = best?;
-    info.start_epoch_ms = grok_rolling_start(&home);
+    info.start_epoch_ms = grok_rolling_start(home);
     if let Ok(mut g) = LAST_GROK.lock() {
         *g = Some(info.clone());
     }
@@ -695,7 +698,7 @@ fn grok_live_item(home: &Path, item: &Value, now: i64, idle_secs: f64) -> Option
         .and_then(|v| v.as_str())
         .and_then(parse_iso_ms)
         .unwrap_or(now);
-    grok_info_from(home, sid, cwd, Some(opened), now, idle_secs)
+    grok_info_from(home, sid, cwd, Some(opened), now, idle_secs, true)
 }
 
 fn grok_newest_recent(home: &Path, idle_secs: f64, now: i64) -> Option<SessionInfo> {
@@ -718,7 +721,7 @@ fn grok_newest_recent(home: &Path, idle_secs: f64, now: i64) -> Option<SessionIn
             .and_then(|n| n.to_str())
             .unwrap_or("");
         let cwd = percent_decode(encoded);
-        let Some(info) = grok_info_from(home, sid, &cwd, None, now, idle_secs) else {
+        let Some(info) = grok_info_from(home, sid, &cwd, None, now, idle_secs, false) else {
             continue;
         };
         if best
@@ -738,6 +741,7 @@ fn grok_info_from(
     opened: Option<i64>,
     now: i64,
     idle_secs: f64,
+    live: bool,
 ) -> Option<SessionInfo> {
     let summary_path = find_grok_summary(home, cwd, sid);
     let (model, remotes, last_active, created) = summary_path
@@ -751,21 +755,25 @@ fn grok_info_from(
         .unwrap_or((0, None));
     let mut activity = last_active.or(opened).unwrap_or(0);
     if let Some(path) = &summary_path {
-        activity = activity.max(file_mtime_ms(path).unwrap_or(0));
-        if let Some(dir) = path.parent() {
-            for name in [
-                "events.jsonl",
-                "updates.jsonl",
-                "chat_history.jsonl",
-                "signals.json",
-                "hunk_records.jsonl",
-            ] {
-                activity = activity.max(file_mtime_ms(&dir.join(name)).unwrap_or(0));
+        if live {
+            activity = activity.max(file_mtime_ms(path).unwrap_or(0));
+            if let Some(dir) = path.parent() {
+                for name in [
+                    "events.jsonl",
+                    "updates.jsonl",
+                    "chat_history.jsonl",
+                    "signals.json",
+                    "hunk_records.jsonl",
+                ] {
+                    activity = activity.max(file_mtime_ms(&dir.join(name)).unwrap_or(0));
+                }
+                // ponytail: mid-turn think can pause writes; last event != turn_ended still counts.
+                if !within_idle(activity, now, idle_secs) && is_open_turn(dir) {
+                    activity = now;
+                }
             }
-            // ponytail: mid-turn think can pause writes; last event != turn_ended still counts.
-            if !within_idle(activity, now, idle_secs) && is_open_turn(dir) {
-                activity = now;
-            }
+        } else if activity == 0 {
+            activity = file_mtime_ms(path).unwrap_or(0);
         }
     }
     if !within_idle(activity, now, idle_secs) {
@@ -1898,6 +1906,34 @@ mod tests {
             elapsed >= 50_000 && elapsed < 90_000,
             "elapsed={elapsed}"
         );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn grok_open_turn_without_live_pid_is_idle() {
+        *LAST_GROK.lock().unwrap() = None;
+        let home = std::env::temp_dir().join(format!(
+            "agentcord-grok-idle-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let sess = home
+            .join("sessions")
+            .join("D%3A%5CWorkspace%5Chsr-companion")
+            .join("sid");
+        fs::create_dir_all(&sess).unwrap();
+        fs::write(home.join("active_sessions.json"), "[]\n").unwrap();
+        fs::write(
+            sess.join("summary.json"),
+            r#"{"info":{"cwd":"D:\\Workspace\\hsr-companion"},"last_active_at":"2026-01-01T00:00:00Z","created_at":"2026-01-01T00:00:00Z","current_model_id":"grok-4.6","git_remotes":["git@github.com:preschian/hsr-companion.git"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            sess.join("events.jsonl"),
+            "{\"ts\":\"2026-01-01T00:00:00Z\",\"type\":\"mcp_init_completed\"}\n",
+        )
+        .unwrap();
+        assert!(scan_grok_from(&home, 300.0).is_none());
         let _ = fs::remove_dir_all(&home);
     }
 

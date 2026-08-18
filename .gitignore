@@ -66,3 +66,6 @@ fastlane/test_output
 
 # Prebuilt app binaries (distributed via GitHub Releases)
 web/public/AgentCord.dmg
+
+# Rust
+gpui/target/

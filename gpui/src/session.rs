@@ -16,6 +16,8 @@ pub const IDLE_WINDOW_SECS: f64 = 300.0;
 const GAP_TOLERANCE_MS: i64 = 5 * 60 * 1000;
 const LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
 const TREE_WALK_MS: i64 = 30_000;
+// ponytail: 30m cap; abandoned last-user chats shouldn't stay live forever
+const CURSOR_THINK_MS: i64 = 30 * 60 * 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentKind {
@@ -109,7 +111,7 @@ impl Default for ScanWanted {
 impl ScanWanted {
     pub fn from_settings(s: &Settings) -> Self {
         Self {
-            idle_secs: s.idle_window_seconds,
+            idle_secs: s.idle_window_seconds.max(60.0),
             claude: s.agent_claude_enabled,
             codex: s.agent_codex_enabled,
             grok: s.agent_grok_enabled,
@@ -235,15 +237,9 @@ pub fn active_duration(
             points.insert(c);
         }
     }
-    if let Some(u) = updated_at_ms {
-        if u >= cutoff_ms && u <= now_ms {
-            points.insert(u);
-        }
-    }
     if let (Some(created), Some(updated)) = (created_at_ms, updated_at_ms) {
         if created < cutoff_ms && updated >= cutoff_ms {
             points.insert(cutoff_ms);
-            points.insert(updated.min(now_ms));
         }
     }
     let mut unique: Vec<i64> = points.into_iter().collect();
@@ -705,7 +701,10 @@ pub fn grok_linked() -> bool {
 }
 
 pub fn cursor_linked() -> bool {
-    dirs_home().is_some_and(|home| home.join(".cursor").join("projects").is_dir())
+    dirs_home().is_some_and(|home| {
+        let c = home.join(".cursor");
+        c.join("projects").is_dir() || c.join("chats").is_dir()
+    })
 }
 
 pub fn claude_linked() -> bool {
@@ -1002,68 +1001,194 @@ pub fn scan_cursor(idle_secs: f64) -> Option<SessionInfo> {
 }
 
 fn scan_cursor_from(home: &Path, idle_secs: f64) -> Option<SessionInfo> {
-    let projects = home.join("projects");
-    if !projects.is_dir() {
-        return None;
-    }
     let now = now_ms();
     let chats = home.join("chats");
-    let files = tree_snapshot(&projects, "cursor-jsonl", 12, |p| {
-        let s = p.to_string_lossy();
-        s.contains("agent-transcripts") && s.ends_with(".jsonl")
-    });
-    let mut best: Option<(PathBuf, i64, Option<String>)> = None;
-    for (path, mtime) in &files {
-        let agg = jsonl_cached(path, parse_cursor_line);
-        let sid = path
-            .file_stem()
-            .and_then(|s| s.to_str())
+    let projects = home.join("projects");
+    let metas = cursor_meta_files(home);
+    let files = if projects.is_dir() {
+        tree_snapshot(&projects, "cursor-jsonl", 12, |p| {
+            let s = p.to_string_lossy();
+            s.contains("agent-transcripts") && s.ends_with(".jsonl")
+        })
+    } else {
+        Vec::new()
+    };
+    let mut cwd_by_sid: HashMap<String, String> = HashMap::new();
+    let mut best_activity = 0i64;
+    let mut best_cwd: Option<String> = None;
+    let mut best_path: Option<PathBuf> = None;
+    for (meta_path, meta_mtime) in &metas {
+        let sid = meta_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
             .unwrap_or("");
-        let (cwd, _, updated) = find_cursor_meta(&chats, sid)
-            .and_then(|p| read_cursor_meta(&p))
-            .unwrap_or((None, None, None));
-        let event = [agg.last_event_ms, updated]
-            .into_iter()
-            .flatten()
-            .max();
-        // Cursor stamps live on user messages; agent turns only bump mtime.
-        let activity = event.map_or(*mtime, |e| e.max(*mtime));
-        if best.as_ref().is_none_or(|(_, a, _)| activity >= *a) {
-            best = Some((path.clone(), activity, cwd));
+        let (cwd, _, updated) = read_cursor_meta(meta_path).unwrap_or((None, None, None));
+        if let Some(c) = cwd.clone().filter(|s| !s.is_empty()) {
+            cwd_by_sid.insert(sid.to_string(), c);
+        }
+        let activity = updated.unwrap_or(0).max(*meta_mtime);
+        if activity >= best_activity {
+            best_activity = activity;
+            best_cwd = cwd;
+            best_path = Some(meta_path.clone());
         }
     }
-    let (transcript, activity, cwd) = best?;
-    if !within_idle(activity, now, idle_secs) {
+    for (path, mtime) in &files {
+        let mut activity = *mtime;
+        if now.saturating_sub(*mtime) <= CURSOR_THINK_MS && cursor_open_turn(path) {
+            activity = now;
+        }
+        if activity >= best_activity {
+            best_activity = activity;
+            best_cwd = cwd_by_sid.get(&cursor_session_id(path)).cloned();
+            best_path = Some(path.clone());
+        }
+    }
+    if best_activity <= 0 || !within_idle(best_activity, now, idle_secs) {
         return None;
     }
-    let project = cwd
+    let project = best_cwd
         .as_deref()
         .map(repo_from_cwd)
         .filter(|s| !s.is_empty())
-        .or_else(|| project_from_transcript(&transcript))
+        .or_else(|| best_path.as_deref().and_then(project_from_transcript))
         .unwrap_or_else(|| "Cursor".into());
     Some(SessionInfo {
         agent: AgentKind::Cursor,
         project,
         model: String::new(),
         start_epoch_ms: cursor_rolling_start(&files, &chats),
-        activity_ms: activity,
+        activity_ms: best_activity,
         tokens: 0,
     })
+}
+
+fn cursor_meta_files(home: &Path) -> Vec<(PathBuf, i64)> {
+    let mut out = Vec::new();
+    for (dir, tag) in [
+        (home.join("chats"), "cursor-meta"),
+        (home.join("acp-sessions"), "cursor-acp-meta"),
+    ] {
+        if dir.is_dir() {
+            out.extend(tree_snapshot(&dir, tag, 8, |p| {
+                p.file_name().and_then(|n| n.to_str()) == Some("meta.json")
+            }));
+        }
+    }
+    out
+}
+
+fn cursor_open_turn(path: &Path) -> bool {
+    let Some(text) = read_tail(path, 8192) else {
+        return false;
+    };
+    let Some(last) = text.lines().rev().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(last.trim()) else {
+        return false;
+    };
+    match str_field(&v, "role").as_deref() {
+        Some("user") => true,
+        Some("assistant") => v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|p| str_field(p, "type").as_deref() == Some("tool_use"))
+            }),
+        _ => false,
+    }
+}
+
+fn cursor_session_id(transcript: &Path) -> String {
+    let stem = transcript
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let parent = transcript
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if parent == "agent-transcripts" {
+        stem.to_string()
+    } else {
+        parent.to_string()
+    }
+}
+
+fn cursor_turns_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("AGENTCORD_CURSOR_TURNS") {
+        return Some(PathBuf::from(p));
+    }
+    let base = std::env::var_os("APPDATA").map(PathBuf::from)?;
+    Some(base.join("AgentCord").join("cursor-turns.jsonl"))
+}
+
+fn cursor_hook_duration(cutoff_ms: i64, now_ms: i64) -> Option<(i64, Option<i64>)> {
+    let text = read_to_string(&cursor_turns_path()?)?;
+    let mut open: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut total = 0i64;
+    let mut last = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(kind) = str_field(&v, "e") else {
+            continue;
+        };
+        let Some(ms) = v.get("ms").and_then(json_i64) else {
+            continue;
+        };
+        let id = str_field(&v, "id").unwrap_or_default();
+        if kind == "start" {
+            open.entry(id).or_default().push(ms);
+        } else if kind == "end" {
+            if let Some(stack) = open.get_mut(&id) {
+                if let Some(start) = stack.pop() {
+                    let a = start.max(cutoff_ms);
+                    let b = ms.min(now_ms);
+                    if b > a {
+                        total += b - a;
+                    }
+                    last = Some(last.map_or(ms, |l: i64| l.max(ms)));
+                }
+            }
+        }
+    }
+    for starts in open.values() {
+        for start in starts {
+            let a = (*start).max(cutoff_ms);
+            if now_ms > a {
+                total += now_ms - a;
+            }
+            last = Some(last.map_or(now_ms, |l| l.max(now_ms)));
+        }
+    }
+    Some((total, last))
 }
 
 fn cursor_rolling_start(files: &[(PathBuf, i64)], chats: &Path) -> i64 {
     let now = now_ms();
     let cutoff = now - LOOKBACK_MS;
+    if let Some((total, _)) = cursor_hook_duration(cutoff, now) {
+        if total > 0 {
+            return now - total;
+        }
+    }
     let mut total = 0;
     let mut newest_last = None;
     for (path, _) in files {
         let agg = jsonl_cached(path, parse_cursor_line);
-        let sid = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let (created, updated) = find_cursor_meta(chats, sid)
+        let sid = cursor_session_id(path);
+        let (created, updated) = find_cursor_meta(chats, &sid)
             .and_then(|p| read_cursor_meta(&p))
             .map(|(_, c, u)| (c, u))
             .unwrap_or((None, None));
@@ -1844,6 +1969,46 @@ mod tests {
     }
 
     #[test]
+    fn updated_at_does_not_snap_elapsed_back() {
+        let now = 10_000_000i64;
+        let last_stamp = now - 5 * 60_000;
+        let created = now - 57 * 60_000;
+        let (active, last) = active_duration(
+            &[last_stamp],
+            Some(created),
+            Some(now),
+            now - LOOKBACK_MS,
+            now,
+        );
+        assert_eq!(last, Some(last_stamp));
+        let shown = now - elapsed_start_ms(active, last, now);
+        assert_eq!(shown, active + 5 * 60_000);
+    }
+
+    #[test]
+    fn cursor_hook_turns_sum_without_gap_fill() {
+        let path = std::env::temp_dir().join(format!(
+            "agentcord-turns-{}-{}.jsonl",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::write(
+            &path,
+            "{ \"e\":\"start\",\"ms\":1000,\"id\":\"a\" }\n\
+             { \"e\":\"end\",\"ms\":1801000,\"id\":\"a\" }\n\
+             { \"e\":\"start\",\"ms\":2401000,\"id\":\"a\" }\n\
+             { \"e\":\"end\",\"ms\":3601000,\"id\":\"a\" }\n",
+        )
+        .unwrap();
+        std::env::set_var("AGENTCORD_CURSOR_TURNS", &path);
+        let (total, last) = cursor_hook_duration(0, 3601000).unwrap();
+        std::env::remove_var("AGENTCORD_CURSOR_TURNS");
+        let _ = fs::remove_file(&path);
+        assert_eq!(total, 30 * 60_000 + 20 * 60_000);
+        assert_eq!(last, Some(3601000));
+    }
+
+    #[test]
     fn repo_from_origin_url() {
         let dir = std::env::temp_dir().join(format!(
             "agentcord-git-{}-{}",
@@ -1910,9 +2075,48 @@ mod tests {
     }
 
     #[test]
-    fn cursor_scan_uses_embedded_stamp_when_mtime_is_stale() {
+    fn cursor_scan_uses_meta_updated_at() {
         let home = std::env::temp_dir().join(format!(
-            "agentcord-cursor-{}-{}",
+            "agentcord-cursor-meta-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let sid = "df06561a-03f1-49bd-ae64-2ede2bd21bfc";
+        let transcripts = home
+            .join("projects")
+            .join("D-Workspace-agentcord")
+            .join("agent-transcripts")
+            .join(sid);
+        fs::create_dir_all(&transcripts).unwrap();
+        let path = transcripts.join(format!("{sid}.jsonl"));
+        fs::write(&path, "{}\n").unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
+            .unwrap();
+        drop(file);
+        let now = now_ms();
+        let chat = home.join("chats").join("workspace").join(sid);
+        fs::create_dir_all(&chat).unwrap();
+        fs::write(
+            chat.join("meta.json"),
+            format!(
+                r#"{{"cwd":"D:\\Workspace\\agentcord","createdAtMs":{},"updatedAtMs":{}}}"#,
+                now - 60_000,
+                now - 5_000
+            ),
+        )
+        .unwrap();
+        let info = scan_cursor_from(&home, 180.0).unwrap();
+        assert_eq!(info.agent, AgentKind::Cursor);
+        assert_eq!(info.project, "agentcord");
+        assert!(within_idle(info.activity_ms, now_ms(), 180.0));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn cursor_scan_ignores_stale_user_stamps() {
+        let home = std::env::temp_dir().join(format!(
+            "agentcord-cursor-stamp-{}-{}",
             std::process::id(),
             now_ms()
         ));
@@ -1922,8 +2126,7 @@ mod tests {
             .join("agent-transcripts");
         fs::create_dir_all(&transcripts).unwrap();
         let path = transcripts.join("abc123.jsonl");
-        let now = now_ms();
-        let stamp = cursor_stamp_near(now, 7 * 3600);
+        let stamp = cursor_stamp_near(now_ms(), 7 * 3600);
         fs::write(
             &path,
             format!(
@@ -1936,25 +2139,12 @@ mod tests {
         file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
             .unwrap();
         drop(file);
-        let chat = home.join("chats").join("workspace").join("abc123");
-        fs::create_dir_all(&chat).unwrap();
-        fs::write(
-            chat.join("meta.json"),
-            format!(
-                r#"{{"cwd":"D:\\Workspace\\agentcord","createdAtMs":{},"updatedAtMs":{}}}"#,
-                now - 60_000,
-                now - 20_000
-            ),
-        )
-        .unwrap();
-        let info = scan_cursor_from(&home, 180.0).unwrap();
-        assert_eq!(info.agent, AgentKind::Cursor);
-        assert!(within_idle(info.activity_ms, now_ms(), 180.0));
+        assert!(scan_cursor_from(&home, 180.0).is_none());
         let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
-    fn cursor_scan_uses_mtime_when_embedded_stamp_is_stale() {
+    fn cursor_scan_uses_jsonl_mtime() {
         let home = std::env::temp_dir().join(format!(
             "agentcord-cursor-mtime-{}-{}",
             std::process::id(),
@@ -1965,16 +2155,7 @@ mod tests {
             .join("D-Workspace-agentcord")
             .join("agent-transcripts");
         fs::create_dir_all(&transcripts).unwrap();
-        let path = transcripts.join("live.jsonl");
-        let stamp = cursor_stamp_near(now_ms() - 2 * 3600_000, 7 * 3600);
-        fs::write(
-            &path,
-            format!(
-                r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"hi <timestamp>{stamp} (UTC+7)</timestamp>"}}]}}}}
-"#
-            ),
-        )
-        .unwrap();
+        fs::write(transcripts.join("live.jsonl"), "{}\n").unwrap();
         let info = scan_cursor_from(&home, 180.0).unwrap();
         assert_eq!(info.agent, AgentKind::Cursor);
         assert!(within_idle(info.activity_ms, now_ms(), 180.0));
@@ -1982,7 +2163,62 @@ mod tests {
     }
 
     #[test]
-    fn zero_idle_window_is_off() {
+    fn cursor_open_user_turn_stays_live_while_thinking() {
+        let home = std::env::temp_dir().join(format!(
+            "agentcord-cursor-think-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let transcripts = home
+            .join("projects")
+            .join("D-Workspace-agentcord")
+            .join("agent-transcripts");
+        fs::create_dir_all(&transcripts).unwrap();
+        let path = transcripts.join("think.jsonl");
+        fs::write(
+            &path,
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"go"}]}}
+"#,
+        )
+        .unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90))
+            .unwrap();
+        drop(file);
+        let info = scan_cursor_from(&home, 60.0).unwrap();
+        assert!(within_idle(info.activity_ms, now_ms(), 60.0));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn cursor_finished_assistant_text_can_go_idle() {
+        let home = std::env::temp_dir().join(format!(
+            "agentcord-cursor-done-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let transcripts = home
+            .join("projects")
+            .join("D-Workspace-agentcord")
+            .join("agent-transcripts");
+        fs::create_dir_all(&transcripts).unwrap();
+        let path = transcripts.join("done.jsonl");
+        fs::write(
+            &path,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"done"}]}}
+"#,
+        )
+        .unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90))
+            .unwrap();
+        drop(file);
+        assert!(scan_cursor_from(&home, 60.0).is_none());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn zero_idle_window_is_not_live() {
         assert!(!within_idle(now_ms(), now_ms(), 0.0));
     }
 

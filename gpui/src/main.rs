@@ -615,11 +615,7 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                                             this.tick();
                                             cx.notify();
                                         }))
-                                        .child(if mins == 0 {
-                                            "off".to_string()
-                                        } else {
-                                            format!("{mins}m")
-                                        }),
+                                        .child(format!("{mins}m")),
                                 );
                             }
                             row
@@ -1433,6 +1429,7 @@ fn main() {
     let Some(_instance) = settings::acquire_instance() else {
         return;
     };
+    agentcord_gpui::cursor_hooks::ensure();
     Application::new().run(|cx: &mut App| {
         let _ = cx
             .text_system()

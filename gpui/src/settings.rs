@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 const ACTIVITY_TYPES: [(i32, &'static str); 4] =
     [(0, "Playing"), (2, "Listening"), (3, "Watching"), (5, "Competing")];
-pub const IDLE_MINUTES: [i32; 7] = [0, 5, 10, 15, 20, 25, 30];
+pub const IDLE_MINUTES: [i32; 7] = [1, 5, 10, 15, 20, 25, 30];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -52,10 +52,14 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load() -> Self {
-        config_path()
+        let mut s: Self = config_path()
             .and_then(|p| fs::read_to_string(p).ok())
             .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if s.idle_window_seconds < 60.0 {
+            s.idle_window_seconds = 300.0;
+        }
+        s
     }
 
     pub fn save(&self) {
@@ -108,14 +112,11 @@ impl Settings {
     }
 
     pub fn set_idle_minutes(&mut self, minutes: i32) {
-        self.idle_window_seconds = minutes.max(0) as f64 * 60.0;
+        self.idle_window_seconds = minutes.max(1) as f64 * 60.0;
     }
 
     pub fn idle_label(&self) -> String {
-        match self.idle_minutes() {
-            0 => "off".into(),
-            m => format!("{m}m"),
-        }
+        format!("{}m", self.idle_minutes())
     }
 }
 
@@ -494,11 +495,11 @@ mod tests {
         assert_eq!(s.idle_window_seconds, 900.0);
         assert_eq!(s.idle_minutes(), 15);
         s.idle_window_seconds = 100.0;
-        assert_eq!(s.idle_minutes(), 0);
-        s.idle_window_seconds = 200.0;
+        assert_eq!(s.idle_minutes(), 1);
+        s.idle_window_seconds = 250.0;
         assert_eq!(s.idle_minutes(), 5);
         s.set_idle_minutes(0);
-        assert_eq!(s.idle_label(), "off");
+        assert_eq!(s.idle_label(), "1m");
     }
 
     #[test]

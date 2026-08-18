@@ -8,13 +8,16 @@ use agentcord_gpui::session::{
     codex_linked, cursor_linked, format_clock, format_tokens, grok_linked, now_ms, pick_winner,
     scan_claude, scan_codex, scan_cursor, scan_grok, within_idle,
 };
+use agentcord_gpui::usage::{self, UsageSnapshot};
 use gpui::{
     App, Application, Bounds, Context, FontWeight, MouseButton, SharedString, TitlebarOptions,
     Window, WindowBounds, WindowDecorations, WindowKind, WindowOptions, div, prelude::*, px, rgb,
-    rgba, size,
+    rgba, relative, size,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+mod tray;
 
 const SHELL: u32 = 0xf2f2f5;
 const TEXT: u32 = 0x1d1d1f;
@@ -61,10 +64,12 @@ struct AgentCord {
     grok_is_linked: bool,
     cursor_is_linked: bool,
     screen: Screen,
+    usage: Arc<Mutex<UsageSnapshot>>,
+    _tray: Option<tray::Tray>,
 }
 
 impl AgentCord {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(cx: &mut Context<Self>, tray: Option<tray::Tray>) -> Self {
         let discord = Arc::new(Client::new());
         discord.connect(DISCORD_CLIENT_ID);
         cx.spawn(async move |this, cx| {
@@ -92,6 +97,8 @@ impl AgentCord {
             grok_is_linked: false,
             cursor_is_linked: false,
             screen: Screen::Main,
+            usage: usage::spawn(),
+            _tray: tray,
         };
         app.tick();
         app
@@ -251,10 +258,95 @@ fn main_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement
         .w_full()
         .flex_shrink_0()
         .child(header(app.presence_on, &snap, agents.len(), active, cx))
+        .child(unified_usage(app, &agents))
         .child(agent_list(app, &agents, cx))
         .child(settings_row(agents.len(), cx))
         .child(div().h(px(1.)).bg(rgb(HAIR)).my(px(11.)))
         .child(quit_row(cx))
+}
+
+fn unified_usage(app: &AgentCord, agents: &[AgentKind]) -> impl IntoElement {
+    if agents.len() <= 1 {
+        return div().into_any_element();
+    }
+    let snap = app.usage.lock().map(|g| g.clone()).unwrap_or_default();
+    let mut col = div().flex().flex_col();
+    let mut any = false;
+    for (i, agent) in agents.iter().copied().enumerate() {
+        let Some(bar) = snap.for_agent(agent) else {
+            continue;
+        };
+        any = true;
+        if i > 0 {
+            col = col.child(div().h(px(8.)));
+        }
+        col = col.child(usage_row(agent.display_name(), bar.percent));
+    }
+    if !any {
+        col = col.child(
+            div()
+                .text_size(px(12.5))
+                .italic()
+                .text_color(rgb(SEC_SOFT))
+                .child("No connected agents"),
+        );
+    }
+    white_card()
+        .mb(px(11.))
+        .px(px(12.))
+        .py(px(11.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(SEC))
+                .child("UNIFIED USAGE"),
+        )
+        .child(col.mt(px(10.)))
+        .into_any_element()
+}
+
+fn usage_row(name: &'static str, percent: i64) -> impl IntoElement {
+    let fill = (percent as f32 / 100.0).clamp(0.0, 1.0);
+    let color = if percent >= 95 {
+        0xff3b30
+    } else if percent >= 80 {
+        YELLOW
+    } else {
+        GREEN
+    };
+    div()
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .w(px(52.))
+                .text_size(px(11.))
+                .text_color(rgb(SEC))
+                .child(name),
+        )
+        .child(
+            div()
+                .flex_1()
+                .h(px(4.))
+                .rounded(px(2.))
+                .bg(rgb(TRACK))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(fill))
+                        .rounded(px(2.))
+                        .bg(rgb(color)),
+                ),
+        )
+        .child(
+            div()
+                .ml(px(8.))
+                .text_size(px(11.))
+                .text_color(rgb(TEXT))
+                .child(format!("{percent}%")),
+        )
 }
 
 fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoElement {
@@ -901,7 +993,11 @@ fn main() {
                 is_resizable: false,
                 ..Default::default()
             },
-            |_, cx| cx.new(AgentCord::new),
+            |_window, cx| {
+                let hwnd = native::active_hwnd();
+                let tray = tray::Tray::attach(hwnd);
+                cx.new(|cx| AgentCord::new(cx, tray))
+            },
         )
         .unwrap();
         cx.activate(true);

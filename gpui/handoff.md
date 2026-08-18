@@ -13,6 +13,8 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Claude/Codex/Cursor/Grok toggles), agent detail, Quit
 - Window height follows content (`Window::resize` after layout); width stays 307
 - `WindowKind::Normal` so the prototype appears on the taskbar (`PopUp` is `WS_EX_TOOLWINDOW` and stays hidden until tray exists)
+- Window / taskbar / tray icon from `assets/agentcord.ico` (same file as `windows/assets/agentcord.ico`)
+- Unified usage card: Claude 5h, Codex ChatGPT window, Cursor period, Grok weekly credits
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
 - Parser / presence unit tests: `cargo test`
 
@@ -39,15 +41,14 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 
 ### Usage + status
 
-- [ ] Unified usage card on the main screen
-- [ ] Grok weekly credits (`windows/GrokUsage.cs`)
-- [ ] Cursor period usage (`windows/CursorUsage.cs`)
-- [ ] Claude / Codex usage pollers
+- Unified usage card on the main screen (enabled when more than one agent is on)
+- Grok weekly credits, Cursor period usage, Claude 5-hour limit, Codex ChatGPT `wham/usage`
 - [ ] Claude status page (`windows/AnthropicStatus.cs`)
+- [ ] Disk cache + 24h staleness for usage snapshots
 
 ### App shell
 
-- [ ] System tray, no taskbar entry (`windows/TrayApplicationContext.cs`) — prototype currently uses `WindowKind::Normal` so it stays findable
+- [ ] System tray, no taskbar entry (`windows/TrayApplicationContext.cs`) — tray icon is live; window still uses `WindowKind::Normal` so it stays on the taskbar
 - [ ] Settings persistence (`%APPDATA%\AgentCord\settings.json`, `windows/Settings.cs`)
 - [ ] Launch at login (`windows/Autostart.cs`)
 - [ ] Prevent sleep (`windows/SleepGuard.cs`)

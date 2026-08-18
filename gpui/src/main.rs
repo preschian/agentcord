@@ -5,8 +5,8 @@
 use agentcord_gpui::discord::{Client, ConnState};
 use agentcord_gpui::session::{
     build_activity, claude_linked, codex_linked, cursor_linked, format_clock, format_tokens,
-    grok_linked, now_ms, pick_winner, scan_claude, scan_codex, scan_cursor, scan_grok, within_idle,
-    AgentKind, LiveSessions, SessionInfo, DISCORD_CLIENT_ID,
+    grok_linked, now_ms, pick_winner, scan_claude, scan_codex, scan_cursor, scan_grok, AgentKind,
+    LiveSessions, SessionInfo, DISCORD_CLIENT_ID,
 };
 use agentcord_gpui::settings::{self, Settings};
 use agentcord_gpui::status::{self, StatusInfo};
@@ -69,7 +69,6 @@ struct AgentCord {
     discord: Arc<Client>,
     settings: Settings,
     sessions: LiveSessions,
-    last_grok: Option<SessionInfo>,
     claude_is_linked: bool,
     codex_is_linked: bool,
     grok_is_linked: bool,
@@ -103,7 +102,6 @@ impl AgentCord {
             discord,
             settings,
             sessions: LiveSessions::default(),
-            last_grok: None,
             claude_is_linked: false,
             codex_is_linked: false,
             grok_is_linked: false,
@@ -130,28 +128,19 @@ impl AgentCord {
         self.grok_is_linked = grok_linked();
         self.cursor_is_linked = cursor_linked();
 
+        let idle = self.settings.idle_window_seconds;
         let mut sessions = LiveSessions::default();
         if self.settings.agent_claude_enabled {
-            sessions.claude = scan_claude();
+            sessions.claude = scan_claude(idle);
         }
         if self.settings.agent_codex_enabled {
-            sessions.codex = scan_codex();
+            sessions.codex = scan_codex(idle);
         }
         if self.settings.agent_grok_enabled {
-            sessions.grok = scan_grok();
-            if sessions.grok.is_none() {
-                if let Some(prev) = &self.last_grok {
-                    if within_idle(prev.activity_ms, now_ms()) {
-                        sessions.grok = Some(prev.clone());
-                    }
-                }
-            }
-            if let Some(g) = &sessions.grok {
-                self.last_grok = Some(g.clone());
-            }
+            sessions.grok = scan_grok(idle);
         }
         if self.settings.agent_cursor_enabled {
-            sessions.cursor = scan_cursor();
+            sessions.cursor = scan_cursor(idle);
         }
         self.sessions = sessions;
 
@@ -595,6 +584,52 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                                 .text_size(px(12.5))
                                 .child(app.settings.activity_label().to_string()),
                         ),
+                )
+                .child(div().h(px(1.)).bg(rgb(HAIR)))
+                .child(
+                    div()
+                        .px(px(11.))
+                        .py(px(8.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .child(div().flex_1().text_size(px(13.)).child("Idle window"))
+                                .child(
+                                    div()
+                                        .text_size(px(12.5))
+                                        .text_color(rgb(SEC))
+                                        .child(format!("{}m", app.settings.idle_minutes())),
+                                ),
+                        )
+                        .child({
+                            let selected = app.settings.idle_minutes();
+                            let mut row = div().flex().justify_between().mt(px(6.));
+                            for &mins in &settings::IDLE_MINUTES {
+                                let on = selected == mins;
+                                row = row.child(
+                                    div()
+                                        .id(SharedString::from(format!("idle-{mins}")))
+                                        .cursor_pointer()
+                                        .px(px(3.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .when(on, |d| {
+                                            d.bg(rgba(0x7878801a)).font_weight(FontWeight::SEMIBOLD)
+                                        })
+                                        .text_size(px(11.))
+                                        .text_color(rgb(if on { TEXT } else { SEC }))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.settings.set_idle_minutes(mins);
+                                            this.persist();
+                                            this.tick();
+                                            cx.notify();
+                                        }))
+                                        .child(format!("{mins}m")),
+                                );
+                            }
+                            row
+                        }),
                 ),
         )
 }

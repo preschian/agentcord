@@ -6,9 +6,10 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 
 - Discord IPC on `\\.\pipe\discord-ipc-{0..9}` (`src/discord.rs`): handshake, READY, SET_ACTIVITY, ping/pong, reconnect with backoff, clear on quit
 - Grok scan (`src/session.rs`): live PID + `last_active_at` / event-file mtimes + open-turn, `summary.json` / `signals.json`
-- Cursor scan: newest `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` within a 5-minute idle window, `meta.json` cwd / timestamps
-- Claude scan: newest `~/.claude/projects/**/*.jsonl`, tail parse for cwd / model / tokens / event timestamps
-- Codex scan: newest `~/.codex/sessions/**/*.jsonl` (`CODEX_HOME` honored), tail parse for `session_meta` / `turn_context` / `token_count`
+- Cursor scan: `agent-transcripts/**/*.jsonl` + embedded `<timestamp>` + `meta.json`; pick by event time over mtime
+- Claude / Codex scan: tree index (30s walk) + jsonl cursor; pick by parsed event time over mtime
+- Repo name from `.git/config` origin; 24h rolling working duration for Discord elapsed
+- Grok last-known grace after `active_sessions.json` clears; newest `summary.json` fallback
 - Winner = newest `activity_ms`; presence payload uses production Discord app id `1517099756063686677`
 - Light popover UI (`src/main.rs`): header + status pill, agent rows, Settings (presence + Claude/Codex/Cursor/Grok toggles), agent detail, Quit; all text is Consolas
 - Window height follows content (`Window::resize` after layout); width stays 307
@@ -19,7 +20,7 @@ Windows-first AgentCord on [GPUI](https://gpui.rs). Production remains the C# tr
 - Claude status card on Claude detail (`status.claude.com` summary, expand + open page)
 - Tray tooltip: session line + compact usage, 63-char cap
 - Native Windows window move via `WM_SYSCOMMAND` / `SC_MOVE` (GPUI `start_window_move` is Wayland/X11-only)
-- Settings persist to `%APPDATA%\AgentCord\settings.json`; launch at login; prevent sleep; display toggles; activity type cycle
+- Settings persist to `%APPDATA%\AgentCord\settings.json`; launch at login; prevent sleep; display toggles; activity type cycle; idle window ticks 0–30 min
 - `WindowKind::PopUp` (no taskbar); close hides to tray; Quit / logoff clears presence; single-instance mutex
 - Parser / presence unit tests: `cargo test`
 
@@ -37,16 +38,11 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 
 ### Session fidelity
 
-- [ ] Configurable idle window (production default 300s is hardcoded; Settings slider 0–30 min)
-- [ ] 24h rolling working duration / Discord elapsed (`windows/SessionActivity.cs`) — GPUI uses `opened_at` / `createdAtMs` / first tail timestamp
-- [ ] Grok last-known grace after `active_sessions.json` clears (`GrokSession.cs`)
-- [ ] Cursor embedded `<timestamp>` stamps + tree index memoization (`JsonlCursor.cs`, `SessionTreeIndex.cs`)
-- [ ] Repo name from `.git/config` origin (`RepoNames.cs`) — GPUI only uses first `git_remotes` entry or basename
-- [ ] Claude/Codex: prefer parsed event timestamps over mtime when picking which transcript is newest (today: newest by mtime, then tail timestamps for idle)
+Shipped (see Done). Idle window is discrete minute ticks (0/5/10/15/20/25/30), not a WPF slider.
 
 ### App shell
 
-Shipped (see Done). Idle-window slider is in Session fidelity.
+Shipped (see Done).
 
 ### UI polish
 

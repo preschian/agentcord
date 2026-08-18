@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 const ACTIVITY_TYPES: [(i32, &'static str); 4] =
     [(0, "Playing"), (2, "Listening"), (3, "Watching"), (5, "Competing")];
+pub const IDLE_MINUTES: [i32; 7] = [0, 5, 10, 15, 20, 25, 30];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -95,6 +96,19 @@ impl Settings {
             .position(|(v, _)| *v == self.activity_type)
             .unwrap_or(0);
         self.activity_type = ACTIVITY_TYPES[(i + 1) % ACTIVITY_TYPES.len()].0;
+    }
+
+    pub fn idle_minutes(&self) -> i32 {
+        let m = (self.idle_window_seconds / 60.0).round() as i32;
+        IDLE_MINUTES
+            .iter()
+            .copied()
+            .min_by_key(|step| (*step - m).abs())
+            .unwrap_or(5)
+    }
+
+    pub fn set_idle_minutes(&mut self, minutes: i32) {
+        self.idle_window_seconds = minutes.max(0) as f64 * 60.0;
     }
 }
 
@@ -463,6 +477,19 @@ mod tests {
         assert_eq!(s.activity_label(), "Playing");
         s.activity_type = 99;
         assert_eq!(s.activity_type(), 0);
+    }
+
+    #[test]
+    fn idle_minutes_snap_to_steps() {
+        let mut s = Settings::default();
+        assert_eq!(s.idle_minutes(), 5);
+        s.set_idle_minutes(15);
+        assert_eq!(s.idle_window_seconds, 900.0);
+        assert_eq!(s.idle_minutes(), 15);
+        s.idle_window_seconds = 100.0;
+        assert_eq!(s.idle_minutes(), 0);
+        s.idle_window_seconds = 200.0;
+        assert_eq!(s.idle_minutes(), 5);
     }
 
     #[test]

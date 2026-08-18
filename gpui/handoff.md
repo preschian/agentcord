@@ -65,8 +65,8 @@ Cursor jsonl scan is the implementation. Extra Cursor sources are out of scope:
 
 - Size-to-content height: window width stays 307; height is measured from layout and `Window::resize`d (WPF `SizeToContent=Height`)
 - Popover text is Consolas (was Segoe UI)
-- [ ] Segoe Fluent / MDL2 glyphs — GPUI cannot render those PUA codepoints (they became boxes); current UI uses `⚙ › ‹ ⊞`
-- [ ] Window-chrome corner radius 12 to match the WPF card (tried, reverted)
+- Fluent UI System Icons (MIT subset TTF) for settings / chevron / folder / sparkle
+- Window-chrome corner radius 12: skipped (tried, reverted; leave the GPUI chrome)
 - [ ] Hide-on-close / stay running in tray
 
 ### Ship

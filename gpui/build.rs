@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/agentcord.ico");
+    println!("cargo:rerun-if-changed=assets/FluentSystemIcons-Regular.ttf");
     #[cfg(windows)]
     {
         let mut res = winresource::WindowsResource::new();

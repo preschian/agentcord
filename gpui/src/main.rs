@@ -14,6 +14,7 @@ use gpui::{
     MouseButton, SharedString, TitlebarOptions, Window, WindowBounds, WindowDecorations,
     WindowKind, WindowOptions,
 };
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -41,6 +42,12 @@ const TRACK: u32 = 0xd5d5d7;
 const DISCORD: u32 = 0x5865f2;
 const LOGO: u32 = 0x1b1b1d;
 const WINDOW_WIDTH: f32 = 307.;
+const ICON_FONT: &str = "FluentSystemIcons-Regular";
+const ICON_SETTINGS: char = '\u{f6a9}';
+const ICON_CHEVRON_RIGHT: char = '\u{f2b0}';
+const ICON_CHEVRON_LEFT: char = '\u{f2aa}';
+const ICON_FOLDER: char = '\u{f418}';
+const ICON_SPARKLE: char = '\u{eb33}';
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -501,10 +508,9 @@ fn detail_screen(
                         .items_center()
                         .child(
                             div()
-                                .text_size(px(12.))
                                 .text_color(rgb(SEC))
                                 .mr(px(7.))
-                                .child("⊞"),
+                                .child(icon(ICON_FOLDER, 12.)),
                         )
                         .child(
                             div()
@@ -649,8 +655,7 @@ fn header(
                 .items_center()
                 .justify_center()
                 .text_color(rgb(WHITE))
-                .text_size(px(13.))
-                .child("✦"),
+                .child(icon(ICON_SPARKLE, 13.)),
         )
         .child(
             div()
@@ -780,9 +785,8 @@ fn agent_row(
                 .child(
                     div()
                         .ml(px(6.))
-                        .text_size(px(12.))
                         .text_color(rgb(SEC_FAINT))
-                        .child("›"),
+                        .child(icon(ICON_CHEVRON_RIGHT, 12.)),
                 ),
         )
 }
@@ -808,10 +812,9 @@ fn settings_row(enabled: usize, cx: &mut Context<AgentCord>) -> impl IntoElement
             }))
             .child(
                 div()
-                    .text_size(px(13.))
                     .text_color(rgb(SEC))
                     .mr(px(7.))
-                    .child("⚙"),
+                    .child(icon(ICON_SETTINGS, 13.)),
             )
             .child(div().flex_1().text_size(px(13.)).child("Settings"))
             .child(
@@ -823,9 +826,8 @@ fn settings_row(enabled: usize, cx: &mut Context<AgentCord>) -> impl IntoElement
             .child(
                 div()
                     .ml(px(6.))
-                    .text_size(px(12.))
                     .text_color(rgb(SEC_FAINT))
-                    .child("›"),
+                    .child(icon(ICON_CHEVRON_RIGHT, 12.)),
             ),
     )
 }
@@ -886,9 +888,7 @@ fn nav_header(
                 .hover(|s| s.bg(rgb(0xd8d8dc)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(on_back)
-                .text_size(px(16.))
-                .font_weight(FontWeight::BOLD)
-                .child("‹"),
+                .child(icon(ICON_CHEVRON_LEFT, 16.)),
         )
         .child(
             div()
@@ -1008,8 +1008,22 @@ mod native {
     }
 }
 
+fn icon(glyph: char, size: f32) -> impl IntoElement {
+    div()
+        .font_family(ICON_FONT)
+        .font_weight(FontWeight::NORMAL)
+        .text_size(px(size))
+        .line_height(px(size))
+        .child(glyph.to_string())
+}
+
 fn main() {
     Application::new().run(|cx: &mut App| {
+        let _ = cx
+            .text_system()
+            .add_fonts(vec![Cow::Borrowed(include_bytes!(
+                "../assets/FluentSystemIcons-Regular.ttf"
+            ))]);
         // Width is fixed; height starts large enough to measure, then fits content.
         let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(500.)), cx);
         cx.open_window(

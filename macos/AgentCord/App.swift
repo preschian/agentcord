@@ -45,6 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private lazy var disconnectedIcon = Self.icon(connected: false)
     private var lastConnected: Bool?
     private var lastStatusTitle = NSAttributedString()
+    /// Uptime when the popover last closed. Used to ignore the status-item
+    /// click that just dismissed a transient popover, which would otherwise
+    /// immediately open another one on top of the first.
+    private var lastPopoverClose: TimeInterval = 0
+    private var popoverMonitors: [Any] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Belt and suspenders: ensure no Dock icon even without LSUIElement.
@@ -90,6 +95,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // MARK: NSPopoverDelegate
 
     func popoverDidClose(_ notification: Notification) {
+        lastPopoverClose = ProcessInfo.processInfo.systemUptime
+        stopPopoverDismissMonitor()
         // Apply any menu-bar-affecting settings now that the popover is gone, so
         // the title width change can't move a still-open popover.
         refreshStatusButton()
@@ -111,6 +118,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         // Don't animate the popover's open/close.
         popover.animates = false
+        // Hide the system anchor arrow. NSPopover draws it as part of the
+        // native frame; this is the supported KVC hook (`shouldHideAnchor`).
+        if popover.responds(to: NSSelectorFromString("setShouldHideAnchor:")) {
+            popover.setValue(true, forKey: "shouldHideAnchor")
+        }
         // The redesigned content uses a fixed light palette, so pin the popover
         // to the light appearance for consistent rendering in either system mode.
         popover.appearance = NSAppearance(named: .aqua)
@@ -156,20 +168,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc private func togglePopover() {
-        guard let button = statusItem.button else { return }
         if popover.isShown {
             popover.performClose(nil)
-        } else {
-            // Pull fresh usage numbers and provider status as the popover
-            // opens so they're current.
-            usage.refresh()
-            cursorUsage.refresh()
-            codexUsage.refresh()
-            grokUsage.refresh()
-            providerStatus.refresh()
-            NSApp.activate(ignoringOtherApps: true)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            return
         }
+        // Clicking the status item while the popover is open is treated as an
+        // outside click (`.transient`), so the popover closes *then* this
+        // action runs. Without the guard, that same click immediately opens
+        // another popover on top of the one that is still tearing down —
+        // stacked translucent frames (the background getting darker) that
+        // no longer dismiss on an outside click.
+        if ProcessInfo.processInfo.systemUptime - lastPopoverClose < 0.25 {
+            return
+        }
+        openPopover()
+    }
+
+    private func openPopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.close()
+        }
+        // Pull fresh usage numbers and provider status as the popover
+        // opens so they're current.
+        usage.refresh()
+        cursorUsage.refresh()
+        codexUsage.refresh()
+        grokUsage.refresh()
+        providerStatus.refresh()
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // Transient close-on-outside-click only works while the popover
+        // window is key. Accessory apps don't key it automatically.
+        popover.contentViewController?.view.window?.makeKey()
+        startPopoverDismissMonitor()
+    }
+
+    /// Accessory apps don't always get NSPopover's built-in dismiss, so also
+    /// close on a mouse-down outside the popover or the status item.
+    private func startPopoverDismissMonitor() {
+        stopPopoverDismissMonitor()
+        if let global = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown],
+            handler: { [weak self] _ in self?.popover.performClose(nil) }
+        ) {
+            popoverMonitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown],
+            handler: { [weak self] event in
+                guard let self, self.popover.isShown else { return event }
+                let popoverWindow = self.popover.contentViewController?.view.window
+                if event.window == popoverWindow || event.window == self.statusItem.button?.window {
+                    return event
+                }
+                self.popover.performClose(nil)
+                return event
+            }
+        ) {
+            popoverMonitors.append(local)
+        }
+    }
+
+    private func stopPopoverDismissMonitor() {
+        for monitor in popoverMonitors {
+            NSEvent.removeMonitor(monitor)
+        }
+        popoverMonitors.removeAll()
     }
 
     /// Updates the icon (only when the connection state flips) and the title
@@ -442,6 +507,14 @@ private enum PopoverLayout {
     static let padding: CGFloat = 13
 }
 
+/// Ideal height of a destination screen laid out off-screen.
+private struct DestinationHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 // MARK: - Popover sizing
 
 /// Hosting controller that reports its content's fitting size whenever it lays
@@ -490,10 +563,23 @@ struct MenuContentView: View {
     /// Agents whose account email is currently shown in the clear. Masked by
     /// default so a peek at the menu bar doesn't leak the address.
     @State private var revealedAccountEmails: Set<AgentKind> = []
+    /// Destination screen being measured off-screen so the popover can resize
+    /// before the content is shown.
+    @State private var measuring: PopoverScreen?
+    /// Frozen popover height. Set to the destination size first, then released
+    /// after the content has appeared.
+    @State private var lockedHeight: CGFloat?
+    /// Horizontal offset of the visible screen. Non-zero parks the destination
+    /// off-screen until the popover has already resized.
+    @State private var contentOffset: CGFloat = 0
+    @State private var slideGeneration = 0
 
     private enum PopoverScreen: Equatable {
         case main, settings, usage, detail(AgentKind)
     }
+
+    private static let screenSlideDuration: TimeInterval = 0.32
+    private static let screenSlide = Animation.timingCurve(0.32, 0.72, 0, 1, duration: 0.32)
 
     /// Agents currently listed in the popover.
     private var visibleAgents: [AgentKind] {
@@ -519,34 +605,84 @@ struct MenuContentView: View {
         visibleAgents.filter { isAgentLinked($0) && session(for: $0) != nil }.count
     }
 
-    // Screens slide horizontally: going to Settings pushes left, going back
-    // pushes right. Using `.transition(.move)` (rather than animating an explicit
-    // height) keeps the popover height constant for the whole slide and lets it
-    // snap once at the end — that's what kept the earlier version from looking
-    // messy, where the height interpolated and the popover resized every frame.
+    // Resize the popover to the destination height first, then slide the
+    // new screen in. Showing the content before the size settles is what
+    // made the height snap *after* the page had already arrived.
     var body: some View {
-        ZStack(alignment: .top) {
-            switch screen {
-            case .main:
-                mainScreen
-                    .transition(.move(edge: .leading))
-            case .settings:
-                settingsScreen
-                    .transition(.move(edge: .trailing))
-            case .usage:
-                usageScreen
-                    .transition(.move(edge: .trailing))
-            case .detail(let agent):
-                agentDetailScreen(agent)
-                    .transition(.move(edge: .trailing))
+        screenContent(screen)
+            .padding(PopoverLayout.padding)
+            .frame(width: PopoverLayout.width, alignment: .top)
+            .frame(height: lockedHeight, alignment: .top)
+            .offset(x: contentOffset)
+            .clipped()
+            .foregroundStyle(Palette.text)
+            .fontDesign(.monospaced)
+            .overlay(alignment: .top) {
+                if let measuring {
+                    screenContent(measuring)
+                        .padding(PopoverLayout.padding)
+                        .frame(width: PopoverLayout.width, alignment: .top)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(key: DestinationHeightKey.self, value: geo.size.height)
+                            }
+                        )
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .onPreferenceChange(DestinationHeightKey.self) { height in
+                guard measuring != nil, height > 0 else { return }
+                DispatchQueue.main.async { commitDestinationHeight(height) }
+            }
+    }
+
+    @ViewBuilder
+    private func screenContent(_ screen: PopoverScreen) -> some View {
+        switch screen {
+        case .main: mainScreen
+        case .settings: settingsScreen
+        case .usage: usageScreen
+        case .detail(let agent): agentDetailScreen(agent)
+        }
+    }
+
+    /// Measure the destination off-screen, snap the popover to that height,
+    /// then slide the content in.
+    private func navigate(to new: PopoverScreen) {
+        guard new != screen, measuring != new else { return }
+        slideGeneration += 1
+        measuring = new
+    }
+
+    private func commitDestinationHeight(_ height: CGFloat) {
+        guard let dest = measuring, height > 0 else { return }
+        let generation = slideGeneration
+        let fromRight = dest != .main
+        measuring = nil
+        var prepare = Transaction()
+        prepare.disablesAnimations = true
+        withTransaction(prepare) {
+            lockedHeight = height
+            screen = dest
+            contentOffset = fromRight ? PopoverLayout.width : -PopoverLayout.width
+        }
+        DispatchQueue.main.async {
+            guard generation == slideGeneration else { return }
+            withAnimation(Self.screenSlide) {
+                contentOffset = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.screenSlideDuration) {
+                guard generation == slideGeneration else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    lockedHeight = nil
+                }
             }
         }
-        .padding(PopoverLayout.padding)
-        .frame(width: PopoverLayout.width, alignment: .top)
-        .clipped()
-        .foregroundStyle(Palette.text)
-        .fontDesign(.monospaced)
-        .animation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32), value: screen)
     }
 
     // MARK: Screens
@@ -674,7 +810,7 @@ struct MenuContentView: View {
         return Button {
             revealedAccountEmails.removeAll()
             settings.selectedAgent = agent
-            screen = .detail(agent)
+            navigate(to: .detail(agent))
         } label: {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -760,7 +896,7 @@ struct MenuContentView: View {
         return VStack(alignment: .leading, spacing: 11) {
             navHeader(title: agent.displayName) {
                 revealedAccountEmails.removeAll()
-                screen = .main
+                navigate(to: .main)
             }
             VStack(alignment: .leading, spacing: 10) {
                 if linked {
@@ -846,7 +982,6 @@ struct MenuContentView: View {
                     .fixedSize()
             }
         }
-        .padding(.top, 9)
     }
 
     /// Who the agent is signed in as. Nil until the provider surfaces it —
@@ -974,14 +1109,14 @@ struct MenuContentView: View {
     /// Settings screen header: a back chevron that returns to the main screen,
     /// plus the title.
     private var settingsHeader: some View {
-        navHeader(title: "Settings") { screen = .main }
+        navHeader(title: "Settings") { navigate(to: .main) }
     }
 
     /// Main-screen row that slides over to the settings screen. Mirrors the
     /// collapsible-section styling and summarizes presence state.
     private var settingsNavRow: some View {
         Button {
-            screen = .settings
+            navigate(to: .settings)
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "gearshape")
@@ -1054,7 +1189,7 @@ struct MenuContentView: View {
     private var unifiedUsageCard: some View {
         let entries = primaryWindows(visibleAgents)
         return Button {
-            screen = .usage
+            navigate(to: .usage)
         } label: {
             VStack(alignment: .leading, spacing: 7) {
                 if entries.isEmpty {
@@ -1080,7 +1215,7 @@ struct MenuContentView: View {
     private var usageScreen: some View {
         let entries = primaryWindows(visibleAgents)
         return VStack(alignment: .leading, spacing: 11) {
-            navHeader(title: "Unified usage") { screen = .main }
+            navHeader(title: "Unified usage") { navigate(to: .main) }
             VStack(alignment: .leading, spacing: 10) {
                 if entries.isEmpty {
                     Text("No connected agents")
@@ -1381,11 +1516,7 @@ struct MenuContentView: View {
                     .padding(.leading, 14)
                 }
             }
-            .padding(.top, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .top) {
-                Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5)
-            }
         }
     }
 

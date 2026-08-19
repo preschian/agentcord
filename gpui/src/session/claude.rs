@@ -54,13 +54,16 @@ pub fn claude_linked() -> bool {
     claude_home().is_some_and(|home| home.join("projects").is_dir())
 }
 
-pub fn scan_claude(idle_secs: f64) -> Option<SessionInfo> {
-    scan_claude_from(&claude_home()?.join("projects"), idle_secs)
+pub fn scan_claude(idle_secs: f64) -> AgentScan {
+    let Some(home) = claude_home() else {
+        return AgentScan::default();
+    };
+    scan_claude_from(&home.join("projects"), idle_secs)
 }
 
-pub(super) fn scan_claude_from(projects: &Path, idle_secs: f64) -> Option<SessionInfo> {
+pub(super) fn scan_claude_from(projects: &Path, idle_secs: f64) -> AgentScan {
     if !projects.is_dir() {
-        return None;
+        return AgentScan::default();
     }
     let now = now_ms();
     let files = tree_snapshot(projects, "claude-jsonl", 8, |p| {
@@ -77,25 +80,31 @@ pub(super) fn scan_claude_from(projects: &Path, idle_secs: f64) -> Option<Sessio
             best = Some((path.clone(), activity, agg));
         }
     }
-    let (transcript, activity, tail) = best?;
-    if !within_idle(activity, now, idle_secs) {
-        return None;
-    }
-    let project = tail
-        .cwd
-        .as_deref()
-        .map(repo_from_cwd)
-        .filter(|s| !s.is_empty())
-        .or_else(|| claude_project_from_dir(&transcript))
-        .unwrap_or_else(|| "Claude".into());
-    Some(SessionInfo {
-        agent: AgentKind::Claude,
-        project,
-        model: tail.model.unwrap_or_default(),
-        start_epoch_ms: rolling_start(&files, parse_claude_line),
-        activity_ms: activity,
-        tokens: tail.tokens,
-    })
+    let live = best
+        .as_ref()
+        .is_some_and(|(_, activity, _)| within_idle(*activity, now, idle_secs));
+    let today_ms = day_uptime(&files, parse_claude_line, now, live);
+    let session = match best {
+        Some((transcript, activity, tail)) if live => {
+            let project = tail
+                .cwd
+                .as_deref()
+                .map(repo_from_cwd)
+                .filter(|s| !s.is_empty())
+                .or_else(|| claude_project_from_dir(&transcript))
+                .unwrap_or_else(|| "Claude".into());
+            Some(SessionInfo {
+                agent: AgentKind::Claude,
+                project,
+                model: tail.model.unwrap_or_default(),
+                start_epoch_ms: now - today_ms,
+                activity_ms: activity,
+                tokens: tail.tokens,
+            })
+        }
+        _ => None,
+    };
+    AgentScan { today_ms, session }
 }
 
 fn claude_home() -> Option<PathBuf> {

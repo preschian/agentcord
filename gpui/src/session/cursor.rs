@@ -5,12 +5,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, Default)]
-pub struct CursorScan {
-    pub today_ms: i64,
-    pub session: Option<SessionInfo>,
-}
-
 pub fn pretty_cursor_model(raw: &str) -> String {
     if raw.eq_ignore_ascii_case("default") {
         return "Auto".into();
@@ -46,11 +40,11 @@ pub fn cursor_linked() -> bool {
     })
 }
 
-pub fn scan_cursor(_idle_secs: f64) -> CursorScan {
+pub fn scan_cursor(_idle_secs: f64) -> AgentScan {
     scan_cursor_at(&cursor_uptime_path(), now_ms())
 }
 
-pub(super) fn scan_cursor_at(path: &Path, now_ms: i64) -> CursorScan {
+pub(super) fn scan_cursor_at(path: &Path, now_ms: i64) -> AgentScan {
     let day = cursor_day_uptime_from(path, now_ms);
     let session = day.open.then(|| {
         let project = if day.project.is_empty() {
@@ -67,7 +61,7 @@ pub(super) fn scan_cursor_at(path: &Path, now_ms: i64) -> CursorScan {
             tokens: 0,
         }
     });
-    CursorScan {
+    AgentScan {
         today_ms: day.total_ms,
         session,
     }
@@ -145,58 +139,4 @@ pub(super) fn cursor_uptime_dir() -> PathBuf {
         return PathBuf::from(p);
     }
     std::env::temp_dir().join("AgentCord")
-}
-
-pub(super) fn local_ymd() -> String {
-    #[cfg(windows)]
-    {
-        #[repr(C)]
-        struct SystemTime {
-            year: u16,
-            month: u16,
-            day_of_week: u16,
-            day: u16,
-            hour: u16,
-            minute: u16,
-            second: u16,
-            milliseconds: u16,
-        }
-        extern "system" {
-            fn GetLocalTime(st: *mut SystemTime);
-        }
-        let mut st = SystemTime {
-            year: 0,
-            month: 0,
-            day_of_week: 0,
-            day: 0,
-            hour: 0,
-            minute: 0,
-            second: 0,
-            milliseconds: 0,
-        };
-        unsafe { GetLocalTime(&mut st) };
-        return format!("{:04}-{:02}-{:02}", st.year, st.month, st.day);
-    }
-    #[cfg(not(windows))]
-    {
-        let secs = now_ms() / 1000;
-        let days = secs.div_euclid(86_400);
-        let (year, month, day) = civil_ymd(days);
-        format!("{year:04}-{month:02}-{day:02}")
-    }
-}
-
-#[cfg(not(windows))]
-fn civil_ymd(days: i64) -> (i32, u32, u32) {
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    (year as i32, m as u32, d as u32)
 }

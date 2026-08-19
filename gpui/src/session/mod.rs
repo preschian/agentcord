@@ -13,7 +13,7 @@ pub mod hooks;
 
 pub use claude::{claude_linked, pretty_claude_model, scan_claude};
 pub use codex::{codex_linked, pretty_codex_model, scan_codex};
-pub use cursor::{cursor_linked, pretty_cursor_model, scan_cursor};
+pub use cursor::{cursor_linked, pretty_cursor_model, scan_cursor, CursorScan};
 pub use grok::{grok_linked, pretty_grok_model, scan_grok};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -29,8 +29,6 @@ pub const IDLE_WINDOW_SECS: f64 = 300.0;
 pub(super) const GAP_TOLERANCE_MS: i64 = 5 * 60 * 1000;
 pub(super) const LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
 pub(super) const TREE_WALK_MS: i64 = 30_000;
-// ponytail: 30m cap; abandoned last-user chats shouldn't stay live forever
-pub(super) const CURSOR_THINK_MS: i64 = 30 * 60 * 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentKind {
@@ -140,6 +138,7 @@ pub struct ScanSnapshot {
     pub codex_linked: bool,
     pub grok_linked: bool,
     pub cursor_linked: bool,
+    pub cursor_today_ms: i64,
 }
 
 pub struct ScanHandle {
@@ -181,17 +180,23 @@ impl ScanHandle {
 }
 
 pub(super) fn scan_wanted(w: ScanWanted) -> ScanSnapshot {
+    let cursor = if w.cursor {
+        scan_cursor(w.idle_secs)
+    } else {
+        CursorScan::default()
+    };
     ScanSnapshot {
         sessions: LiveSessions {
             claude: w.claude.then(|| scan_claude(w.idle_secs)).flatten(),
             codex: w.codex.then(|| scan_codex(w.idle_secs)).flatten(),
             grok: w.grok.then(|| scan_grok(w.idle_secs)).flatten(),
-            cursor: w.cursor.then(|| scan_cursor(w.idle_secs)).flatten(),
+            cursor: cursor.session,
         },
         claude_linked: claude_linked(),
         codex_linked: codex_linked(),
         grok_linked: grok_linked(),
         cursor_linked: cursor_linked(),
+        cursor_today_ms: cursor.today_ms,
     }
 }
 
@@ -629,125 +634,6 @@ pub(super) fn read_tail(path: &Path, max: u64) -> Option<String> {
     Some(text)
 }
 
-
-pub(super) fn message_texts(message: &Value) -> Vec<String> {
-    let Some(content) = message.get("content") else {
-        return Vec::new();
-    };
-    if let Some(s) = content.as_str().filter(|s| !s.is_empty()) {
-        return vec![s.to_string()];
-    }
-    let Some(arr) = content.as_array() else {
-        return Vec::new();
-    };
-    arr.iter()
-        .filter_map(|part| str_field(part, "text").filter(|s| !s.is_empty()))
-        .collect()
-}
-
-pub(super) fn parse_embedded_timestamp(raw: &str) -> Option<i64> {
-    let trimmed = raw.trim();
-    let utc_at = trimmed.rfind("(UTC")?;
-    if !trimmed.ends_with(')') {
-        return None;
-    }
-    let offset_secs = parse_utc_offset_secs(&trimmed[utc_at + 4..trimmed.len() - 1])?;
-    let body = trimmed[..utc_at].trim();
-    let parts: Vec<&str> = body.split(',').map(str::trim).collect();
-    if parts.len() != 4 {
-        return None;
-    }
-    let (month, day) = parse_mon_day(parts[1])?;
-    let year: i32 = parts[2].parse().ok()?;
-    let (hour, minute) = parse_ampm(parts[3])?;
-    let days = days_from_civil(year, month, day)?;
-    let local = days * 86_400 + hour as i64 * 3600 + minute as i64 * 60;
-    Some((local - offset_secs) * 1000)
-}
-
-pub(super) fn parse_utc_offset_secs(raw: &str) -> Option<i64> {
-    let trimmed = raw.trim();
-    let (sign, body) = match trimmed.as_bytes().first()? {
-        b'+' => (1i64, &trimmed[1..]),
-        b'-' => (-1, &trimmed[1..]),
-        _ => return None,
-    };
-    let (hours, minutes): (u32, u32) = match body.split_once(':') {
-        Some((h, m)) => (h.parse().ok()?, m.parse().ok()?),
-        None => (body.parse().ok()?, 0),
-    };
-    if hours > 18 || minutes > 59 {
-        return None;
-    }
-    Some(sign * (hours as i64 * 3600 + minutes as i64 * 60))
-}
-
-pub(super) fn parse_mon_day(s: &str) -> Option<(u32, u32)> {
-    let (mon, day) = s.rsplit_once(' ')?;
-    const SHORT: [&str; 12] = [
-        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-    ];
-    const LONG: [&str; 12] = [
-        "january",
-        "february",
-        "march",
-        "april",
-        "may",
-        "june",
-        "july",
-        "august",
-        "september",
-        "october",
-        "november",
-        "december",
-    ];
-    let lower = mon.to_ascii_lowercase();
-    let idx = SHORT
-        .iter()
-        .position(|m| *m == lower)
-        .or_else(|| LONG.iter().position(|m| *m == lower))?;
-    let day: u32 = day.parse().ok()?;
-    if !(1..=31).contains(&day) {
-        return None;
-    }
-    Some((idx as u32 + 1, day))
-}
-
-pub(super) fn parse_ampm(s: &str) -> Option<(u32, u32)> {
-    let (time, mer) = s.rsplit_once(' ')?;
-    let (h, m) = time.split_once(':')?;
-    let mut hour: u32 = h.parse().ok()?;
-    let minute: u32 = m.parse().ok()?;
-    if hour > 12 || minute > 59 {
-        return None;
-    }
-    match mer.to_ascii_uppercase().as_str() {
-        "PM" if hour != 12 => hour += 12,
-        "AM" if hour == 12 => hour = 0,
-        "AM" | "PM" => {}
-        _ => return None,
-    }
-    Some((hour, minute))
-}
-
-
-pub(super) fn project_from_transcript(path: &Path) -> Option<String> {
-    let text = path.to_string_lossy();
-    let marker = if text.contains("\\projects\\") {
-        "\\projects\\"
-    } else {
-        "/projects/"
-    };
-    let rest = text.split_once(marker)?.1;
-    let encoded = rest.split(['\\', '/']).next()?;
-    encoded
-        .rsplit_once('-')
-        .map(|(_, tail)| tail)
-        .filter(|t| !t.is_empty())
-        .or(Some(encoded))
-        .map(str::to_string)
-}
-
 pub(super) fn walk_files(root: &Path, max_depth: usize, visit: &mut dyn FnMut(&Path)) {
     fn rec(dir: &Path, depth: usize, max_depth: usize, visit: &mut dyn FnMut(&Path)) {
         if depth > max_depth {
@@ -919,7 +805,7 @@ mod tests {
     use super::*;
     use super::claude::scan_claude_from;
     use super::codex::scan_codex_from;
-    use super::cursor::{cursor_hook_duration, cursor_session_span, scan_cursor_from};
+    use super::cursor::{cursor_day_uptime_from, local_ymd, scan_cursor_at};
     use super::grok::{grok_rolling_start, scan_grok_from};
 
     #[test]
@@ -1068,14 +954,6 @@ mod tests {
     }
 
     #[test]
-    fn project_from_encoded_transcript() {
-        let p = PathBuf::from(
-            r"C:\Users\p\.cursor\projects\D-Workspace-agentcord\agent-transcripts\a\a.jsonl",
-        );
-        assert_eq!(project_from_transcript(&p).as_deref(), Some("agentcord"));
-    }
-
-    #[test]
     fn scan_claude_from_newest_jsonl() {
         let dir = std::env::temp_dir().join(format!(
             "agentcord-claude-{}-{}",
@@ -1177,19 +1055,9 @@ mod tests {
     }
 
     #[test]
-    fn cursor_span_keeps_elapsed_across_sparse_turns() {
-        let now = 10_000_000i64;
-        let first = now - 60 * 60_000;
-        let last = now - 8_000;
-        let (active, got_last) = cursor_session_span(&[first, last], None, Some(now), 0, now);
-        assert_eq!(got_last, Some(now));
-        assert!((55 * 60_000..=65 * 60_000).contains(&active), "active={active}");
-    }
-
-    #[test]
-    fn cursor_hook_turns_sum_without_gap_fill() {
+    fn cursor_day_sums_sealed_turns() {
         let path = std::env::temp_dir().join(format!(
-            "agentcord-turns-{}-{}.jsonl",
+            "agentcord-uptime-{}-{}.json",
             std::process::id(),
             now_ms()
         ));
@@ -1201,12 +1069,81 @@ mod tests {
              { \"e\":\"end\",\"ms\":3601000,\"id\":\"a\" }\n",
         )
         .unwrap();
-        std::env::set_var("AGENTCORD_CURSOR_TURNS", &path);
-        let (total, last) = cursor_hook_duration(0, 3601000).unwrap();
-        std::env::remove_var("AGENTCORD_CURSOR_TURNS");
+        let day = cursor_day_uptime_from(&path, 3601000);
+        let scan = scan_cursor_at(&path, 3601000);
         let _ = fs::remove_file(&path);
-        assert_eq!(total, 30 * 60_000 + 20 * 60_000);
-        assert_eq!(last, Some(3601000));
+        assert_eq!(day.total_ms, 30 * 60_000 + 20 * 60_000);
+        assert!(!day.open);
+        assert!(scan.session.is_none());
+        assert_eq!(scan.today_ms, day.total_ms);
+    }
+
+    #[test]
+    fn cursor_day_strips_utf8_bom() {
+        let path = std::env::temp_dir().join(format!(
+            "agentcord-uptime-bom-{}-{}.json",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::write(
+            &path,
+            "\u{feff}{ \"e\":\"start\",\"ms\":1000,\"id\":\"a\" }\n\
+             { \"e\":\"end\",\"ms\":61000,\"id\":\"a\" }\n",
+        )
+        .unwrap();
+        let day = cursor_day_uptime_from(&path, 61000);
+        let _ = fs::remove_file(&path);
+        assert_eq!(day.total_ms, 60_000);
+        assert!(!day.open);
+    }
+
+    #[test]
+    fn cursor_open_start_is_active_and_ticks() {
+        let path = std::env::temp_dir().join(format!(
+            "agentcord-uptime-open-{}-{}.json",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::write(
+            &path,
+            "{ \"e\":\"start\",\"ms\":1000,\"id\":\"a\",\"cwd\":\"D:\\\\Workspace\\\\agentcord\" }\n",
+        )
+        .unwrap();
+        let now = 61_000i64;
+        let scan = scan_cursor_at(&path, now);
+        let _ = fs::remove_file(&path);
+        assert_eq!(scan.today_ms, 60_000);
+        let session = scan.session.expect("open start is active");
+        assert_eq!(session.agent, AgentKind::Cursor);
+        assert_eq!(session.project, "agentcord");
+        assert_eq!(session.start_epoch_ms, now - 60_000);
+    }
+
+    #[test]
+    fn cursor_other_day_file_is_ignored() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentcord-uptime-dir-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("1999-01-01-uptime.json"),
+            "{ \"e\":\"start\",\"ms\":0,\"id\":\"old\" }\n\
+             { \"e\":\"end\",\"ms\":36000000,\"id\":\"old\" }\n",
+        )
+        .unwrap();
+        let today = dir.join(format!("{}-uptime.json", local_ymd()));
+        fs::write(
+            &today,
+            "{ \"e\":\"start\",\"ms\":1000,\"id\":\"a\" }\n\
+             { \"e\":\"end\",\"ms\":61000,\"id\":\"a\" }\n",
+        )
+        .unwrap();
+        let day = cursor_day_uptime_from(&today, 61000);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(day.total_ms, 60_000);
+        assert!(!day.open);
     }
 
     #[test]
@@ -1260,162 +1197,6 @@ mod tests {
         assert_eq!(info.project, "live-repo");
         assert_eq!(info.model, "Opus 4.5");
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn cursor_embedded_stamp_matches_iso() {
-        let iso = parse_iso_ms("2026-08-18T04:00:00Z").unwrap();
-        assert_eq!(
-            parse_embedded_timestamp("Tuesday, Aug 18, 2026, 11:00 AM (UTC+7)"),
-            Some(iso)
-        );
-        assert_eq!(
-            parse_embedded_timestamp("Tuesday, August 18, 2026, 11:00 AM (UTC+07:00)"),
-            Some(iso)
-        );
-    }
-
-    #[test]
-    fn cursor_scan_uses_meta_updated_at() {
-        let home = std::env::temp_dir().join(format!(
-            "agentcord-cursor-meta-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        let sid = "df06561a-03f1-49bd-ae64-2ede2bd21bfc";
-        let transcripts = home
-            .join("projects")
-            .join("D-Workspace-agentcord")
-            .join("agent-transcripts")
-            .join(sid);
-        fs::create_dir_all(&transcripts).unwrap();
-        let path = transcripts.join(format!("{sid}.jsonl"));
-        fs::write(&path, "{}\n").unwrap();
-        let file = std::fs::File::options().write(true).open(&path).unwrap();
-        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
-            .unwrap();
-        drop(file);
-        let now = now_ms();
-        let chat = home.join("chats").join("workspace").join(sid);
-        fs::create_dir_all(&chat).unwrap();
-        fs::write(
-            chat.join("meta.json"),
-            format!(
-                r#"{{"cwd":"D:\\Workspace\\agentcord","createdAtMs":{},"updatedAtMs":{}}}"#,
-                now - 60_000,
-                now - 5_000
-            ),
-        )
-        .unwrap();
-        let info = scan_cursor_from(&home, 180.0).unwrap();
-        assert_eq!(info.agent, AgentKind::Cursor);
-        assert_eq!(info.project, "agentcord");
-        assert!(within_idle(info.activity_ms, now_ms(), 180.0));
-        let _ = fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn cursor_scan_ignores_stale_user_stamps() {
-        let home = std::env::temp_dir().join(format!(
-            "agentcord-cursor-stamp-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        let transcripts = home
-            .join("projects")
-            .join("D-Workspace-agentcord")
-            .join("agent-transcripts");
-        fs::create_dir_all(&transcripts).unwrap();
-        let path = transcripts.join("abc123.jsonl");
-        let stamp = cursor_stamp_near(now_ms(), 7 * 3600);
-        fs::write(
-            &path,
-            format!(
-                r#"{{"role":"user","message":{{"content":[{{"type":"text","text":"hi <timestamp>{stamp} (UTC+7)</timestamp>"}}]}}}}
-"#
-            ),
-        )
-        .unwrap();
-        let file = std::fs::File::options().write(true).open(&path).unwrap();
-        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
-            .unwrap();
-        drop(file);
-        assert!(scan_cursor_from(&home, 180.0).is_none());
-        let _ = fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn cursor_scan_uses_jsonl_mtime() {
-        let home = std::env::temp_dir().join(format!(
-            "agentcord-cursor-mtime-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        let transcripts = home
-            .join("projects")
-            .join("D-Workspace-agentcord")
-            .join("agent-transcripts");
-        fs::create_dir_all(&transcripts).unwrap();
-        fs::write(transcripts.join("live.jsonl"), "{}\n").unwrap();
-        let info = scan_cursor_from(&home, 180.0).unwrap();
-        assert_eq!(info.agent, AgentKind::Cursor);
-        assert!(within_idle(info.activity_ms, now_ms(), 180.0));
-        let _ = fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn cursor_open_user_turn_stays_live_while_thinking() {
-        let home = std::env::temp_dir().join(format!(
-            "agentcord-cursor-think-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        let transcripts = home
-            .join("projects")
-            .join("D-Workspace-agentcord")
-            .join("agent-transcripts");
-        fs::create_dir_all(&transcripts).unwrap();
-        let path = transcripts.join("think.jsonl");
-        fs::write(
-            &path,
-            r#"{"role":"user","message":{"content":[{"type":"text","text":"go"}]}}
-"#,
-        )
-        .unwrap();
-        let file = std::fs::File::options().write(true).open(&path).unwrap();
-        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90))
-            .unwrap();
-        drop(file);
-        let info = scan_cursor_from(&home, 60.0).unwrap();
-        assert!(within_idle(info.activity_ms, now_ms(), 60.0));
-        let _ = fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn cursor_finished_assistant_text_can_go_idle() {
-        let home = std::env::temp_dir().join(format!(
-            "agentcord-cursor-done-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        let transcripts = home
-            .join("projects")
-            .join("D-Workspace-agentcord")
-            .join("agent-transcripts");
-        fs::create_dir_all(&transcripts).unwrap();
-        let path = transcripts.join("done.jsonl");
-        fs::write(
-            &path,
-            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"done"}]}}
-"#,
-        )
-        .unwrap();
-        let file = std::fs::File::options().write(true).open(&path).unwrap();
-        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90))
-            .unwrap();
-        drop(file);
-        assert!(scan_cursor_from(&home, 60.0).is_none());
-        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -1501,56 +1282,5 @@ mod tests {
         .unwrap();
         assert!(scan_grok_from(&home, 300.0).is_none());
         let _ = fs::remove_dir_all(&home);
-    }
-
-    fn cursor_stamp_near(now_ms: i64, offset_secs: i64) -> String {
-        let local = now_ms / 1000 + offset_secs;
-        let days = local.div_euclid(86_400);
-        let sod = local.rem_euclid(86_400);
-        let (year, month, day) = civil_from_days(days);
-        let hour = (sod / 3600) as u32;
-        let minute = (sod / 60 % 60) as u32;
-        let (h12, mer) = match hour {
-            0 => (12, "AM"),
-            1..=11 => (hour, "AM"),
-            12 => (12, "PM"),
-            _ => (hour - 12, "PM"),
-        };
-        const MONTHS: [&str; 12] = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
-        const DAYS: [&str; 7] = [
-            "Sunday",
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-        ];
-        let weekday = DAYS[((days + 4).rem_euclid(7)) as usize];
-        format!(
-            "{}, {} {}, {}, {h12}:{minute:02} {mer}",
-            weekday,
-            MONTHS[month as usize - 1],
-            day,
-            year
-        )
-    }
-
-    fn civil_from_days(days: i64) -> (i32, u32, u32) {
-        let z = days + 719468;
-        let era = z.div_euclid(146097);
-        let doe = z - era * 146097;
-        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-        let mut year = (yoe + era * 400) as i32;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-        let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
-        if month <= 2 {
-            year += 1;
-        }
-        (year, month, day)
     }
 }

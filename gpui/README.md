@@ -5,9 +5,9 @@ Windows-first AgentCord on [GPUI](https://gpui.rs): Claude, Codex, Cursor, and G
 **Prototype, not a replacement.** Each GitHub Release ships two Windows builds: `agentcord.exe` from [`../windows`](../windows) and `agentcord-gpui.exe` from this tree. Do not swap them.
 
 - Discord IPC on `\\.\pipe\discord-ipc-{0..9}`
-- Claude / Codex / Cursor / Grok session scans; Cursor turn times from user hooks
+- Claude / Codex / Cursor / Grok session scans; Cursor uptime is today’s hook sum (`%TEMP%\AgentCord\yyyy-MM-dd-uptime.json`)
 - Tray, usage bars, settings (`%APPDATA%\AgentCord\settings.json`)
-- Idle window 1–30 min; 24h rolling work duration
+- Idle window 1–30 min (Claude / Codex / Grok); Cursor active only while a hook turn is open
 
 ## Prerequisites
 

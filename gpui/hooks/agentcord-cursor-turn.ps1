@@ -22,9 +22,10 @@ if ($null -ne $p.workspace_roots -and $p.workspace_roots.Count -gt 0) {
     $cwd = [string]$p.workspace_roots[0]
 }
 $ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-$dir = Join-Path $env:APPDATA "AgentCord"
+$dir = Join-Path $env:TEMP "AgentCord"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$day = Get-Date -Format "yyyy-MM-dd"
 $obj = @{ e = $kind; ms = $ms; id = $id; cwd = $cwd }
 $line = ($obj | ConvertTo-Json -Compress)
-Add-Content -LiteralPath (Join-Path $dir "cursor-turns.jsonl") -Value $line -Encoding utf8
+Add-Content -LiteralPath (Join-Path $dir "$day-uptime.json") -Value $line -Encoding utf8
 Done

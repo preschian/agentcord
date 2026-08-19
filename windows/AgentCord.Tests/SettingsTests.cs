@@ -36,4 +36,22 @@ public sealed class SettingsTests
         Assert.Equal(300, settings.IdleWindowSeconds);
         Assert.NotEqual(SessionActivity.IdleWindowSeconds, settings.IdleWindowSeconds);
     }
+
+    [Fact]
+    public void WindowValue_omits_resets_in()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var pending = new UsageWindow
+        {
+            Percent = 46,
+            ResetsAtMs = now + (6 * 24 * 60 + 22 * 60) * 60_000L + 30_000,
+        };
+        var text = Format.WindowValue(pending);
+        Assert.Equal("46% · 6d 22h", text);
+        Assert.DoesNotContain("resets in", text);
+
+        var due = new UsageWindow { Percent = 46, ResetsAtMs = now - 1000 };
+        Assert.Equal("46% · resets now", Format.WindowValue(due));
+        Assert.Equal("10%", Format.WindowValue(new UsageWindow { Percent = 10 }));
+    }
 }

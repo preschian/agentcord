@@ -25,6 +25,16 @@ public static class Format
         return h > 0 ? $"{h}:{m:00}:{s:00}" : $"{m}:{s:00}";
     }
 
+    /// <summary>Usage bar value. GPUI omits the words "resets in":
+    /// "46% · 6d 22h" / "46% · resets now" / "10%".</summary>
+    public static string WindowValue(UsageWindow window)
+    {
+        if (window.ResetsAtMs is not long ms)
+            return $"{window.Percent}%";
+        var left = ResetIn(ms);
+        return left == "now" ? $"{window.Percent}% · resets now" : $"{window.Percent}% · {left}";
+    }
+
     /// <summary>Time left until a reset: "6d 22h" / "2h 17m" / "45m" /
     /// "&lt;1m" / "now" once due. Mirrors the macOS countdown.</summary>
     public static string ResetIn(long resetsAtMs)

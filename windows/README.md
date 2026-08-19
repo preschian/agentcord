@@ -24,7 +24,7 @@ Discord IPC client is hand-written.
 |---|---|---|
 | Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` (`DiscordIpc.cs`) |
 | IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
-| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%TEMP%\AgentCord\yyyy-MM-dd-uptime.json` (Cursor hooks), and `%USERPROFILE%\.grok\active_sessions.json` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`) |
+| Session detection | `FSEvents` on agent data; Cursor from `$TMPDIR/AgentCord/yyyy-MM-dd-uptime.json` | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%TEMP%\AgentCord\yyyy-MM-dd-uptime.json` (Cursor hooks), and `%USERPROFILE%\.grok\active_sessions.json` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`) |
 | Presence controller | `PresenceController.swift` | `PresenceController.cs` |
 | Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs`, `CodexUsage.cs` (`codex app-server`), `CursorUsage.cs` (`auth.json` / dashboard API), and `GrokUsage.cs` (`~/.grok/auth.json` / SuperGrok billing API) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |

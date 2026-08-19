@@ -2,14 +2,10 @@
 //  CursorSession.swift
 //  AgentCord
 //
-//  Detects the currently active Cursor agent session by watching
-//  ~/.cursor/projects/**/agent-transcripts/*.jsonl and enriching with
-//  ~/.cursor/chats/**/<session-id>/meta.json (cwd, createdAtMs) plus the
-//  sibling store.db (`lastUsedModel`). Elapsed time is the summed working
-//  duration across transcripts that touched the last 24 hours. Cursor only
-//  stamps user turns, so each transcript is one wall-clock span (not a
-//  5-minute gap-sum). The on-disk schema is undocumented, so all parsing
-//  is defensive.
+//  Detects the currently active Cursor agent session from today's hook file
+//  (`$TMPDIR/AgentCord/yyyy-MM-dd-uptime.json`). Cursor is live only while a
+//  turn is open (unmatched `start`). Today's clock is the sum of start/end
+//  diffs.
 //
 
 import Foundation
@@ -17,53 +13,46 @@ import Combine
 
 final class CursorSession: ObservableObject {
 
-    /// The current active session, or nil when none is active.
     @Published private(set) var current: SessionInfo?
+    @Published private(set) var todayMs: Int64 = 0
+    @Published private(set) var isLinked = false
 
-    /// True when Cursor's local project data directory exists.
-    @Published private(set) var isInstalled: Bool
+    /// Unused: Cursor ignores the idle window and uses hook turns only.
+    var activeWindowSeconds: TimeInterval = SessionDuration.idleWindowSeconds
 
-    /// A transcript counts as active if it was modified within this window.
-    var activeWindowSeconds: TimeInterval = 60
-
-    /// Rolling window for the combined duration shown on Discord / in the UI.
-    private static let lookbackMs: Int64 = 24 * 60 * 60 * 1000
+    var isInstalled: Bool { isLinked }
 
     private let cursorHome: URL
-    private let projectsURL: URL
-    private let chatsURL: URL
     private let queue = DispatchQueue(label: "com.agentcord.cursor-session", qos: .utility)
-    private var eventStream: FSEventStreamRef?
     private var timer: DispatchSourceTimer?
-    private var scanWorkItem: DispatchWorkItem?
     private var monitoring = false
-    private var lastFullScan = Date.distantPast
-    private var lastNewestDate: Date?
-    private var lastMetaIndexRebuild = Date.distantPast
-    private static let fullScanInterval: TimeInterval = 30
-    private static let metaIndexInterval: TimeInterval = 30
-    private static let scanCoalesce: TimeInterval = 0.35
-    private var metaBySessionID: [String: URL] = [:]
     private var repoNameCache: [String: String] = [:]
-    /// Last-used model per chat `store.db`, keyed by mtime so we don't spawn
-    /// `sqlite3` on every idle scan.
-    private var modelCache: [URL: (mtime: Date?, model: String?)] = [:]
-    /// Parsed conversational timestamps per transcript, reused while mtime is
-    /// unchanged so the 24h duration sum stays cheap.
-    private var transcriptCache: [URL: TranscriptCacheEntry] = [:]
 
     init(cursorHome: URL? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         self.cursorHome = cursorHome ?? home.appendingPathComponent(".cursor", isDirectory: true)
-        projectsURL = self.cursorHome.appendingPathComponent("projects", isDirectory: true)
-        chatsURL = self.cursorHome.appendingPathComponent("chats", isDirectory: true)
-        isInstalled = FileManager.default.fileExists(atPath: projectsURL.path)
+        isLinked = Self.homeLinked(self.cursorHome)
+    }
+
+    static func defaultUptimeFile(now: Date = Date()) -> URL {
+        let dir: URL
+        if let override = ProcessInfo.processInfo.environment["AGENTCORD_CURSOR_UPTIME_DIR"],
+           !override.isEmpty {
+            dir = URL(fileURLWithPath: override, isDirectory: true)
+        } else {
+            dir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentCord", isDirectory: true)
+        }
+        let day = Self.localYMD(now)
+        return dir.appendingPathComponent("\(day)-uptime.json")
     }
 
     func start() {
         guard timer == nil else { return }
-        startFSEvents()
-        startTimer()
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now(), repeating: 1)
+        t.setEventHandler { [weak self] in self?.scan() }
+        t.resume()
+        timer = t
         queue.async { [weak self] in
             self?.monitoring = true
             self?.scan()
@@ -71,496 +60,111 @@ final class CursorSession: ObservableObject {
     }
 
     func stop() {
-        if let stream = eventStream {
-            FSEventStreamStop(stream)
-            FSEventStreamInvalidate(stream)
-            FSEventStreamRelease(stream)
-            eventStream = nil
-        }
         timer?.cancel()
         timer = nil
-        scanWorkItem?.cancel()
-        scanWorkItem = nil
         queue.async { [weak self] in
             guard let self else { return }
             self.monitoring = false
-            self.lastNewestDate = nil
-            let installed = FileManager.default.fileExists(atPath: self.projectsURL.path)
-            self.publish(installed: installed, session: nil)
+            self.publish(.init(), linked: Self.homeLinked(self.cursorHome))
         }
-    }
-
-    // MARK: File system monitoring
-
-    private func startFSEvents() {
-        var context = FSEventStreamContext(
-            version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
-            retain: nil,
-            release: nil,
-            copyDescription: nil
-        )
-        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
-            guard let info else { return }
-            let session = Unmanaged<CursorSession>.fromOpaque(info).takeUnretainedValue()
-            session.requestScan()
-        }
-        // Watch only the trees we parse. ~/.cursor also holds extensions,
-        // caches, and the IDE state DB — FileEvents there is constant noise.
-        var paths: [String] = []
-        let fm = FileManager.default
-        if fm.fileExists(atPath: projectsURL.path) { paths.append(projectsURL.path) }
-        if fm.fileExists(atPath: chatsURL.path) { paths.append(chatsURL.path) }
-        if paths.isEmpty, fm.fileExists(atPath: cursorHome.path) {
-            paths = [cursorHome.path]
-        }
-        guard !paths.isEmpty else { return }
-        guard let stream = FSEventStreamCreate(
-            kCFAllocatorDefault,
-            callback,
-            &context,
-            paths as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-            1.0,
-            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
-        ) else { return }
-
-        FSEventStreamSetDispatchQueue(stream, queue)
-        FSEventStreamStart(stream)
-        eventStream = stream
-    }
-
-    private func startTimer() {
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 5, repeating: 5)
-        t.setEventHandler { [weak self] in self?.tick() }
-        t.resume()
-        timer = t
-    }
-
-    private func requestScan() {
-        scanWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.scan() }
-        scanWorkItem = work
-        queue.asyncAfter(deadline: .now() + Self.scanCoalesce, execute: work)
-    }
-
-    private func tick() {
-        guard monitoring else { return }
-        if let newest = lastNewestDate, Date().timeIntervalSince(newest) > activeWindowSeconds {
-            lastNewestDate = nil
-            let installed = FileManager.default.fileExists(atPath: projectsURL.path)
-            publish(installed: installed, session: nil)
-            return
-        }
-        if Date().timeIntervalSince(lastFullScan) >= Self.fullScanInterval {
-            scan()
-        }
-    }
-
-    // MARK: Scanning
-
-    private struct SessionMeta {
-        var cwd: String?
-        var createdAtMs: Int64?
-        var updatedAtMs: Int64?
-        var model: String?
-    }
-
-    private struct TranscriptCacheEntry {
-        var mtime: Date
-        var cursor = JSONLCursor()
-        /// Epoch ms from `<timestamp>` tags embedded in user messages.
-        var conversationalStampsMs: [Int64] = []
-        var createdAtMs: Int64?
-        var updatedAtMs: Int64?
     }
 
     private func scan() {
         guard monitoring else { return }
-        lastFullScan = Date()
-        let installed = FileManager.default.fileExists(atPath: projectsURL.path)
-        guard installed else {
-            publish(installed: false, session: nil)
-            return
-        }
-
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: projectsURL,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            publish(installed: true, session: nil)
-            return
-        }
-
-        var files: [(url: URL, date: Date)] = []
-        var newest: (url: URL, date: Date)?
-        for case let url as URL in enumerator {
-            guard url.pathExtension == "jsonl",
-                  url.pathComponents.contains("agent-transcripts") else { continue }
-            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                ?? .distantPast
-            files.append((url, date))
-            if newest == nil || date > newest!.date {
-                newest = (url, date)
-            }
-        }
-
-        guard let newest else {
-            lastNewestDate = nil
-            publish(installed: true, session: nil)
-            return
-        }
-        lastNewestDate = newest.date
-        if Date().timeIntervalSince(newest.date) > activeWindowSeconds {
-            publish(installed: true, session: nil)
-            return
-        }
-
-        rebuildMetaIndexIfNeeded(requiredSessionID: newest.url.deletingPathExtension().lastPathComponent)
-
-        // Combined working time across every Cursor transcript that touched the
-        // last 24 hours — Discord's elapsed timer then shows the rolling sum,
-        // not just the age of the current chat.
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let cutoffMs = nowMs - Self.lookbackMs
-        let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoffMs) / 1000)
-        // Skip historical transcripts before parsing — otherwise a long-lived
-        // Cursor install re-reads every JSONL on each active scan.
-        let recentFiles = files.filter { $0.date >= cutoffDate }
-        var totalActiveMs: Int64 = 0
-        var activeLastMs: Int64?
-
-        for file in recentFiles {
-            let entry = transcriptAggregate(url: file.url, mtime: file.date)
-            let (activeMs, lastMs) = Self.activeDuration(
-                conversationalStamps: entry.conversationalStampsMs,
-                createdAtMs: entry.createdAtMs,
-                updatedAtMs: entry.updatedAtMs,
-                cutoffMs: cutoffMs,
-                nowMs: nowMs
-            )
-            totalActiveMs += activeMs
-            if file.url == newest.url {
-                activeLastMs = lastMs
-            }
-        }
-
-        let recentURLs = Set(recentFiles.map(\.url))
-        transcriptCache = transcriptCache.filter { recentURLs.contains($0.key) }
-
-        // Newest transcript is already inside the 60s active window, so the
-        // open gap since the last user stamp is the current agent turn — not
-        // idle. Capping it at 5 minutes made Discord's timer snap back to 0.
-        var elapsedMs = totalActiveMs
-        if let last = activeLastMs {
-            let tail = nowMs - last
-            if tail > 0 { elapsedMs += tail }
-        }
-        let startMs = nowMs - elapsedMs
-
-        let sessionID = newest.url.deletingPathExtension().lastPathComponent
-        let meta = readMeta(sessionID: sessionID, includeModel: true)
-        let activity = metaActivityDate(meta: meta, transcriptModified: newest.date)
-        let projectName = resolveProjectName(cwd: meta?.cwd, transcriptURL: newest.url)
-
-        let info = SessionInfo(
-            projectName: projectName.isEmpty ? "Cursor" : projectName,
-            model: meta?.model.map(Self.prettyModel),
-            startEpochMs: startMs,
-            totalTokens: 0,
-            lastModified: activity,
-            agent: .cursor
-        )
+        let file = Self.defaultUptimeFile()
+        let scan = scanAt(path: file, nowMs: nowMs)
         guard monitoring else { return }
-        publish(installed: true, session: info)
+        publish(scan, linked: Self.homeLinked(cursorHome))
     }
 
-    private func publish(installed: Bool, session: SessionInfo?) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            if self.isInstalled != installed { self.isInstalled = installed }
-            if self.current != session { self.current = session }
+    func scanAt(path: URL, nowMs: Int64) -> AgentScan {
+        let day = parseDay(path: path, nowMs: nowMs)
+        if !day.open {
+            return AgentScan(todayMs: day.totalMs, session: nil)
         }
+        let project = day.project.isEmpty ? "Cursor" : day.project
+        return AgentScan(todayMs: day.totalMs, session: SessionInfo(
+            projectName: project,
+            model: nil,
+            startEpochMs: nowMs - day.totalMs,
+            totalTokens: 0,
+            lastModified: Date(timeIntervalSince1970: TimeInterval(nowMs) / 1000),
+            agent: .cursor
+        ))
     }
 
-    // MARK: 24h duration
-
-    private func transcriptAggregate(url: URL, mtime: Date) -> TranscriptCacheEntry {
-        // Seeding a miss with the current mtime makes the equality check a
-        // false hit, so the JSONL is never parsed and Discord's start stays
-        // "now" (elapsed 00:00).
-        if let cached = transcriptCache[url], cached.mtime == mtime {
-            return cached
-        }
-        var entry = transcriptCache[url] ?? TranscriptCacheEntry(mtime: mtime)
-
-        let sessionID = url.deletingPathExtension().lastPathComponent
-        let meta = readMeta(sessionID: sessionID, includeModel: false)
-        let pulled = entry.cursor.pullLines(from: url)
-        if pulled.didReset { entry.conversationalStampsMs.removeAll(keepingCapacity: true) }
-        for line in pulled.lines {
-            entry.conversationalStampsMs.append(contentsOf: Self.timestamps(inJSONLLine: line))
-        }
-        entry.conversationalStampsMs.sort()
-        entry.mtime = mtime
-        entry.createdAtMs = meta?.createdAtMs
-        entry.updatedAtMs = meta?.updatedAtMs
-        transcriptCache[url] = entry
-        return entry
+    private struct Day {
+        var totalMs: Int64 = 0
+        var open = false
+        var project = ""
     }
 
-    /// Working time inside the lookback window for one transcript.
-    private static func activeDuration(
-        conversationalStamps: [Int64],
-        createdAtMs: Int64?,
-        updatedAtMs: Int64?,
-        cutoffMs: Int64,
-        nowMs: Int64
-    ) -> (activeMs: Int64, lastMs: Int64?) {
-        let inWindowConversational = conversationalStamps.filter { $0 >= cutoffMs && $0 <= nowMs }
-
-        // No user-turn timestamps — fall back to wall-clock overlap of the
-        // chat's created/updated range with the lookback window.
-        if inWindowConversational.isEmpty {
-            guard let createdAtMs, let updatedAtMs else { return (0, nil) }
-            let start = max(createdAtMs, cutoffMs)
-            let end = min(updatedAtMs, nowMs)
-            guard end > start else { return (0, nil) }
-            return (end - start, end)
-        }
-
-        // User-turn stamps only (often >5 min apart). One span per transcript
-        // so a new message does not snap elapsed back to 00:00.
-        var start = inWindowConversational.min() ?? 0
-        let lastStamp = inWindowConversational.max() ?? start
-        if let createdAtMs, createdAtMs >= cutoffMs && createdAtMs <= nowMs, createdAtMs < start {
-            start = createdAtMs
-        }
-        var endMs = lastStamp
-        if let updatedAtMs {
-            endMs = max(lastStamp, min(updatedAtMs, nowMs))
-        }
-        guard endMs > start else { return (0, endMs) }
-        return (endMs - start, endMs)
-    }
-
-    private static let timestampRegex: NSRegularExpression = {
-        // Cursor embeds a human-readable stamp in user turns, e.g.
-        // <timestamp>Tuesday, Jul 28, 2026, 1:13 PM (UTC+7)</timestamp>
-        try! NSRegularExpression(pattern: #"<timestamp>(.*?)</timestamp>"#, options: [.dotMatchesLineSeparators])
-    }()
-
-    private static func timestamps(inJSONLLine line: String) -> [Int64] {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              let data = trimmed.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let message = obj["message"] as? [String: Any]
-        else { return [] }
-
-        var texts: [String] = []
-        if let content = message["content"] as? String {
-            texts.append(content)
-        } else if let content = message["content"] as? [[String: Any]] {
-            for part in content {
-                if let text = part["text"] as? String { texts.append(text) }
+    private func parseDay(path: URL, nowMs: Int64) -> Day {
+        guard let text = try? String(contentsOf: path, encoding: .utf8) else { return Day() }
+        var open: [String: [Int64]] = [:]
+        var total: Int64 = 0
+        var project = ""
+        for raw in text.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
+            guard !line.isEmpty,
+                  let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let kind = obj["e"] as? String
+            else { continue }
+            guard let ms = Self.int64(obj["ms"]) else { continue }
+            let id = obj["id"] as? String ?? ""
+            if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
+                project = repoName(forCwd: cwd)
+            }
+            if kind == "start" {
+                open[id, default: []].append(ms)
+            } else if kind == "end", var ends = open[id], !ends.isEmpty {
+                let start = ends.removeLast()
+                open[id] = ends
+                if ms > start { total += ms - start }
             }
         }
-
-        var result: [Int64] = []
-        for text in texts {
-            let range = NSRange(text.startIndex..., in: text)
-            timestampRegex.enumerateMatches(in: text, range: range) { match, _, _ in
-                guard let match,
-                      let capture = Range(match.range(at: 1), in: text),
-                      let ms = parseEmbeddedTimestamp(String(text[capture]))
-                else { return }
-                result.append(ms)
+        var live = false
+        for starts in open.values {
+            for start in starts {
+                live = true
+                if nowMs > start { total += nowMs - start }
             }
         }
-        return result
+        return Day(totalMs: max(0, total), open: live, project: project)
     }
 
-    private static func parseEmbeddedTimestamp(_ raw: String) -> Int64? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let utc = trimmed.range(of: "(UTC", options: [.backwards]),
-              trimmed.hasSuffix(")")
-        else { return nil }
+    private static func homeLinked(_ cursorHome: URL) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: cursorHome.appendingPathComponent("projects", isDirectory: true).path)
+            || fm.fileExists(atPath: cursorHome.appendingPathComponent("chats", isDirectory: true).path)
+    }
 
-        let offsetBody = trimmed[utc.upperBound..<trimmed.index(before: trimmed.endIndex)]
-        guard let offsetSeconds = parseUTCOffsetSeconds(offsetBody) else { return nil }
-        let body = trimmed[..<utc.lowerBound].trimmingCharacters(in: .whitespaces)
+    private static func localYMD(_ date: Date) -> String {
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
 
-        for formatter in stampFormatters {
-            formatter.timeZone = TimeZone(secondsFromGMT: offsetSeconds)
-            if let date = formatter.date(from: String(body)) {
-                return Int64(date.timeIntervalSince1970 * 1000)
-            }
-        }
+    private static func int64(_ value: Any?) -> Int64? {
+        if let n = value as? Int64 { return n }
+        if let n = value as? Int { return Int64(n) }
+        if let n = value as? Double { return Int64(n) }
+        if let n = value as? NSNumber { return n.int64Value }
         return nil
     }
 
-    /// DateFormatter allocation is expensive; reuse across every timestamp in
-    /// a transcript. Only touched from the session scan queue.
-    private static let stampFormatters: [DateFormatter] = {
-        ["EEEE, MMM d, yyyy, h:mm a", "EEEE, MMMM d, yyyy, h:mm a"].map { format in
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.dateFormat = format
-            return formatter
+    private func publish(_ scan: AgentScan, linked: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.isLinked != linked { self.isLinked = linked }
+            if self.todayMs != scan.todayMs { self.todayMs = scan.todayMs }
+            if self.current != scan.session { self.current = scan.session }
         }
-    }()
-
-    /// Parses Cursor's UTC offset forms: `+7`, `-3`, `+05:30`, `+5:45`, `-3:30`.
-    private static func parseUTCOffsetSeconds(_ raw: Substring) -> Int? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let signChar = trimmed.first, signChar == "+" || signChar == "-" else { return nil }
-        let sign = signChar == "-" ? -1 : 1
-        let body = trimmed.dropFirst()
-        let parts = body.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        guard let hours = Int(parts[0]), hours >= 0, hours <= 18 else { return nil }
-        let minutes: Int
-        if parts.count == 2 {
-            guard let parsed = Int(parts[1]), (0...59).contains(parsed) else { return nil }
-            minutes = parsed
-        } else {
-            minutes = 0
-        }
-        return sign * (hours * 3600 + minutes * 60)
-    }
-
-    // MARK: Meta lookup
-
-    private func readMeta(sessionID: String, includeModel: Bool) -> SessionMeta? {
-        guard let url = metaBySessionID[sessionID],
-              let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-
-        return SessionMeta(
-            cwd: obj["cwd"] as? String,
-            createdAtMs: obj["createdAtMs"] as? Int64 ?? (obj["createdAtMs"] as? Int).map(Int64.init),
-            updatedAtMs: obj["updatedAtMs"] as? Int64 ?? (obj["updatedAtMs"] as? Int).map(Int64.init),
-            model: includeModel ? readLastUsedModel(chatDir: url.deletingLastPathComponent()) : nil
-        )
-    }
-
-    /// Cursor keeps the chat's last model in `store.db` meta (hex-encoded JSON
-    /// with `lastUsedModel`), not in meta.json. Read via the sqlite3 CLI the
-    /// same way CursorUsage reads the auth state DB — no libsqlite link.
-    private func readLastUsedModel(chatDir: URL) -> String? {
-        let dbURL = chatDir.appendingPathComponent("store.db")
-        guard FileManager.default.fileExists(atPath: dbURL.path) else { return nil }
-
-        let dbMtime = (try? dbURL.resourceValues(forKeys: [.contentModificationDateKey]))
-            .flatMap(\.contentModificationDate)
-        let walURL = URL(fileURLWithPath: dbURL.path + "-wal")
-        let walMtime = (try? walURL.resourceValues(forKeys: [.contentModificationDateKey]))
-            .flatMap(\.contentModificationDate)
-        let stamp = [dbMtime, walMtime].compactMap { $0 }.max()
-
-        if let cached = modelCache[dbURL], cached.mtime == stamp {
-            return cached.model
-        }
-
-        let model = Self.queryLastUsedModel(dbPath: dbURL.path)
-        modelCache[dbURL] = (stamp, model)
-        return model
-    }
-
-    private static func queryLastUsedModel(dbPath: String) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [
-            dbPath,
-            "SELECT value FROM meta WHERE key = 0 LIMIT 1;"
-        ]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0,
-              let hex = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              !hex.isEmpty,
-              let jsonData = Data(hexString: hex),
-              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let model = obj["lastUsedModel"] as? String,
-              !model.isEmpty
-        else { return nil }
-        return model
-    }
-
-    /// `grok-4.5` → `Grok 4.5`, `composer-2.5-fast` → `Composer 2.5 Fast`,
-    /// `default` → `Auto` (Cursor's automatic model picker).
-    static func prettyModel(_ raw: String) -> String {
-        let lower = raw.lowercased()
-        if lower == "default" { return "Auto" }
-
-        var value = raw
-        if lower.hasPrefix("cursor-") {
-            value = String(raw.dropFirst("cursor-".count))
-        }
-
-        return value.split(separator: "-").map { part -> String in
-            let s = String(part)
-            if s.first?.isNumber == true { return s }
-            if s.lowercased() == "gpt" { return "GPT" }
-            return s.prefix(1).uppercased() + s.dropFirst()
-        }.joined(separator: " ")
-    }
-
-
-    private func rebuildMetaIndexIfNeeded(requiredSessionID: String) {
-        let missing = metaBySessionID[requiredSessionID] == nil
-        let stale = Date().timeIntervalSince(lastMetaIndexRebuild) >= Self.metaIndexInterval
-        guard missing || stale || metaBySessionID.isEmpty else { return }
-        rebuildMetaIndex()
-    }
-
-    private func rebuildMetaIndex() {
-        lastMetaIndexRebuild = Date()
-        metaBySessionID.removeAll(keepingCapacity: true)
-        guard let enumerator = FileManager.default.enumerator(
-            at: chatsURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        for case let url as URL in enumerator where url.lastPathComponent == "meta.json" {
-            let sessionID = url.deletingLastPathComponent().lastPathComponent
-            if !sessionID.isEmpty { metaBySessionID[sessionID] = url }
-        }
-    }
-
-    private func metaActivityDate(meta: SessionMeta?, transcriptModified: Date) -> Date {
-        if let updatedMs = meta?.updatedAtMs {
-            return Date(timeIntervalSince1970: Double(updatedMs) / 1000)
-        }
-        return transcriptModified
-    }
-
-    // MARK: Project name
-
-    private func resolveProjectName(cwd: String?, transcriptURL: URL) -> String {
-        if let cwd, !cwd.isEmpty { return repoName(forCwd: cwd) }
-        let encoded = transcriptURL.pathComponents.first { $0.hasPrefix("Users-") }
-            ?? transcriptURL.pathComponents.reversed().first { $0 != "agent-transcripts" && $0 != transcriptURL.deletingPathExtension().lastPathComponent }
-            ?? ""
-        let parts = encoded.split(separator: "-").filter { !$0.isEmpty }
-        return parts.last.map(String.init) ?? encoded
     }
 
     private func repoName(forCwd cwd: String) -> String {
         if let cached = repoNameCache[cwd] { return cached }
-
         var name = (cwd as NSString).lastPathComponent
         if let remote = runGit(["-C", cwd, "config", "--get", "remote.origin.url"]) {
             var base = (remote as NSString).lastPathComponent
@@ -570,7 +174,6 @@ final class CursorSession: ObservableObject {
             let base = (top as NSString).lastPathComponent
             if !base.isEmpty { name = base }
         }
-
         repoNameCache[cwd] = name
         return name
     }
@@ -589,22 +192,20 @@ final class CursorSession: ObservableObject {
         let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (output?.isEmpty == false) ? output : nil
     }
-}
 
-private extension Data {
-    /// Decode an even-length hex string into raw bytes. Returns nil on any
-    /// malformed nibble so callers can treat bad Cursor store rows as missing.
-    init?(hexString: String) {
-        let hex = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard hex.count.isMultiple(of: 2), !hex.isEmpty else { return nil }
-        var data = Data(capacity: hex.count / 2)
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
-            data.append(byte)
-            index = next
+    /// `grok-4.5` → `Grok 4.5`, `default` → `Auto`.
+    static func prettyModel(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower == "default" { return "Auto" }
+        var value = raw
+        if lower.hasPrefix("cursor-") {
+            value = String(raw.dropFirst("cursor-".count))
         }
-        self = data
+        return value.split(separator: "-").map { part -> String in
+            let s = String(part)
+            if s.first?.isNumber == true { return s }
+            if s.lowercased() == "gpt" { return "GPT" }
+            return s.prefix(1).uppercased() + s.dropFirst()
+        }.joined(separator: " ")
     }
 }

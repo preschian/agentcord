@@ -18,6 +18,11 @@ final class PresenceController: ObservableObject {
     @Published private(set) var currentSession: SessionInfo?
     @Published private(set) var activeAgent: AgentKind?
 
+    @Published private(set) var claudeTodayMs: Int64 = 0
+    @Published private(set) var codexTodayMs: Int64 = 0
+    @Published private(set) var cursorTodayMs: Int64 = 0
+    @Published private(set) var grokTodayMs: Int64 = 0
+
     let session = ClaudeSession()
     let codexSession = CodexSession()
     let cursorSession = CursorSession()
@@ -42,23 +47,39 @@ final class PresenceController: ObservableObject {
         ipc.onReady = { [weak self] in self?.lastError = nil }
 
         session.$current
+            .combineLatest(session.$todayMs)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.selectActiveSession() }
+            .sink { [weak self] _, today in
+                self?.claudeTodayMs = today
+                self?.selectActiveSession()
+            }
             .store(in: &cancellables)
 
         codexSession.$current
+            .combineLatest(codexSession.$todayMs)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.selectActiveSession() }
+            .sink { [weak self] _, today in
+                self?.codexTodayMs = today
+                self?.selectActiveSession()
+            }
             .store(in: &cancellables)
 
         cursorSession.$current
+            .combineLatest(cursorSession.$todayMs)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.selectActiveSession() }
+            .sink { [weak self] _, today in
+                self?.cursorTodayMs = today
+                self?.selectActiveSession()
+            }
             .store(in: &cancellables)
 
         grokSession.$current
+            .combineLatest(grokSession.$todayMs)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.selectActiveSession() }
+            .sink { [weak self] _, today in
+                self?.grokTodayMs = today
+                self?.selectActiveSession()
+            }
             .store(in: &cancellables)
 
         // Display-affecting settings (toggles, DND, image keys) only need a
@@ -126,10 +147,11 @@ final class PresenceController: ObservableObject {
     }
 
     private func applyIdleWindow() {
-        session.activeWindowSeconds = settings.idleWindowSeconds
-        codexSession.activeWindowSeconds = settings.idleWindowSeconds
-        cursorSession.activeWindowSeconds = settings.idleWindowSeconds
-        grokSession.activeWindowSeconds = settings.idleWindowSeconds
+        let idle = SessionDuration.idleWindowSeconds
+        session.activeWindowSeconds = idle
+        codexSession.activeWindowSeconds = idle
+        cursorSession.activeWindowSeconds = idle
+        grokSession.activeWindowSeconds = idle
     }
 
     /// Only watch agents the user has enabled. Each scanner walks a large
@@ -166,10 +188,6 @@ final class PresenceController: ObservableObject {
     private func rebuild() {
         guard settings.presenceEnabled else { return }
 
-        if settings.doNotDisturb {
-            scheduleClear()
-            return
-        }
         guard let info = currentSession else {
             scheduleClear()
             return
@@ -227,6 +245,24 @@ final class PresenceController: ObservableObject {
         label: "AgentCord on GitHub",
         url: "https://github.com/preschian/agentcord"
     )
+
+    func todayMs(for agent: AgentKind) -> Int64 {
+        switch agent {
+        case .claude: return claudeTodayMs
+        case .codex: return codexTodayMs
+        case .cursor: return cursorTodayMs
+        case .grok: return grokTodayMs
+        }
+    }
+
+    func isLinked(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: return session.isLinked
+        case .codex: return codexSession.isLinked
+        case .cursor: return cursorSession.isLinked
+        case .grok: return grokSession.isLinked
+        }
+    }
 
     static func formatTokens(_ count: Int) -> String {
         if count >= 1_000_000 {

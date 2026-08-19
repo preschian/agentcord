@@ -22,7 +22,6 @@ final class SettingsStore: ObservableObject {
         static let showMenuBarStatus = "showMenuBarStatus"
         static let showUsageInMenuBar = "showUsageInMenuBar"
         static let unifiedUsage = "unifiedUsage"
-        static let doNotDisturb = "doNotDisturb"
         static let preventSleep = "preventSleep"
         static let smallImageKey = "smallImageKey"
         static let activityType = "activityType"
@@ -50,7 +49,6 @@ final class SettingsStore: ObservableObject {
     /// Show the summary card covering every connected agent above the agent
     /// list. Each agent's own windows still live in its expanded row.
     @Published var unifiedUsage: Bool { didSet { defaults.set(unifiedUsage, forKey: Key.unifiedUsage) } }
-    @Published var doNotDisturb: Bool { didSet { defaults.set(doNotDisturb, forKey: Key.doNotDisturb) } }
     @Published var preventSleep: Bool { didSet { defaults.set(preventSleep, forKey: Key.preventSleep) } }
     @Published var smallImageKey: String { didSet { defaults.set(smallImageKey, forKey: Key.smallImageKey) } }
     @Published var activityType: Int { didSet { defaults.set(activityType, forKey: Key.activityType) } }
@@ -76,7 +74,6 @@ final class SettingsStore: ObservableObject {
             Key.showMenuBarStatus: true,
             Key.showUsageInMenuBar: false,
             Key.unifiedUsage: true,
-            Key.doNotDisturb: false,
             Key.preventSleep: false,
             Key.smallImageKey: "discord-presence-icon",
             Key.activityType: 0,
@@ -97,7 +94,6 @@ final class SettingsStore: ObservableObject {
         showMenuBarStatus = defaults.bool(forKey: Key.showMenuBarStatus)
         showUsageInMenuBar = defaults.bool(forKey: Key.showUsageInMenuBar)
         unifiedUsage = defaults.bool(forKey: Key.unifiedUsage)
-        doNotDisturb = defaults.bool(forKey: Key.doNotDisturb)
         preventSleep = defaults.bool(forKey: Key.preventSleep)
         smallImageKey = defaults.string(forKey: Key.smallImageKey) ?? "discord-presence-icon"
         activityType = defaults.integer(forKey: Key.activityType)

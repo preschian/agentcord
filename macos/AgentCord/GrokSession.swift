@@ -7,8 +7,9 @@
 //  ~/.grok/sessions/. Grok stores sessions grouped by URL-encoded cwd rather
 //  than a single transcript, so activity comes from summary.json last_active_at
 //  plus event-log mtimes. A live PID is not enough: an idle TUI stays idle.
-//  Elapsed time is the summed working duration across sessions that touched
-//  the last 24 hours (idle gaps excluded).
+//  Elapsed time is today's working duration (idle gaps excluded). An open
+//  turn (events.jsonl last type is not turn_ended) stays live even if files
+//  pause mid-think.
 //
 
 import Foundation
@@ -18,12 +19,15 @@ final class GrokSession: ObservableObject {
 
     /// The current active session, or nil when none is active.
     @Published private(set) var current: SessionInfo?
+    @Published private(set) var todayMs: Int64 = 0
 
     /// True when the user has signed into Grok (auth.json has at least one entry).
     @Published private(set) var isAuthenticated = false
+    /// True when auth.json or active_sessions.json exists.
+    @Published private(set) var isLinked = false
 
     /// A session counts as active if it was touched within this window.
-    var activeWindowSeconds: TimeInterval = 60
+    var activeWindowSeconds: TimeInterval = SessionDuration.idleWindowSeconds
 
     private let grokHome: URL
     private let queue = DispatchQueue(label: "com.agentcord.grok.scan", qos: .utility)
@@ -41,12 +45,15 @@ final class GrokSession: ObservableObject {
     /// period without rescanning every historical summary.
     private var lastKnownSession: (info: SessionInfo, activity: Date)?
     /// Incremental event-log stamps per session dir, reused while mtime is
-    /// unchanged so the 24h duration sum stays cheap.
+    /// unchanged so the daily duration sum stays cheap.
     private var durationCache: [URL: DurationCacheEntry] = [:]
+    private var eventTail: [URL: (mtime: Date?, length: Int64, type: String?)] = [:]
 
     init(grokHome: URL? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         self.grokHome = grokHome ?? home.appendingPathComponent(".grok", isDirectory: true)
+        isLinked = FileManager.default.fileExists(atPath: self.grokHome.appendingPathComponent("auth.json").path)
+            || FileManager.default.fileExists(atPath: self.grokHome.appendingPathComponent("active_sessions.json").path)
     }
 
     func start() {
@@ -73,7 +80,7 @@ final class GrokSession: ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             self.monitoring = false
-            self.publish(authenticated: self.readAuthenticated(), session: nil)
+            self.publish(authenticated: self.readAuthenticated(), scan: .init())
         }
     }
 
@@ -147,7 +154,9 @@ final class GrokSession: ObservableObject {
             let summaryURL = findSummary(sessionID: entry.sessionID)
             let summary = summaryURL.flatMap { readSummary($0) }
             let activity = activityDate(summary: summary, summaryURL: summaryURL, fallback: entry.openedAt)
-            if now.timeIntervalSince(activity) > activeWindowSeconds { continue }
+            let liveNow = now.timeIntervalSince(activity) <= activeWindowSeconds
+                || isOpenTurn(summaryURL?.deletingLastPathComponent())
+            guard liveNow else { continue }
             let signals = summaryURL.flatMap { readSignals($0.deletingLastPathComponent()) }
             let tokens = signals?.contextTokensUsed ?? 0
             let modelRaw = summary?.modelID ?? signals?.primaryModelID
@@ -157,12 +166,13 @@ final class GrokSession: ObservableObject {
                 model: modelRaw.map(Self.prettyModel),
                 startEpochMs: 0,
                 totalTokens: tokens,
-                lastModified: activity,
+                lastModified: liveNow && now.timeIntervalSince(activity) > activeWindowSeconds
+                    ? now : activity,
                 contextWindowTokens: signals?.contextWindowTokens,
                 agent: .grok
             )
-            if best == nil || activity > best!.activity {
-                best = (info, activity)
+            if best == nil || info.lastModified > best!.activity {
+                best = (info, info.lastModified)
             }
         }
 
@@ -179,23 +189,31 @@ final class GrokSession: ObservableObject {
             }
         }
 
-        if var best {
-            best.info = withRollingStart(best.info)
-            lastKnownSession = best
-            guard monitoring else { return }
-            publish(authenticated: auth, session: best.info)
-            return
+        let nowMs = Int64(now.timeIntervalSince1970 * 1000)
+        let (activeMs, lastMs) = rollingActive(nowMs: nowMs)
+        let isLive = best != nil
+        let todayMs = SessionDuration.withLiveTail(
+            totalActiveMs: activeMs, lastMs: lastMs, nowMs: nowMs, live: isLive)
+        var scan = AgentScan(todayMs: todayMs, session: nil)
+        if let found = best {
+            var info = found.info
+            info.startEpochMs = nowMs - todayMs
+            lastKnownSession = (info, found.activity)
+            scan.session = info
         }
-
         guard monitoring else { return }
-        publish(authenticated: auth, session: nil)
+        publish(authenticated: auth, scan: scan)
     }
 
-    private func publish(authenticated: Bool, session: SessionInfo?) {
+    private func publish(authenticated: Bool, scan: AgentScan) {
+        let linked = FileManager.default.fileExists(atPath: grokHome.appendingPathComponent("auth.json").path)
+            || FileManager.default.fileExists(atPath: grokHome.appendingPathComponent("active_sessions.json").path)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.isAuthenticated != authenticated { self.isAuthenticated = authenticated }
-            if self.current != session { self.current = session }
+            if self.isLinked != linked { self.isLinked = linked }
+            if self.todayMs != scan.todayMs { self.todayMs = scan.todayMs }
+            if self.current != scan.session { self.current = scan.session }
         }
     }
 
@@ -343,7 +361,60 @@ final class GrokSession: ObservableObject {
                 consider(dir.appendingPathComponent(name).resourceModificationDate)
             }
         }
+        if let best, Date().timeIntervalSince(best) <= activeWindowSeconds {
+            return best
+        }
+        // Mid-turn thinking can pause file writes. A live events.jsonl whose
+        // last event is not turn_ended still counts as work.
+        if isOpenTurn(summaryURL?.deletingLastPathComponent()) {
+            return Date()
+        }
         return best ?? fallback ?? .distantPast
+    }
+
+    private func isOpenTurn(_ sessionDir: URL?) -> Bool {
+        guard let sessionDir else { return false }
+        let type = lastEventType(sessionDir.appendingPathComponent("events.jsonl"))
+        guard let type, !type.isEmpty else { return false }
+        let lower = type.lowercased()
+        return lower != "turn_ended" && lower != "session_end" && lower != "session_ended"
+    }
+
+    private func lastEventType(_ url: URL) -> String? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let mtime = url.resourceModificationDate
+        let length = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?
+            .int64Value ?? 0
+        if let cached = eventTail[url], cached.mtime == mtime, cached.length == length {
+            return cached.type
+        }
+        let type = Self.tailEventType(url: url, length: length)
+        eventTail[url] = (mtime, length, type)
+        return type
+    }
+
+    /// Last complete JSONL event `type`, reading only the tail.
+    private static func tailEventType(url: URL, length: Int64) -> String? {
+        guard length > 0, let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let take = min(length, 8192)
+        do {
+            try handle.seek(toOffset: UInt64(length - take))
+        } catch {
+            return nil
+        }
+        let data = (try? handle.readToEnd()) ?? Data()
+        guard !data.isEmpty, var text = String(data: data, encoding: .utf8) else { return nil }
+        if length > take, let cut = text.firstIndex(of: "\n") {
+            text = String(text[text.index(after: cut)...])
+        }
+        let last = text.split(whereSeparator: \.isNewline).last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        guard let last,
+              let data = String(last).data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = obj["type"] as? String
+        else { return nil }
+        return type
     }
 
     private func newestRecentSession(within window: TimeInterval) -> (SessionInfo, Date)? {
@@ -383,23 +454,15 @@ final class GrokSession: ObservableObject {
         encoded.removingPercentEncoding ?? encoded
     }
 
-    // MARK: 24h duration
+    // MARK: Daily duration
 
-    private func withRollingStart(_ info: SessionInfo) -> SessionInfo {
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let (activeMs, lastMs) = rollingActive(nowMs: nowMs)
-        var copy = info
-        copy.startEpochMs = SessionDuration.startMs(totalActiveMs: activeMs, lastMs: lastMs, nowMs: nowMs)
-        return copy
-    }
-
-    /// Combined working time across every Grok session that touched the last
-    /// 24 hours. Summaries are stat'd first so historical dirs are skipped
-    /// without opening their event logs.
+    /// Combined working time across every Grok session that touched today.
+    /// Summaries are stat'd first so historical dirs are skipped without
+    /// opening their event logs.
     private func rollingActive(nowMs: Int64) -> (Int64, Int64?) {
         if !hasBuiltSummaryIndex { rebuildSummaryIndex() }
 
-        let cutoffMs = nowMs - SessionDuration.lookbackMs
+        let cutoffMs = SessionDuration.localMidnightMs()
         let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoffMs) / 1000)
         var total: Int64 = 0
         var newestLast: Int64?
@@ -464,9 +527,10 @@ final class GrokSession: ObservableObject {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let data = trimmed.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let ts = obj["ts"] as? String
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
+        let ts = (obj["timestamp"] as? String) ?? (obj["ts"] as? String)
+        guard let ts else { return nil }
         let parsed = isoWithFraction.date(from: ts) ?? isoPlain.date(from: ts)
         return parsed.map { Int64($0.timeIntervalSince1970 * 1000) }
     }

@@ -4,10 +4,8 @@
 //
 //  Detects the currently active Claude Code session by watching
 //  ~/.claude/projects/ and parsing the most recently modified .jsonl
-//  transcript. Tokens are summed across transcripts touched today (local
-//  calendar day). Elapsed time is the summed working duration across
-//  transcripts that touched the last 24 hours (idle gaps excluded), matching
-//  Grok / Codex / Cursor. The transcript schema is undocumented, so all
+//  transcript. Tokens and elapsed time are both today's local calendar day
+//  (idle gaps excluded). The transcript schema is undocumented, so all
 //  parsing is defensive: malformed or unexpected lines are skipped, never fatal.
 //
 
@@ -18,9 +16,13 @@ final class ClaudeSession: ObservableObject {
 
     /// The current active session, or nil when none is active.
     @Published private(set) var current: SessionInfo?
+    /// Today's summed work, including a live tail only while `current` is set.
+    @Published private(set) var todayMs: Int64 = 0
+    /// True when `~/.claude/projects` exists.
+    @Published private(set) var isLinked = false
 
     /// A transcript counts as active if it was modified within this window.
-    var activeWindowSeconds: TimeInterval = 60
+    var activeWindowSeconds: TimeInterval = SessionDuration.idleWindowSeconds
 
     private let projectsURL: URL
     private let queue = DispatchQueue(label: "com.agentcord.session.scan", qos: .utility)
@@ -64,7 +66,7 @@ final class ClaudeSession: ObservableObject {
         queue.async { [weak self] in
             self?.monitoring = false
             self?.lastNewestDate = nil
-            self?.publish(nil)
+            self?.publish(.init(), linked: FileManager.default.fileExists(atPath: self?.projectsURL.path ?? ""))
         }
     }
 
@@ -122,7 +124,7 @@ final class ClaudeSession: ObservableObject {
         guard monitoring else { return }
         if let newest = lastNewestDate, Date().timeIntervalSince(newest) > activeWindowSeconds {
             lastNewestDate = nil
-            publish(nil)
+            scan()
             return
         }
         if Date().timeIntervalSince(lastFullScan) >= Self.fullScanInterval {
@@ -136,44 +138,35 @@ final class ClaudeSession: ObservableObject {
         guard monitoring else { return }
         lastFullScan = Date()
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
+        let linked = fm.fileExists(atPath: projectsURL.path)
+        guard linked, let enumerator = fm.enumerator(
             at: projectsURL,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
-            publish(nil)
+            lastNewestDate = nil
+            publish(.init(), linked: linked)
             return
         }
 
         var files: [(url: URL, date: Date)] = []
-        var newest: (url: URL, date: Date)?
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             files.append((url, date))
-            if newest == nil || date > newest!.date {
-                newest = (url, date)
-            }
         }
 
-        guard let newest else {
+        guard !files.isEmpty else {
             lastNewestDate = nil
-            publish(nil)
-            return
-        }
-        // A fresh mtime is only a hint to parse. Orca/Claude Code can append a
-        // timestamp-less `bridge-session` heartbeat and bump mtime on a dead
-        // workspace; activity must come from parseable event timestamps.
-        lastNewestDate = newest.date
-        if Date().timeIntervalSince(newest.date) > activeWindowSeconds {
-            publish(nil)
+            publish(.init(), linked: true)
             return
         }
 
-        // Tokens stay on the local calendar day. Elapsed time is a rolling 24h
-        // sum of working gaps, same window as Grok / Codex / Cursor.
+        // Tokens stay on the local calendar day. Elapsed time is today's
+        // sum of working gaps. Activity (idle) prefers parsed event timestamps
+        // over filesystem mtime so a heartbeat that only bumps mtime stays idle.
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let cutoffMs = nowMs - SessionDuration.lookbackMs
-        let dayStartMs = Int64(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1000)
+        let cutoffMs = SessionDuration.localMidnightMs()
+        let dayStartMs = cutoffMs
 
         var totalTokensToday = 0
         var totalActiveMs: Int64 = 0
@@ -199,29 +192,29 @@ final class ClaudeSession: ObservableObject {
         let liveURLs = Set(files.map { $0.url })
         aggregateCache = aggregateCache.filter { liveURLs.contains($0.key) }
 
-        guard let best else {
-            publish(nil)
-            return
+        lastNewestDate = best?.activity
+        let live = best.map { Date().timeIntervalSince($0.activity) <= activeWindowSeconds } ?? false
+        let todayMs = SessionDuration.withLiveTail(
+            totalActiveMs: totalActiveMs, lastMs: newestLast, nowMs: nowMs, live: live)
+        var scan = AgentScan(todayMs: todayMs, session: nil)
+        if live, let best {
+            scan.session = makeSessionInfo(
+                newest: (best.url, best.activity),
+                active: best.agg,
+                totalTokensToday: totalTokensToday,
+                startEpochMs: nowMs - todayMs
+            )
         }
-        if Date().timeIntervalSince(best.activity) > activeWindowSeconds {
-            publish(nil)
-            return
-        }
-
         guard monitoring else { return }
-        publish(makeSessionInfo(
-            newest: (best.url, best.activity),
-            active: best.agg,
-            totalTokensToday: totalTokensToday,
-            startEpochMs: SessionDuration.startMs(
-                totalActiveMs: totalActiveMs, lastMs: newestLast, nowMs: nowMs)
-        ))
+        publish(scan, linked: true)
     }
 
-    private func publish(_ info: SessionInfo?) {
+    private func publish(_ scan: AgentScan, linked: Bool) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if self.current != info { self.current = info }
+            if self.isLinked != linked { self.isLinked = linked }
+            if self.todayMs != scan.todayMs { self.todayMs = scan.todayMs }
+            if self.current != scan.session { self.current = scan.session }
         }
     }
 
@@ -234,7 +227,7 @@ final class ClaudeSession: ObservableObject {
         /// Newest parseable event timestamp in the transcript (any day), used
         /// for idle detection so a heartbeat that only bumps mtime stays idle.
         var lastEventMs: Int64?
-        /// Event timestamps, used to sum working time inside the 24h window.
+        /// Event timestamps, used to sum working time inside the local day.
         var stampsMs: [Int64] = []
         var tokensToday = 0
     }
@@ -325,7 +318,8 @@ final class ClaudeSession: ObservableObject {
             model: active.model.map(Self.prettyModel),
             startEpochMs: startEpochMs,
             totalTokens: totalTokensToday,
-            lastModified: newest.date
+            lastModified: newest.date,
+            agent: .claude
         )
     }
 

@@ -69,13 +69,46 @@ struct JSONLCursor {
 }
 
 /// Combined working time across sessions. Discord's elapsed timer is
-/// `now - start`, so backdating `start` by the summed active gaps makes the
-/// counter show 1pm–2pm + 5pm–6pm as two hours, not five.
+/// `now - start`, so backdating `start` by today's summed active gaps makes
+/// the counter match the row clock.
 enum SessionDuration {
     /// A gap longer than this between consecutive stamps is idle, not work.
     static let gapToleranceMs: Int64 = 5 * 60 * 1000
-    /// Rolling window for the combined duration shown on Discord / in the UI.
+    /// File-retention bound for tree walks, not the clock cutoff.
     static let lookbackMs: Int64 = 24 * 60 * 60 * 1000
+    /// Presence idle timeout. Scans ignore Settings.idleWindowSeconds.
+    static let idleWindowSeconds: TimeInterval = 60
+
+    /// Local calendar-day start, used as the work-clock cutoff.
+    static func localMidnightMs(now: Date = Date()) -> Int64 {
+        Int64(Calendar.current.startOfDay(for: now).timeIntervalSince1970 * 1000)
+    }
+
+    /// Add `now - last` only while the session is live, so idle clocks freeze.
+    static func withLiveTail(totalActiveMs: Int64, lastMs: Int64?, nowMs: Int64, live: Bool) -> Int64 {
+        var total = totalActiveMs
+        if live, let lastMs, nowMs > lastMs {
+            total += nowMs - lastMs
+        }
+        return max(0, total)
+    }
+
+    /// Ticking clock like GPUI / Windows: "1:02:03" / "2:03".
+    static func formatClock(_ ms: Int64) -> String {
+        let total = max(0, ms / 1000)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
+    }
+
+    static func rowTrailing(linked: Bool, live: Bool, todayMs: Int64) -> String {
+        if !linked { return "Connect" }
+        if live || todayMs > 0 { return formatClock(todayMs) }
+        return "idle"
+    }
 
     /// Working time inside the lookback window for one session.
     static func activeMs(
@@ -120,15 +153,5 @@ enum SessionDuration {
             }
         }
         return (active, last)
-    }
-
-    /// Discord `timestamps.start` that makes elapsed time equal the summed work.
-    static func startMs(totalActiveMs: Int64, lastMs: Int64?, nowMs: Int64) -> Int64 {
-        var elapsed = totalActiveMs
-        if let lastMs {
-            let tail = nowMs - lastMs
-            if tail > 0 && tail <= gapToleranceMs { elapsed += tail }
-        }
-        return nowMs - elapsed
     }
 }

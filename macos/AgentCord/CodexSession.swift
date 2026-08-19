@@ -6,8 +6,7 @@
 //  authoritative source for runtime thread status. Standalone CLI processes do
 //  not share that runtime, so recent ~/.codex/sessions transcripts are used as
 //  a defensive fallback and to enrich runtime threads with model/token data.
-//  Elapsed time is the summed working duration across transcripts that
-//  touched the last 24 hours (idle gaps excluded).
+//  Elapsed time is today's working duration (idle gaps excluded).
 //
 
 import Foundation
@@ -16,9 +15,12 @@ import Combine
 final class CodexSession: ObservableObject {
 
     @Published private(set) var current: SessionInfo?
+    @Published private(set) var todayMs: Int64 = 0
     @Published private(set) var isInstalled: Bool
+    /// True when `~/.codex/sessions` exists.
+    @Published private(set) var isLinked: Bool
 
-    var activeWindowSeconds: TimeInterval = 60
+    var activeWindowSeconds: TimeInterval = SessionDuration.idleWindowSeconds
 
     private let codexHome: URL
     private let sessionsURL: URL
@@ -85,6 +87,7 @@ final class CodexSession: ObservableObject {
         }
         sessionsURL = self.codexHome.appendingPathComponent("sessions", isDirectory: true)
         isInstalled = Self.codexExecutableURL() != nil
+        isLinked = FileManager.default.fileExists(atPath: sessionsURL.path)
     }
 
     func start() {
@@ -113,7 +116,7 @@ final class CodexSession: ObservableObject {
             self?.monitoring = false
             self?.lastNewestDate = nil
             self?.stopRuntimeProbe()
-            self?.publish(nil)
+            self?.publish(.init(), linked: FileManager.default.fileExists(atPath: self?.sessionsURL.path ?? ""))
         }
     }
 
@@ -174,7 +177,7 @@ final class CodexSession: ObservableObject {
         if runtimeThread != nil { return }
         if let newest = lastNewestDate, Date().timeIntervalSince(newest) > activeWindowSeconds {
             lastNewestDate = nil
-            publish(nil)
+            scanTranscripts()
             return
         }
         if Date().timeIntervalSince(lastFullScan) >= Self.fullScanInterval {
@@ -358,70 +361,78 @@ final class CodexSession: ObservableObject {
         }
         files.sort { $0.date > $1.date }
 
+        let linked = FileManager.default.fileExists(atPath: sessionsURL.path)
         if let runtime = runtimeThread {
             let runtimeFile = runtime.path.flatMap { path in
                 files.first(where: { $0.url.standardizedFileURL == path.standardizedFileURL })
             }
             guard monitoring else { return }
-            publish(makeSessionInfo(
+            publish(makeScan(
                 url: runtimeFile?.url ?? runtime.path,
                 mtime: runtimeFile?.date ?? runtime.updatedAt,
                 runtime: runtime,
-                files: files
-            ))
+                files: files,
+                live: true
+            ), linked: linked)
             return
         }
 
         // Standalone Codex CLI sessions are not loaded into another app-server
-        // process. Recent transcript activity is therefore the compatibility
-        // fallback, matching AgentCord's existing configurable idle semantics.
+        // process. Recent transcript activity is the compatibility fallback.
         lastNewestDate = files.first?.date
+        let newest = files.first
+        let live = newest.map { Date().timeIntervalSince($0.date) <= activeWindowSeconds } ?? false
         guard monitoring else { return }
-        guard let newest = files.first,
-              Date().timeIntervalSince(newest.date) <= activeWindowSeconds else {
-            publish(nil)
-            return
-        }
-        publish(makeSessionInfo(url: newest.url, mtime: newest.date, runtime: nil, files: files))
+        publish(makeScan(
+            url: newest?.url,
+            mtime: newest?.date ?? .distantPast,
+            runtime: nil,
+            files: files,
+            live: live
+        ), linked: linked)
 
         // Avoid retaining cache entries forever as Codex history grows.
-        let live = Set(files.prefix(100).map(\.url))
-        transcriptCache = transcriptCache.filter { live.contains($0.key) }
+        let keep = Set(files.prefix(100).map(\.url))
+        transcriptCache = transcriptCache.filter { keep.contains($0.key) }
     }
 
-    private func makeSessionInfo(
+    private func makeScan(
         url: URL?,
         mtime: Date,
         runtime: RuntimeThread?,
-        files: [(url: URL, date: Date)]
-    ) -> SessionInfo {
+        files: [(url: URL, date: Date)],
+        live: Bool
+    ) -> AgentScan {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let (activeMs, lastMs) = rollingActive(files: files, runtime: runtime, nowMs: nowMs)
+        let todayMs = SessionDuration.withLiveTail(
+            totalActiveMs: activeMs, lastMs: lastMs, nowMs: nowMs, live: live)
+        guard live else { return AgentScan(todayMs: todayMs, session: nil) }
+
         let state = url.map { transcriptState(at: $0, mtime: mtime) } ?? TranscriptState()
         let cwd = state.cwd ?? runtime?.cwd
         let project = cwd.map(repoName(forCwd:))
             ?? url?.deletingLastPathComponent().lastPathComponent
             ?? "Codex"
         let activity = max(state.lastEventAt ?? .distantPast, runtime?.updatedAt ?? mtime)
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let (activeMs, lastMs) = rollingActive(files: files, runtime: runtime, nowMs: nowMs)
-
-        return SessionInfo(
+        return AgentScan(todayMs: todayMs, session: SessionInfo(
             projectName: project.isEmpty ? "Codex" : project,
             model: state.model.map(Self.prettyModel),
-            startEpochMs: SessionDuration.startMs(totalActiveMs: activeMs, lastMs: lastMs, nowMs: nowMs),
+            startEpochMs: nowMs - todayMs,
             totalTokens: state.totalTokens,
             lastModified: activity,
             agent: .codex
-        )
+        ))
     }
 
-    /// Combined working time across transcripts that touched the last 24 hours.
+    /// Combined working time across transcripts that touched today.
     /// Files older than the lookback are skipped unless they are the live one.
     private func rollingActive(
         files: [(url: URL, date: Date)],
         runtime: RuntimeThread?,
         nowMs: Int64
     ) -> (Int64, Int64?) {
-        let cutoffMs = nowMs - SessionDuration.lookbackMs
+        let cutoffMs = SessionDuration.localMidnightMs()
         let cutoffDate = Date(timeIntervalSince1970: TimeInterval(cutoffMs) / 1000)
         let runtimeURL = runtime?.path?.standardizedFileURL
         var total: Int64 = 0
@@ -519,10 +530,12 @@ final class CodexSession: ObservableObject {
         }
     }
 
-    private func publish(_ info: SessionInfo?) {
+    private func publish(_ scan: AgentScan, linked: Bool) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if self.current != info { self.current = info }
+            if self.isLinked != linked { self.isLinked = linked }
+            if self.todayMs != scan.todayMs { self.todayMs = scan.todayMs }
+            if self.current != scan.session { self.current = scan.session }
         }
     }
 

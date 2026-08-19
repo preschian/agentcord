@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Belt and suspenders: ensure no Dock icon even without LSUIElement.
         NSApp.setActivationPolicy(.accessory)
         controller.start()
+        CursorHooks.ensure()
         syncUsageMonitors()
         // Provider status has no background poller — it's popover-only UI, so
         // it fetches on popover open (see togglePopover) with a cached snapshot.
@@ -484,16 +485,15 @@ struct MenuContentView: View {
     @EnvironmentObject private var grokSession: GrokSession
     @EnvironmentObject private var providerStatus: ProviderStatusHub
 
-    @State private var showSettings = false
+    @State private var screen: PopoverScreen = .main
     @State private var expandDisplay = false
-    @State private var expandActivity = false
-    /// Which agent's row is expanded in the accordion. Nil collapses them all.
-    @State private var expandedAgent: AgentKind?
     /// Agents whose account email is currently shown in the clear. Masked by
     /// default so a peek at the menu bar doesn't leak the address.
     @State private var revealedAccountEmails: Set<AgentKind> = []
 
-    private let idleSteps = [5, 10, 15, 20, 25, 30]
+    private enum PopoverScreen: Equatable {
+        case main, settings, usage, detail(AgentKind)
+    }
 
     /// Agents currently listed in the popover.
     private var visibleAgents: [AgentKind] {
@@ -502,16 +502,7 @@ struct MenuContentView: View {
     }
 
     private func isAgentLinked(_ agent: AgentKind) -> Bool {
-        switch agent {
-        case .claude: return true
-        case .cursor: return cursorUsage.isAuthenticated || cursorSession.isInstalled
-        // A fresh cache is still useful while the short-lived app-server probe
-        // starts (or if Codex is temporarily unavailable), so do not hide it
-        // behind the authentication flag.
-        case .codex:
-            return codexUsage.isAuthenticated || codexUsage.current != nil || codexSession.isInstalled
-        case .grok: return grokUsage.isAuthenticated || grokSession.isAuthenticated
-        }
+        controller.isLinked(agent)
     }
 
     /// The live session for one agent, if it has one.
@@ -535,27 +526,27 @@ struct MenuContentView: View {
     // messy, where the height interpolated and the popover resized every frame.
     var body: some View {
         ZStack(alignment: .top) {
-            if showSettings {
-                settingsScreen
-                    .transition(.move(edge: .trailing))
-            } else {
+            switch screen {
+            case .main:
                 mainScreen
                     .transition(.move(edge: .leading))
+            case .settings:
+                settingsScreen
+                    .transition(.move(edge: .trailing))
+            case .usage:
+                usageScreen
+                    .transition(.move(edge: .trailing))
+            case .detail(let agent):
+                agentDetailScreen(agent)
+                    .transition(.move(edge: .trailing))
             }
         }
         .padding(PopoverLayout.padding)
         .frame(width: PopoverLayout.width, alignment: .top)
         .clipped()
         .foregroundStyle(Palette.text)
-        .animation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32), value: showSettings)
-        .onAppear {
-            // Open the last-selected agent so the popover doesn't come up as a
-            // list of closed rows. Only on first appearance — after that the
-            // user's collapse choice stands.
-            if expandedAgent == nil, visibleAgents.contains(settings.selectedAgent) {
-                expandedAgent = settings.selectedAgent
-            }
-        }
+        .fontDesign(.monospaced)
+        .animation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32), value: screen)
     }
 
     // MARK: Screens
@@ -662,9 +653,8 @@ struct MenuContentView: View {
 
     // MARK: Agent list (accordion)
 
-    /// Every enabled agent as one row. Tapping a row expands it in place to show
-    /// that agent's plan, session, usage and provider status — so several agents
-    /// stay visible at once instead of one at a time behind a tab switcher.
+    /// Every enabled agent as one row. Tapping a row opens that agent's
+    /// detail screen (session, usage, status).
     private var agentListCard: some View {
         VStack(spacing: 0) {
             ForEach(Array(visibleAgents.enumerated()), id: \.element.id) { index, agent in
@@ -680,43 +670,35 @@ struct MenuContentView: View {
     private func agentRow(_ agent: AgentKind, divider: Bool) -> some View {
         let linked = isAgentLinked(agent)
         let session = session(for: agent)
-        let expanded = expandedAgent == agent
 
-        return VStack(spacing: 0) {
-            Button {
-                toggleExpanded(agent)
-            } label: {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(agent.displayName)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(linked ? Palette.text : Palette.secondary.opacity(0.5))
-                            .lineLimit(1)
-                        Text(rowSubtitle(agent, linked: linked, session: session))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Palette.secondary.opacity(0.5))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Spacer(minLength: 8)
-                    agentRowTrailing(linked: linked, session: session)
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Palette.secondary.opacity(0.3))
-                        // Pin the slot: chevron.down and chevron.right differ in
-                        // width, so without it the row shifts as it toggles.
-                        .frame(width: 9, alignment: .center)
+        return Button {
+            revealedAccountEmails.removeAll()
+            settings.selectedAgent = agent
+            screen = .detail(agent)
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(agent.displayName)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(linked ? Palette.text : Palette.secondary.opacity(0.5))
+                        .lineLimit(1)
+                    Text(rowSubtitle(agent, linked: linked, session: session))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.secondary.opacity(0.5))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                .padding(.horizontal, 11).padding(.vertical, 9)
-                .contentShape(Rectangle())
+                Spacer(minLength: 8)
+                agentRowTrailing(linked: linked, session: session, todayMs: controller.todayMs(for: agent))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Palette.secondary.opacity(0.3))
+                    .frame(width: 9, alignment: .center)
             }
-            .buttonStyle(.plain)
-            .background(expanded ? Palette.track.opacity(0.04) : Color.clear)
-
-            if expanded {
-                agentDetail(agent, linked: linked, session: session)
-            }
+            .padding(.horizontal, 11).padding(.vertical, 9)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .overlay(alignment: .top) {
             if divider { Rectangle().fill(.black.opacity(0.06)).frame(height: 0.5) }
         }
@@ -725,8 +707,9 @@ struct MenuContentView: View {
     /// Right side of a collapsed row: a live timer, an idle marker, or a
     /// call to action when the agent has no linked account.
     @ViewBuilder
-    private func agentRowTrailing(linked: Bool, session: SessionInfo?) -> some View {
-        if let session {
+    private func agentRowTrailing(linked: Bool, session: SessionInfo?, todayMs: Int64) -> some View {
+        let live = session != nil
+        if live, let session {
             HStack(spacing: 5) {
                 SessionDot(active: true)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -736,15 +719,11 @@ struct MenuContentView: View {
                 }
             }
             .fixedSize()
-        } else if linked {
-            Text("idle")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Palette.secondary.opacity(0.45))
-                .fixedSize()
         } else {
-            Text("Connect")
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(Palette.blue)
+            let text = SessionDuration.rowTrailing(linked: linked, live: false, todayMs: todayMs)
+            Text(text)
+                .font(.system(size: 11.5, weight: text == "Connect" ? .medium : .regular))
+                .foregroundStyle(text == "Connect" ? Palette.blue : Palette.secondary.opacity(0.45))
                 .fixedSize()
         }
     }
@@ -755,42 +734,69 @@ struct MenuContentView: View {
         return settings.showProject ? session.projectName : "Project hidden"
     }
 
-    private func toggleExpanded(_ agent: AgentKind) {
-        if expandedAgent == agent {
-            expandedAgent = nil
-            revealedAccountEmails.remove(agent)
-        } else {
-            if let previouslyExpanded = expandedAgent {
-                revealedAccountEmails.remove(previouslyExpanded)
+    private func navHeader(title: String, back: @escaping () -> Void) -> some View {
+        HStack(spacing: 9) {
+            Button(action: back) {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Palette.track.opacity(0.14))
+                    .frame(width: 26, height: 26)
+                    .overlay(
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Palette.text)
+                    )
             }
-            expandedAgent = agent
-            // Keep the persisted selection in step so the same agent reopens
-            // expanded the next time the popover is shown.
-            settings.selectedAgent = agent
+            .buttonStyle(.plain)
+
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+            Spacer()
         }
+    }
+
+    private func agentDetailScreen(_ agent: AgentKind) -> some View {
+        let linked = isAgentLinked(agent)
+        let session = session(for: agent)
+        return VStack(alignment: .leading, spacing: 11) {
+            navHeader(title: agent.displayName) {
+                revealedAccountEmails.removeAll()
+                screen = .main
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                if linked {
+                    accountRow(agent)
+                    sessionSection(agent, session: session)
+                } else {
+                    connectPrompt(agent)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+
+            if linked {
+                VStack(alignment: .leading, spacing: 8) {
+                    usageRows(for: agent)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+
+                if providerStatus.info(for: agent) != nil {
+                    statusSection(agent)
+                        .padding(.horizontal, 12).padding(.vertical, 11)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: Agent detail
-
-    @ViewBuilder
-    private func agentDetail(_ agent: AgentKind, linked: Bool, session: SessionInfo?) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if linked {
-                accountRow(agent)
-                sessionSection(agent, session: session)
-                usageRows(for: agent)
-                statusSection(agent)
-            } else {
-                connectPrompt(agent)
-            }
-        }
-        .padding(.horizontal, 11).padding(.top, 2).padding(.bottom, 11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.track.opacity(0.04))
-        .overlay(alignment: .top) {
-            Rectangle().fill(.black.opacity(0.05)).frame(height: 0.5)
-        }
-    }
 
     /// The signed-in account plus the plan tag, when the usage API reported one.
     /// Email starts masked; tap to reveal (and tap again to hide).
@@ -968,32 +974,14 @@ struct MenuContentView: View {
     /// Settings screen header: a back chevron that returns to the main screen,
     /// plus the title.
     private var settingsHeader: some View {
-        HStack(spacing: 9) {
-            Button {
-                showSettings = false
-            } label: {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Palette.track.opacity(0.14))
-                    .frame(width: 26, height: 26)
-                    .overlay(
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Palette.text)
-                    )
-            }
-            .buttonStyle(.plain)
-
-            Text("Settings")
-                .font(.system(size: 15, weight: .semibold))
-            Spacer()
-        }
+        navHeader(title: "Settings") { screen = .main }
     }
 
     /// Main-screen row that slides over to the settings screen. Mirrors the
     /// collapsible-section styling and summarizes presence state.
     private var settingsNavRow: some View {
         Button {
-            showSettings = true
+            screen = .settings
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "gearshape")
@@ -1026,11 +1014,7 @@ struct MenuContentView: View {
     private func elapsedClock(_ session: SessionInfo?, now: Date) -> String {
         guard let session else { return "—" }
         let ms = Int64(now.timeIntervalSince1970 * 1000) - session.startEpochMs
-        let total = max(0, Int(ms / 1000))
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        return h > 0
-            ? String(format: "%d:%02d:%02d", h, m, s)
-            : String(format: "%d:%02d", m, s)
+        return SessionDuration.formatClock(ms)
     }
 
     private func projectText(_ session: SessionInfo?) -> String {
@@ -1065,38 +1049,84 @@ struct MenuContentView: View {
 
     // MARK: Unified usage
 
-    /// Top-of-popover summary: one headline bar per connected agent, so the
-    /// tightest limit across every agent is visible without expanding a row.
+    /// Top-of-popover summary: compact name + bar + percent. Click opens the
+    /// full Unified usage screen.
     private var unifiedUsageCard: some View {
-        let agents = visibleAgents.filter { isAgentLinked($0) }
-        let entries = agents.map { (agent: $0, entry: unifiedUsageEntry(for: $0)) }
-        return VStack(alignment: .leading, spacing: 9) {
-            Text("UNIFIED USAGE")
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(0.5)
-                .foregroundStyle(Palette.secondary.opacity(0.55))
-            if entries.isEmpty {
-                Text("No connected agents")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-                    .italic()
-            } else {
-                ForEach(entries, id: \.agent.id) { item in
-                    // Dim the bar for agents that aren't running right now, so
-                    // the live ones read first.
-                    let live = session(for: item.agent) != nil
-                    usageRow(
-                        item.entry.label,
-                        item.entry.window,
-                        accent: Palette.blue.opacity(live ? 1 : 0.55)
-                    )
+        let entries = primaryWindows(visibleAgents)
+        return Button {
+            screen = .usage
+        } label: {
+            VStack(alignment: .leading, spacing: 7) {
+                if entries.isEmpty {
+                    Text("No connected agents")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Palette.secondary.opacity(0.45))
+                        .italic()
+                } else {
+                    ForEach(entries, id: \.agent.id) { item in
+                        compactUsageRow(item.agent.displayName, item.window)
+                    }
                 }
             }
+            .padding(.vertical, 11).padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 11).padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        .buttonStyle(.plain)
+    }
+
+    private var usageScreen: some View {
+        let entries = primaryWindows(visibleAgents)
+        return VStack(alignment: .leading, spacing: 11) {
+            navHeader(title: "Unified usage") { screen = .main }
+            VStack(alignment: .leading, spacing: 10) {
+                if entries.isEmpty {
+                    Text("No connected agents")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Palette.secondary.opacity(0.45))
+                        .italic()
+                } else {
+                    ForEach(entries, id: \.agent.id) { item in
+                        usageRow(item.agent.displayName, item.window)
+                    }
+                }
+            }
+            .padding(.vertical, 11).padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(.black.opacity(0.06), lineWidth: 0.5))
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func primaryWindows(_ agents: [AgentKind]) -> [(agent: AgentKind, window: UsageInfo.Window)] {
+        agents.compactMap { agent in
+            unifiedUsageEntry(for: agent).window.map { (agent, $0) }
+        }
+    }
+
+    private func compactUsageRow(_ label: String, _ window: UsageInfo.Window) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 12.5))
+                .frame(width: 52, alignment: .leading)
+                .lineLimit(1)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.track.opacity(0.16))
+                    Capsule()
+                        .fill(severityColor(window))
+                        .frame(width: geo.size.width * barFraction(window))
+                }
+            }
+            .frame(height: 6)
+            Text("\(window.percent)%")
+                .font(.system(size: 12.5, weight: .semibold))
+                .monospacedDigit()
+                .fixedSize()
+        }
     }
 
     /// Each agent's primary window, so the unified card stays one row per agent.
@@ -1258,7 +1288,7 @@ struct MenuContentView: View {
         if let reset = Self.formatResetDuration(window, now: now) {
             return reset == "now"
                 ? "\(window.percent)% · resets now"
-                : "\(window.percent)% · resets in \(reset)"
+                : "\(window.percent)% · \(reset)"
         }
         return "\(window.percent)%"
     }
@@ -1513,31 +1543,22 @@ struct MenuContentView: View {
                 .padding(.horizontal, 11).padding(.top, 3).padding(.bottom, 8)
             }
 
-            collapsible(title: "Activity & idle", summary: activitySummary, expanded: $expandActivity) {
-                VStack(alignment: .leading, spacing: 9) {
-                    HStack {
-                        Text("Activity type").font(.system(size: 12.5))
-                        Spacer()
-                        Button(action: cycleActivity) {
-                            HStack(spacing: 6) {
-                                Text(activityLabel).font(.system(size: 12.5))
-                                VStack(spacing: 1) {
-                                    Image(systemName: "chevron.up")
-                                    Image(systemName: "chevron.down")
-                                }
-                                .font(.system(size: 6, weight: .semibold))
-                                .foregroundStyle(Palette.secondary.opacity(0.45))
-                            }
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Palette.track.opacity(0.1)))
-                            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(.black.opacity(0.12), lineWidth: 0.5))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    idleSlider
+            Button(action: cycleActivity) {
+                HStack {
+                    Text("Activity type").font(.system(size: 13))
+                    Spacer()
+                    Text(activityLabel)
+                        .font(.system(size: 12.5))
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Palette.track.opacity(0.1)))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(.black.opacity(0.12), lineWidth: 0.5))
                 }
-                .padding(.horizontal, 11).padding(.top, 8).padding(.bottom, 10)
+                .padding(.horizontal, 11).padding(.vertical, 8)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.55)))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.black.opacity(0.07), lineWidth: 0.5))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1584,10 +1605,6 @@ struct MenuContentView: View {
         return "\(count) on"
     }
 
-    private var activitySummary: String {
-        "\(activityLabel) · \(idleMin) min"
-    }
-
     private var activityLabel: String {
         SettingsStore.allowedActivityTypes.first { $0.value == settings.activityType }?.name ?? "Playing"
     }
@@ -1596,59 +1613,6 @@ struct MenuContentView: View {
         let types = SettingsStore.allowedActivityTypes
         let idx = types.firstIndex { $0.value == settings.activityType } ?? 0
         settings.activityType = types[(idx + 1) % types.count].value
-    }
-
-    // MARK: Idle slider
-
-    private var idleMin: Int { Int(settings.idleWindowSeconds / 60) }
-
-    private var idleFraction: CGFloat {
-        let i = idleSteps.firstIndex(of: idleMin) ?? 0
-        return CGFloat(i) / CGFloat(idleSteps.count - 1)
-    }
-
-    private func setIdle(fraction: CGFloat) {
-        let clamped = max(0, min(1, fraction))
-        let idx = Int((clamped * CGFloat(idleSteps.count - 1)).rounded())
-        settings.idleWindowSeconds = Double(idleSteps[idx] * 60)
-    }
-
-    private var idleSlider: some View {
-        VStack(spacing: 7) {
-            HStack {
-                Text("Idle window").font(.system(size: 12.5))
-                Spacer()
-                Text("\(idleMin) min")
-                    .font(.system(size: 12.5)).monospacedDigit()
-                    .foregroundStyle(Palette.secondary.opacity(0.6))
-            }
-            GeometryReader { geo in
-                let w = geo.size.width
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Palette.track.opacity(0.2)).frame(height: 4)
-                    Capsule().fill(Palette.blue).frame(width: max(w * idleFraction, 4), height: 4)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: 15, height: 15)
-                        .shadow(color: .black.opacity(0.3), radius: 1, y: 0.5)
-                        .offset(x: w * idleFraction - 7.5)
-                }
-                .frame(height: 15)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                    setIdle(fraction: value.location.x / max(w, 1))
-                })
-            }
-            .frame(height: 15)
-            HStack {
-                ForEach(idleSteps, id: \.self) { step in
-                    Text("\(step)")
-                        .font(.system(size: 9.5)).monospacedDigit()
-                        .foregroundStyle(Palette.secondary.opacity(0.38))
-                    if step != idleSteps.last { Spacer() }
-                }
-            }
-        }
     }
 
     // MARK: Quit

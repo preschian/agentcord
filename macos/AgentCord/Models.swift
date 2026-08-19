@@ -124,6 +124,13 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
 
 // MARK: - Coding agent session
 
+/// One agent's scan: today's work time is always present; `session` is set
+/// only while the agent is live (inside the idle window / open hook turn).
+struct AgentScan: Equatable {
+    var todayMs: Int64 = 0
+    var session: SessionInfo? = nil
+}
+
 /// A snapshot of an active coding-agent session (Claude Code, Grok, …).
 struct SessionInfo: Equatable {
     var projectName: String

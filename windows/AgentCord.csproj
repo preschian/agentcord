@@ -12,7 +12,7 @@
     <ApplicationIcon>assets\agentcord.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <Version>0.5.0</Version>
-    <Description>Claude Code, Codex, Cursor, Grok, and Antigravity activity on your Discord profile</Description>
+    <Description>Claude Code, Codex, Cursor, and Grok activity on your Discord profile</Description>
   </PropertyGroup>
 
   <!-- The project mixes WinForms (tray icon) and WPF (popover). Drop the

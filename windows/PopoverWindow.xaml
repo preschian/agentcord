@@ -270,12 +270,6 @@
                           Style="{StaticResource Switch}" Click="OnAutostartSwitch"/>
             <TextBlock Text="Launch at login" FontSize="13" VerticalAlignment="Center"/>
           </DockPanel>
-          <Rectangle Height="1" Fill="#0D000000"/>
-          <DockPanel Margin="0,6">
-            <ToggleButton x:Name="PreventSleepSwitch" DockPanel.Dock="Right"
-                          Style="{StaticResource Switch}" Click="OnPreventSleepSwitch"/>
-            <TextBlock Text="Prevent sleep" FontSize="13" VerticalAlignment="Center"/>
-          </DockPanel>
         </StackPanel>
 
         <!-- Enabled coding agents -->
@@ -316,15 +310,6 @@
               <StackPanel Orientation="Horizontal">
                 <Ellipse Width="6" Height="6" Fill="#FF1D1D1F" VerticalAlignment="Center"/>
                 <TextBlock Text="Grok" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
-              </StackPanel>
-            </DockPanel>
-            <Rectangle Height="1" Fill="#0D000000"/>
-            <DockPanel Margin="0,5">
-              <ToggleButton x:Name="AntigravityAgentSwitch" DockPanel.Dock="Right"
-                            Style="{StaticResource Switch}" Click="OnAntigravityAgentSwitch"/>
-              <StackPanel Orientation="Horizontal">
-                <Ellipse Width="6" Height="6" Fill="#FF4285F4" VerticalAlignment="Center"/>
-                <TextBlock Text="Antigravity" FontSize="12.5" VerticalAlignment="Center" Margin="7,0,0,0"/>
               </StackPanel>
             </DockPanel>
           </StackPanel>

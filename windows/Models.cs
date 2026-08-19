@@ -56,6 +56,7 @@ public enum AgentKind
     Claude,
     Codex,
     Cursor,
+    /// <summary>Unused. Kept so existing settings.json numeric values (Grok = 4) stay valid.</summary>
     Antigravity,
     /// <summary>Appended last so existing settings.json numeric values stay valid.</summary>
     Grok,
@@ -168,18 +169,6 @@ public sealed record GrokUsageInfo
     /// <summary>On-demand window when a cap is set.</summary>
     public UsageWindow? OnDemand { get; init; }
     /// <summary>Brand plan label, e.g. "SuperGrok" or "SuperGrok Heavy".</summary>
-    public string? PlanName { get; init; }
-}
-
-// --- Antigravity subscription usage
-
-public sealed record AntigravityUsageInfo
-{
-    /// <summary>The rolling 5-hour session usage.</summary>
-    public required UsageWindow FiveHour { get; init; }
-    /// <summary>The weekly (all-models) usage.</summary>
-    public required UsageWindow Weekly { get; init; }
-    /// <summary>Subscription plan label, e.g. "Google AI Pro".</summary>
     public string? PlanName { get; init; }
 }
 

@@ -1,5 +1,5 @@
 // Snapshot of a growing session-file tree. Presence ticks every 3s; walking
-// ~/.claude/projects (or the Codex / Cursor / Antigravity equivalents) on
+// ~/.claude/projects (or the Codex / Cursor / Grok equivalents) on
 // every tick is the expensive path. A FileSystemWatcher marks structural
 // changes. Between walks we only re-stat files whose last mtime is still
 // inside the lookback window. A 30s safety walk catches missed events.

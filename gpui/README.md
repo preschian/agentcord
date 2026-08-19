@@ -7,7 +7,7 @@ Windows-first AgentCord on [GPUI](https://gpui.rs): Claude, Codex, Cursor, and G
 - Discord IPC on `\\.\pipe\discord-ipc-{0..9}`
 - Claude / Codex / Cursor / Grok session scans; all four show today’s work time on the row (gray when idle). Cursor uptime is today’s hook sum (`%TEMP%\AgentCord\yyyy-MM-dd-uptime.json`)
 - Tray, usage bars, settings (`%APPDATA%\AgentCord\settings.json`)
-- Idle window 1–30 min (Claude / Codex / Grok); Cursor active only while a hook turn is open
+- Presence clears ~1 minute after the last Claude / Codex / Grok activity; Cursor is active only while a hook turn is open
 
 ## Prerequisites
 

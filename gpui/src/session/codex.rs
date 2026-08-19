@@ -44,11 +44,11 @@ pub fn codex_linked() -> bool {
 }
 
 
-pub fn scan_codex(idle_secs: f64) -> AgentScan {
+pub fn scan_codex() -> AgentScan {
     let Some(home) = codex_home() else {
         return AgentScan::default();
     };
-    scan_codex_from(&home.join("sessions"), idle_secs)
+    scan_codex_from(&home.join("sessions"), IDLE_WINDOW_SECS)
 }
 
 pub(super) fn scan_codex_from(sessions: &Path, idle_secs: f64) -> AgentScan {

@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 const ACTIVITY_TYPES: [(i32, &'static str); 4] =
     [(0, "Playing"), (2, "Listening"), (3, "Watching"), (5, "Competing")];
-pub const IDLE_MINUTES: [i32; 7] = [1, 5, 10, 15, 20, 25, 30];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -24,6 +23,7 @@ pub struct Settings {
     pub agent_antigravity_enabled: bool,
     pub agent_grok_enabled: bool,
     pub activity_type: i32,
+    /// WPF/macOS slider; GPUI scans ignore this and always use 60s.
     pub idle_window_seconds: f64,
 }
 
@@ -50,14 +50,10 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load() -> Self {
-        let mut s: Self = config_path()
+        config_path()
             .and_then(|p| fs::read_to_string(p).ok())
             .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        if s.idle_window_seconds < 60.0 {
-            s.idle_window_seconds = 300.0;
-        }
-        s
+            .unwrap_or_default()
     }
 
     pub fn save(&self) {
@@ -98,23 +94,6 @@ impl Settings {
             .position(|(v, _)| *v == self.activity_type)
             .unwrap_or(0);
         self.activity_type = ACTIVITY_TYPES[(i + 1) % ACTIVITY_TYPES.len()].0;
-    }
-
-    pub fn idle_minutes(&self) -> i32 {
-        let m = (self.idle_window_seconds / 60.0).round() as i32;
-        IDLE_MINUTES
-            .iter()
-            .copied()
-            .min_by_key(|step| (*step - m).abs())
-            .unwrap_or(5)
-    }
-
-    pub fn set_idle_minutes(&mut self, minutes: i32) {
-        self.idle_window_seconds = minutes.max(1) as f64 * 60.0;
-    }
-
-    pub fn idle_label(&self) -> String {
-        format!("{}m", self.idle_minutes())
     }
 }
 
@@ -469,21 +448,6 @@ mod tests {
         assert_eq!(s.activity_label(), "Playing");
         s.activity_type = 99;
         assert_eq!(s.activity_type(), 0);
-    }
-
-    #[test]
-    fn idle_minutes_snap_to_steps() {
-        let mut s = Settings::default();
-        assert_eq!(s.idle_minutes(), 5);
-        s.set_idle_minutes(15);
-        assert_eq!(s.idle_window_seconds, 900.0);
-        assert_eq!(s.idle_minutes(), 15);
-        s.idle_window_seconds = 100.0;
-        assert_eq!(s.idle_minutes(), 1);
-        s.idle_window_seconds = 250.0;
-        assert_eq!(s.idle_minutes(), 5);
-        s.set_idle_minutes(0);
-        assert_eq!(s.idle_label(), "1m");
     }
 
     #[test]

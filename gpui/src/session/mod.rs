@@ -25,7 +25,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const DISCORD_CLIENT_ID: &str = "1517099756063686677";
-pub const IDLE_WINDOW_SECS: f64 = 300.0;
+pub const IDLE_WINDOW_SECS: f64 = 60.0;
 pub(super) const GAP_TOLERANCE_MS: i64 = 5 * 60 * 1000;
 pub(super) const TREE_WALK_MS: i64 = 30_000;
 
@@ -105,7 +105,6 @@ impl LiveSessions {
 
 #[derive(Clone, Copy)]
 pub struct ScanWanted {
-    pub idle_secs: f64,
     pub claude: bool,
     pub codex: bool,
     pub grok: bool,
@@ -115,7 +114,6 @@ pub struct ScanWanted {
 impl Default for ScanWanted {
     fn default() -> Self {
         Self {
-            idle_secs: IDLE_WINDOW_SECS,
             claude: true,
             codex: true,
             grok: true,
@@ -127,7 +125,6 @@ impl Default for ScanWanted {
 impl ScanWanted {
     pub fn from_settings(s: &Settings) -> Self {
         Self {
-            idle_secs: s.idle_window_seconds.max(60.0),
             claude: s.agent_claude_enabled,
             codex: s.agent_codex_enabled,
             grok: s.agent_grok_enabled,
@@ -190,22 +187,22 @@ impl ScanHandle {
 pub(super) fn scan_wanted(w: ScanWanted) -> ScanSnapshot {
     let empty = AgentScan::default();
     let claude = if w.claude {
-        scan_claude(w.idle_secs)
+        scan_claude()
     } else {
         empty.clone()
     };
     let codex = if w.codex {
-        scan_codex(w.idle_secs)
+        scan_codex()
     } else {
         empty.clone()
     };
     let grok = if w.grok {
-        scan_grok(w.idle_secs)
+        scan_grok()
     } else {
         empty.clone()
     };
     let cursor = if w.cursor {
-        scan_cursor(w.idle_secs)
+        scan_cursor()
     } else {
         empty
     };

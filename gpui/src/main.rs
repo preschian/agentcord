@@ -1190,7 +1190,8 @@ fn agent_row(
         "Connected".into()
     };
     let live = session.is_some();
-    let trailing: SharedString = if agent == AgentKind::Cursor && linked {
+    let trailing: SharedString = if agent == AgentKind::Cursor && linked && (live || cursor_today_ms > 0)
+    {
         format_clock(cursor_today_ms).into()
     } else if let Some(s) = &session {
         format_clock(now_ms() - s.start_epoch_ms).into()

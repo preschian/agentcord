@@ -27,4 +27,13 @@ public sealed class SettingsTests
         Assert.DoesNotContain(AgentKind.Antigravity, settings.EnabledAgents);
         Assert.False(settings.IsAgentEnabled(AgentKind.Antigravity));
     }
+
+    [Fact]
+    public void Idle_window_setting_is_unused_by_scans()
+    {
+        Assert.Equal(60.0, SessionActivity.IdleWindowSeconds);
+        var settings = new Settings { IdleWindowSeconds = 300 };
+        Assert.Equal(300, settings.IdleWindowSeconds);
+        Assert.NotEqual(SessionActivity.IdleWindowSeconds, settings.IdleWindowSeconds);
+    }
 }

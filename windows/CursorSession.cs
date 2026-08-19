@@ -17,7 +17,9 @@ namespace AgentCord;
 public sealed class CursorSession : IDisposable
 {
     /// <summary>A transcript counts as active if modified within this window.</summary>
-    public double ActiveWindowSeconds { get; set; } = 60;
+    public double ActiveWindowSeconds { get; set; } = SessionActivity.IdleWindowSeconds;
+
+    public bool IsLinked => _transcriptTree.RootExists || _chatsTree.RootExists;
 
     private const long LookbackMs = 24 * 60 * 60 * 1000;
 
@@ -61,32 +63,34 @@ public sealed class CursorSession : IDisposable
         || path.Contains("/agent-transcripts/", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Newest live Cursor session across CLI transcripts, T3 Code, and ACP.</summary>
-    public SessionInfo? Scan()
+    public AgentScan Scan()
     {
         _t3Scanner.ActiveWindowSeconds = ActiveWindowSeconds;
         var transcripts = ScanTranscripts();
-        var candidates = new List<SessionInfo?> { transcripts, ScanAcp() };
+        var candidates = new List<SessionInfo?> { transcripts.Session, ScanAcp() };
         if (_enableT3) candidates.Add(_t3Scanner.Scan());
         var best = candidates
             .Where(s => s is not null)
             .MaxBy(s => s!.LastModifiedMs);
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var todayMs = transcripts.TodayMs;
+        if (best is null)
+            return new AgentScan(todayMs, null);
         // T3/ACP win on recency (live turn) but their start is the current
         // turn / session dir — that snaps Discord back to 00:00. Keep the
-        // 24h transcript clock whenever we have one.
-        if (best is not null && transcripts is not null)
-            return best with { StartEpochMs = transcripts.StartEpochMs };
-        return best;
+        // daily transcript clock whenever we have one.
+        return new AgentScan(todayMs, best with { StartEpochMs = nowMs - todayMs });
     }
 
-    private SessionInfo? ScanTranscripts()
+    private AgentScan ScanTranscripts()
     {
         var files = _transcriptTree.Snapshot(TimeSpan.FromMilliseconds(LookbackMs));
-        if (files.Count == 0) return null;
+        if (files.Count == 0) return default;
 
         RebuildMetaIndexIfNeeded();
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var cutoffMs = nowMs - LookbackMs;
+        var cutoffMs = SessionActivity.LocalMidnightMs();
 
         long totalActiveMs = 0;
         string? bestPath = null;
@@ -108,11 +112,7 @@ public sealed class CursorSession : IDisposable
                 cutoffMs,
                 nowMs);
 
-            // Include duration for anything whose activity (or mtime fallback)
-            // touched the lookback window — stale mtime alone must not exclude
-            // a transcript with recent embedded timestamps.
-            if (activityMs >= cutoffMs)
-                totalActiveMs += activeMs;
+            totalActiveMs += activeMs;
 
             if (bestPath is null || activityMs >= bestActivityMs)
             {
@@ -126,33 +126,27 @@ public sealed class CursorSession : IDisposable
         foreach (var stale in _transcriptCache.Keys.Where(k => !livePaths.Contains(k)).ToList())
             _transcriptCache.Remove(stale);
 
-        if (bestPath is null) return null;
-        if (!SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds)) return null;
+        var live = bestPath is not null
+            && SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds);
+        var todayMs = SessionActivity.WithLiveTail(totalActiveMs, activeLastMs, nowMs, live);
+        if (!live)
+            return new AgentScan(todayMs, null);
 
-        // Newest transcript is already inside the active window, so the open
-        // gap since the last user stamp is the current agent turn — not idle.
-        var elapsedMs = totalActiveMs;
-        if (activeLastMs is long last)
-        {
-            var tail = nowMs - last;
-            if (tail > 0) elapsedMs += tail;
-        }
-
-        var sessionId = Path.GetFileNameWithoutExtension(bestPath);
+        var sessionId = Path.GetFileNameWithoutExtension(bestPath!);
         var meta = ReadMeta(sessionId, includeModel: true);
 
-        var projectName = ResolveProjectName(meta?.Cwd, bestPath);
+        var projectName = ResolveProjectName(meta?.Cwd, bestPath!);
         if (string.IsNullOrWhiteSpace(projectName)) projectName = "Cursor";
 
-        return new SessionInfo
+        return new AgentScan(todayMs, new SessionInfo
         {
             ProjectName = projectName,
             Model = meta?.Model is { Length: > 0 } model ? PrettyModel(model) : null,
-            StartEpochMs = nowMs - elapsedMs,
+            StartEpochMs = nowMs - todayMs,
             TotalTokens = 0,
             LastModifiedMs = bestActivityMs,
             Agent = AgentKind.Cursor,
-        };
+        });
     }
 
     /// <summary>T3 Code (and other ACP hosts) keep the live turn in

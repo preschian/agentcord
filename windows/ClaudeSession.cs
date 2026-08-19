@@ -3,9 +3,8 @@
 // transcript. Port of AgentCord/ClaudeSession.swift.
 //
 // Tokens are summed across transcripts touched today (local calendar day).
-// Elapsed time is the summed working duration across transcripts that
-// touched the last 24 hours (idle gaps excluded), matching Grok / Codex /
-// Cursor. The transcript schema is undocumented, so all parsing is defensive:
+// Elapsed time is today's working duration (idle gaps excluded), matching
+// Grok / Codex / Cursor. The transcript schema is undocumented, so all parsing is defensive:
 // malformed or unexpected lines are skipped, never fatal. Scans are driven by
 // the presence controller's tick. A SessionTreeIndex plus per-file JSONL
 // cursor keep idle ticks from walking or re-parsing the growing tree.
@@ -19,7 +18,9 @@ namespace AgentCord;
 public sealed class ClaudeSession : IDisposable
 {
     /// <summary>A transcript counts as active if modified within this window.</summary>
-    public double ActiveWindowSeconds { get; set; } = 60;
+    public double ActiveWindowSeconds { get; set; } = SessionActivity.IdleWindowSeconds;
+
+    public bool IsLinked => _tree.RootExists;
 
     private readonly SessionTreeIndex _tree;
     private readonly Dictionary<string, CacheEntry> _aggregateCache = [];
@@ -34,20 +35,20 @@ public sealed class ClaudeSession : IDisposable
 
     public void Dispose() => _tree.Dispose();
 
-    /// <summary>Scan the transcript tree and return the active session, or null
-    /// when none is active. Not thread-safe; call from one thread.</summary>
-    public SessionInfo? Scan()
+    /// <summary>Scan the transcript tree. Always returns today's work time;
+    /// Session is set only while inside the idle window.</summary>
+    public AgentScan Scan()
     {
         var files = _tree.Snapshot(TimeSpan.FromMilliseconds(SessionActivity.LookbackMs));
-        if (files.Count == 0) return null;
+        if (files.Count == 0) return default;
 
-        // Tokens stay on the local calendar day. Elapsed time is a rolling 24h
-        // sum of working gaps, same window as Grok / Codex / Cursor.
-        // Activity (idle + LastModifiedMs) prefers parsed event timestamps over
-        // filesystem mtime so a stale mtime cannot hide a live session.
+        // Tokens stay on the local calendar day. Elapsed time is today's
+        // sum of working gaps. Activity (idle + LastModifiedMs) prefers parsed
+        // event timestamps over filesystem mtime so a stale mtime cannot hide
+        // a live session.
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var cutoffMs = nowMs - SessionActivity.LookbackMs;
-        var dayStartMs = new DateTimeOffset(DateTime.Today).ToUnixTimeMilliseconds();
+        var cutoffMs = SessionActivity.LocalMidnightMs();
+        var dayStartMs = cutoffMs;
 
         long totalTokensToday = 0;
         long totalActiveMs = 0;
@@ -75,14 +76,17 @@ public sealed class ClaudeSession : IDisposable
         }
 
         // Drop cache entries for transcripts that no longer exist.
-        var live = files.Select(f => f.Path).ToHashSet();
-        foreach (var stale in _aggregateCache.Keys.Where(k => !live.Contains(k)).ToList())
+        var livePaths = files.Select(f => f.Path).ToHashSet();
+        foreach (var stale in _aggregateCache.Keys.Where(k => !livePaths.Contains(k)).ToList())
             _aggregateCache.Remove(stale);
 
-        if (bestPath is null) return null;
-        if (!SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds)) return null;
-
-        return MakeSessionInfo(bestPath, bestActivityMs, bestAgg, totalTokensToday, totalActiveMs, newestLast, nowMs);
+        var live = bestPath is not null
+            && SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds);
+        var todayMs = SessionActivity.WithLiveTail(totalActiveMs, newestLast, nowMs, live);
+        SessionInfo? session = live
+            ? MakeSessionInfo(bestPath!, bestActivityMs, bestAgg, totalTokensToday, todayMs, nowMs)
+            : null;
+        return new AgentScan(todayMs, session);
     }
 
     // --- Parsing
@@ -95,7 +99,7 @@ public sealed class ClaudeSession : IDisposable
         /// <summary>Newest parseable event timestamp in the transcript (any day),
         /// used for idle detection and LastModifiedMs.</summary>
         public long? LastEventMs;
-        /// <summary>Event timestamps used to sum working time inside the 24h window.</summary>
+        /// <summary>Event timestamps used to sum working time inside the local day.</summary>
         public List<long> StampsMs = [];
         public long TokensToday;
     }
@@ -195,7 +199,7 @@ public sealed class ClaudeSession : IDisposable
 
     private SessionInfo MakeSessionInfo(
         string newestPath, long activityMs, DayAggregate active, long totalTokensToday,
-        long totalActiveMs, long? newestLast, long nowMs)
+        long todayMs, long nowMs)
     {
         var projectName = DeriveProjectName(Path.GetFileName(Path.GetDirectoryName(newestPath)) ?? "");
         if (active.Cwd is not null) projectName = RepoNames.FromCwd(active.Cwd, _repoNameCache);
@@ -204,7 +208,7 @@ public sealed class ClaudeSession : IDisposable
         {
             ProjectName = projectName.Length == 0 ? "Claude Code" : projectName,
             Model = active.Model is null ? null : PrettyModel(active.Model),
-            StartEpochMs = SessionActivity.ElapsedStartMs(totalActiveMs, newestLast, nowMs),
+            StartEpochMs = nowMs - todayMs,
             TotalTokens = totalTokensToday,
             LastModifiedMs = activityMs,
             Agent = AgentKind.Claude,

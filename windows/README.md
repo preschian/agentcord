@@ -55,7 +55,7 @@ dotnet run
 usage card (one primary bar per linked agent), a row per enabled agent that
 opens a detail screen (session, usage, and Claude status), and a Settings
 screen with agent toggles, presence, launch-at-login, display
-fields (including Show unified usage), activity type, and the idle window.
+fields (including Show unified usage), and activity type.
 **Right-click** for a quick menu (show, toggle presence, quit).
 
 Two debug flags: `--popover` opens the popover at startup, and
@@ -98,9 +98,9 @@ every READY.
 **Session detection.** `ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`,
 and `GrokSession.cs` re-scan their data on the
 controller's 3-second tick and parse defensively. Claude sums tokens over the
-local calendar day and working time over the last 24 hours; Codex reports the
-current transcript's model, latest context token count, and a 24-hour working
-sum; Cursor sums working time over the last 24 hours
+local calendar day and working time since local midnight; Codex reports the
+current transcript's model, latest context token count, and today's working
+sum; Cursor sums working time since local midnight
 and enriches from `~/.cursor/chats/**/meta.json`; Grok uses
 `last_active_at` and event-log mtimes (a live PID alone is not enough) and reads
 `summary.json` / `signals.json` for project, model, and context tokens.

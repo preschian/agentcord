@@ -49,8 +49,6 @@ public partial class PopoverWindow : Window
     /// so IsActive is already false. A recent Deactivated still means "was focused".</summary>
     private DateTime _lastDeactivated = DateTime.MinValue;
 
-    private static readonly int[] IdleSteps = [0, 5, 10, 15, 20, 25, 30];
-
     // Palette (matches the macOS popover design spec).
     private static readonly Color TextColor = Rgb(0x1D, 0x1D, 0x1F);
     private static readonly Color Secondary = Rgb(0x3C, 0x3C, 0x43);
@@ -201,7 +199,6 @@ public partial class PopoverWindow : Window
 
         ShowSettingsScreen();
         DisplayExpanded.Visibility = Visibility.Visible;
-        ActivityExpanded.Visibility = Visibility.Visible;
         SavePng(System.IO.Path.ChangeExtension(path, null) + "-settings.png");
 
         CloseForExit();
@@ -339,20 +336,8 @@ public partial class PopoverWindow : Window
         UpdateUi();
     }
 
-    private void OnIdleChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        var seconds = IdleSteps[(int)Math.Round(IdleSlider.Value)] * 60.0;
-        if (Math.Abs(seconds - _settings.IdleWindowSeconds) < 1) return;
-        _settings.IdleWindowSeconds = seconds;
-        _settings.Save();
-        UpdateUi();
-    }
-
     private void OnToggleDisplay(object sender, RoutedEventArgs e) =>
         ToggleSection(DisplayExpanded, DisplayChevron);
-
-    private void OnToggleActivity(object sender, RoutedEventArgs e) =>
-        ToggleSection(ActivityExpanded, ActivityChevron);
 
     private static void ToggleSection(UIElement panel, TextBlock chevron)
     {
@@ -407,8 +392,8 @@ public partial class PopoverWindow : Window
         {
             if (!_agentRows.TryGetValue(agent, out var row)) continue;
             var session = _controller.SessionFor(agent);
-            var linked = IsAgentLinked(agent);
-            row.UpdateHeader(agent, linked, session, _settings.ShowProject);
+            row.UpdateHeader(agent, _controller.IsInstalled(agent), session, _settings.ShowProject,
+                _controller.TodayMs(agent));
         }
 
         if (_detailAgent is AgentKind detail && _settings.IsAgentEnabled(detail))
@@ -465,12 +450,7 @@ public partial class PopoverWindow : Window
         }.Count(v => v);
         DisplaySummary.Text = $"{displayCount} on";
 
-        var idleMinutes = (int)Math.Round(_settings.IdleWindowSeconds / 60.0);
-        var idleIndex = Array.IndexOf(IdleSteps, idleMinutes);
-        if (idleIndex >= 0 && (int)Math.Round(IdleSlider.Value) != idleIndex) IdleSlider.Value = idleIndex;
-        IdleValue.Text = $"{idleMinutes} min";
         ActivityLabel.Text = Settings.ActivityLabel(_settings.ActivityType);
-        ActivitySummary.Text = $"{ActivityLabel.Text} · {idleMinutes} min";
     }
 
     private void EnsureAgentRows(IReadOnlyList<AgentKind> enabled)
@@ -886,7 +866,7 @@ public partial class PopoverWindow : Window
             _divider.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
 
         public void UpdateHeader(
-            AgentKind agent, bool linked, SessionInfo? session, bool showProject)
+            AgentKind agent, bool linked, SessionInfo? session, bool showProject, long todayMs)
         {
             _name.Foreground = Brush(linked ? TextColor : WithAlpha(Secondary, 0x80));
             if (!linked)
@@ -904,6 +884,13 @@ public partial class PopoverWindow : Window
                 _trailing.Text = Format.Clock(Format.NowMs() - session.StartEpochMs);
                 _trailing.FontWeight = FontWeights.Medium;
                 _trailing.Foreground = Brush(TextColor);
+            }
+            else if (linked && todayMs > 0)
+            {
+                _liveDot.Visibility = Visibility.Collapsed;
+                _trailing.Text = Format.Clock(todayMs);
+                _trailing.FontWeight = FontWeights.Normal;
+                _trailing.Foreground = Brush(WithAlpha(Secondary, 0x73));
             }
             else if (linked)
             {

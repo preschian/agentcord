@@ -8,8 +8,7 @@
 // turn_ended) so a long think / tool run stays active even when files pause.
 // An idle prompt after turn_ended is not treated as working. After the list
 // clears (quit), the last-known session stays visible for the idle window.
-// Elapsed time is the summed working duration across sessions that touched
-// the last 24 hours (idle gaps excluded).
+// Elapsed time is today's working duration (idle gaps excluded).
 // Port of AgentCord/GrokSession.swift.
 
 using System.Diagnostics;
@@ -22,10 +21,14 @@ namespace AgentCord;
 public sealed class GrokSession
 {
     /// <summary>A recently closed session still counts as active inside this window.</summary>
-    public double ActiveWindowSeconds { get; set; } = 60;
+    public double ActiveWindowSeconds { get; set; } = SessionActivity.IdleWindowSeconds;
 
     /// <summary>True when ~/.grok/auth.json has at least one credential entry.</summary>
     public bool IsAuthenticated { get; private set; }
+
+    public bool IsLinked =>
+        File.Exists(Path.Combine(_grokHome, "auth.json"))
+        || File.Exists(Path.Combine(_grokHome, "active_sessions.json"));
 
     private readonly string _grokHome;
     private readonly Dictionary<string, string> _summaryBySessionId = new(StringComparer.OrdinalIgnoreCase);
@@ -53,8 +56,9 @@ public sealed class GrokSession
                 ".grok");
     }
 
-    /// <summary>Newest live Grok session, or the last-known one still inside the idle window.</summary>
-    public SessionInfo? Scan()
+    /// <summary>Newest live Grok session, or the last-known one still inside the idle window.
+    /// Today's work time is always computed, even when idle.</summary>
+    public AgentScan Scan()
     {
         IsAuthenticated = ReadAuthenticated();
         var live = ReadActiveSessions().Where(e => ProcessIsAlive(e.Pid)).ToList();
@@ -99,13 +103,17 @@ public sealed class GrokSession
             }
         }
 
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var (activeMs, lastMs) = RollingActive(nowMs);
+        var isLive = best is not null;
+        var todayMs = SessionActivity.WithLiveTail(activeMs, lastMs, nowMs, isLive);
         if (best is { } found)
         {
-            var info = WithRollingStart(found.Info);
+            var info = found.Info with { StartEpochMs = nowMs - todayMs };
             _lastKnown = (info, found.ActivityMs);
-            return info;
+            return new AgentScan(todayMs, info);
         }
-        return null;
+        return new AgentScan(todayMs, null);
     }
 
     // --- Auth / active sessions
@@ -440,23 +448,14 @@ public sealed class GrokSession
         return best;
     }
 
-    // --- 24h duration
-
-    private SessionInfo WithRollingStart(SessionInfo info)
-    {
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var (activeMs, lastMs) = RollingActive(nowMs);
-        return info with { StartEpochMs = SessionActivity.ElapsedStartMs(activeMs, lastMs, nowMs) };
-    }
-
     /// <summary>Combined working time across every Grok session that touched
-    /// the last 24 hours. Summaries are stat'd first so historical dirs are
+    /// today. Summaries are stat'd first so historical dirs are
     /// skipped without opening their event logs.</summary>
     private (long ActiveMs, long? LastMs) RollingActive(long nowMs)
     {
         if (!_hasBuiltSummaryIndex) RebuildSummaryIndex();
 
-        var cutoffMs = nowMs - SessionActivity.LookbackMs;
+        var cutoffMs = SessionActivity.LocalMidnightMs();
         long total = 0;
         long? newestLast = null;
         var liveDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

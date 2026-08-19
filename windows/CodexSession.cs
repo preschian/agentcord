@@ -1,8 +1,8 @@
 // Detects active Codex sessions by scanning the local transcript tree under
 // %USERPROFILE%\.codex\sessions (or %CODEX_HOME%\sessions). Codex owns these
 // records; AgentCord only reads session metadata, turn context, timestamps,
-// and token counts defensively. Elapsed time is the summed working duration
-// across transcripts that touched the last 24 hours (idle gaps excluded).
+// and token counts defensively. Elapsed time is today's working duration
+// (idle gaps excluded).
 
 using System.IO;
 using System.Text.Json;
@@ -11,7 +11,9 @@ namespace AgentCord;
 
 public sealed class CodexSession : IDisposable
 {
-    public double ActiveWindowSeconds { get; set; } = 60;
+    public double ActiveWindowSeconds { get; set; } = SessionActivity.IdleWindowSeconds;
+
+    public bool IsLinked => _tree.RootExists;
 
     private readonly SessionTreeIndex _tree;
     private readonly Dictionary<string, CacheEntry> _cache = [];
@@ -25,20 +27,30 @@ public sealed class CodexSession : IDisposable
 
     public void Dispose() => _tree.Dispose();
 
-    public SessionInfo? Scan()
+    public AgentScan Scan()
     {
         var files = _tree.Snapshot(TimeSpan.FromMilliseconds(SessionActivity.LookbackMs));
-        if (files.Count == 0) return null;
+        if (files.Count == 0) return default;
 
         // Prefer parsed event timestamps over filesystem mtime for idle and
         // selection. Every transcript must be inspected because an active
         // session can have a stale mtime; the per-file cache keeps re-scans of
         // unchanged files cheap.
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var cutoffMs = SessionActivity.LocalMidnightMs();
         SessionInfo? best = null;
+        long total = 0;
+        long? newestLast = null;
         foreach (var file in files)
         {
             var state = ReadTranscript(file.Path, file.Mtime);
             var activityMs = SessionActivity.NormalizeMs(state.LastEventAtMs, file.Mtime);
+            var (activeMs, lastMs) = SessionActivity.ActiveDuration(
+                state.StampsMs, state.StartedAtMs, state.LastEventAtMs, cutoffMs, nowMs);
+            total += activeMs;
+            if (lastMs is long last && (newestLast is null || last > newestLast))
+                newestLast = last;
+
             if (!SessionActivity.IsWithinWindow(activityMs, ActiveWindowSeconds)) continue;
 
             var project = state.Cwd is { Length: > 0 } cwd
@@ -63,30 +75,9 @@ public sealed class CodexSession : IDisposable
         foreach (var stale in _cache.Keys.Where(path => !livePaths.Contains(path)).ToList())
             _cache.Remove(stale);
 
-        return best is null ? null : WithRollingStart(best, files);
-    }
-
-    private SessionInfo WithRollingStart(SessionInfo info, IReadOnlyList<(string Path, DateTime Mtime)> files)
-    {
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var cutoffMs = nowMs - SessionActivity.LookbackMs;
-        long total = 0;
-        long? newestLast = null;
-
-        foreach (var file in files)
-        {
-            var state = ReadTranscript(file.Path, file.Mtime);
-            var activityMs = SessionActivity.NormalizeMs(state.LastEventAtMs, file.Mtime);
-            if (activityMs < cutoffMs) continue;
-
-            var (activeMs, lastMs) = SessionActivity.ActiveDuration(
-                state.StampsMs, state.StartedAtMs, state.LastEventAtMs, cutoffMs, nowMs);
-            total += activeMs;
-            if (lastMs is long last && (newestLast is null || last > newestLast))
-                newestLast = last;
-        }
-
-        return info with { StartEpochMs = SessionActivity.ElapsedStartMs(total, newestLast, nowMs) };
+        var live = best is not null;
+        var todayMs = SessionActivity.WithLiveTail(total, newestLast, nowMs, live);
+        return new AgentScan(todayMs, best is null ? null : best with { StartEpochMs = nowMs - todayMs });
     }
 
     private sealed class TranscriptState

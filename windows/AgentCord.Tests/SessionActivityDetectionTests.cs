@@ -30,6 +30,57 @@ public sealed class SessionActivityDetectionTests
         Assert.Equal(now - 3_604_000, start);
     }
 
+    [Fact]
+    public void WithLiveTail_only_while_live()
+    {
+        Assert.Equal(1000, SessionActivity.WithLiveTail(1000, 50, 80, live: false));
+        Assert.Equal(1030, SessionActivity.WithLiveTail(1000, 50, 80, live: true));
+        Assert.Equal(0, SessionActivity.WithLiveTail(0, null, 80, live: true));
+    }
+
+    [Fact]
+    public void Claude_idle_keeps_today_ms()
+    {
+        using var dir = TempDir.Create();
+        var project = Path.Combine(dir.Root, "C-Users-test-agentcord");
+        Directory.CreateDirectory(project);
+        var transcript = Path.Combine(project, "session.jsonl");
+        var start = DateTimeOffset.Now.AddMinutes(-10);
+        var end = DateTimeOffset.Now.AddMinutes(-5);
+        File.WriteAllText(transcript,
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + start.ToString("o") +
+            "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n" +
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + end.ToString("o") +
+            "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n");
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddMinutes(-5));
+
+        var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 1 };
+        var scan = scanner.Scan();
+        Assert.Null(scan.Session);
+        Assert.InRange(scan.TodayMs, 5 * 60_000L - 8_000, 5 * 60_000L + 8_000);
+    }
+
+    [Fact]
+    public void Claude_yesterday_stamps_do_not_count_today()
+    {
+        using var dir = TempDir.Create();
+        var project = Path.Combine(dir.Root, "C-Users-test-agentcord");
+        Directory.CreateDirectory(project);
+        var transcript = Path.Combine(project, "session.jsonl");
+        var yesterday = new DateTimeOffset(DateTime.Today.AddHours(-12));
+        File.WriteAllText(transcript,
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + yesterday.ToString("o") +
+            "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n" +
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + yesterday.AddMinutes(5).ToString("o") +
+            "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n");
+        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow);
+
+        var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
+        var scan = scanner.Scan();
+        Assert.Null(scan.Session);
+        Assert.Equal(0, scan.TodayMs);
+    }
+
     private static List<long> BurstMs(long startMs, long endMs)
     {
         var stamps = new List<long>();
@@ -84,7 +135,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddHours(-2));
 
         var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         Assert.Equal(AgentKind.Claude, info!.Agent);
@@ -106,7 +157,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddHours(-2));
 
         var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
-        Assert.Null(scanner.Scan());
+        Assert.Null(scanner.Scan().Session);
     }
 
     [Fact]
@@ -125,7 +176,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
 
         var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
-        Assert.Null(scanner.Scan());
+        Assert.Null(scanner.Scan().Session);
     }
 
     [Fact]
@@ -141,7 +192,7 @@ public sealed class SessionActivityDetectionTests
             "\",\"message\":{\"model\":\"claude-opus-4-5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n");
 
         using var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var firstInfo = scanner.Scan();
+        var firstInfo = scanner.Scan().Session;
         Assert.NotNull(firstInfo);
         Assert.Equal(8, firstInfo!.TotalTokens);
 
@@ -151,7 +202,7 @@ public sealed class SessionActivityDetectionTests
             "\",\"message\":{\"model\":\"claude-opus-4-5\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n");
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow);
 
-        var secondInfo = scanner.Scan();
+        var secondInfo = scanner.Scan().Session;
         Assert.NotNull(secondInfo);
         Assert.Equal(20, secondInfo!.TotalTokens);
     }
@@ -186,7 +237,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(Path.Combine(project, "evening.jsonl"), now.AddSeconds(-8).UtcDateTime);
 
         var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
@@ -220,7 +271,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddHours(-2));
 
         var scanner = new CodexSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         Assert.Equal(AgentKind.Codex, info!.Agent);
@@ -251,7 +302,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(active, now.AddHours(-2));
 
         var scanner = new CodexSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         Assert.True(info!.LastModifiedMs >= eventAt.ToUnixTimeMilliseconds());
@@ -275,7 +326,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(Path.Combine(day, "evening.jsonl"), eveningEnd.UtcDateTime);
 
         var scanner = new CodexSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
@@ -340,7 +391,7 @@ public sealed class SessionActivityDetectionTests
 
         const double windowSeconds = 180;
         var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = windowSeconds };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         Assert.Equal(AgentKind.Cursor, info!.Agent);
@@ -371,7 +422,7 @@ public sealed class SessionActivityDetectionTests
             ",\"updatedAtMs\":" + updatedAtMs + "}");
 
         var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
@@ -393,8 +444,10 @@ public sealed class SessionActivityDetectionTests
         File.WriteAllText(transcript, CursorUserLine(started, "first") + CursorUserLine(latest, "second"));
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
 
-        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        // Cursor user stamps are minute-resolution; 60s can miss a stamp that
+        // truncated to the previous minute on CI.
+        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 180 };
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
@@ -429,7 +482,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(Path.Combine(acp, "store.db"), DateTime.UtcNow);
 
         var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
@@ -450,7 +503,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(Path.Combine(transcripts, "evening.jsonl"), now.AddSeconds(-8).UtcDateTime);
 
         var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
@@ -501,7 +554,7 @@ public sealed class SessionActivityDetectionTests
             "\"primaryModelId\":\"grok-4.5\"}");
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         Assert.Equal(AgentKind.Grok, info!.Agent);
@@ -537,7 +590,7 @@ public sealed class SessionActivityDetectionTests
             "{\"acct\":{\"key\":\"test\"}}");
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
@@ -567,7 +620,7 @@ public sealed class SessionActivityDetectionTests
             now.AddHours(-4).ToString("o") + "\"}]");
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
@@ -611,7 +664,7 @@ public sealed class SessionActivityDetectionTests
             "\"git_remotes\":[\"https://github.com/preschian/agentcord.git\"]}");
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         Assert.Equal(AgentKind.Grok, info!.Agent);
@@ -638,7 +691,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(summaryPath, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
-        Assert.Null(scanner.Scan());
+        Assert.Null(scanner.Scan().Session);
     }
 
     [Fact]
@@ -662,7 +715,7 @@ public sealed class SessionActivityDetectionTests
             "{\"ts\":\"2026-01-01T00:00:00Z\",\"type\":\"turn_started\"}\n");
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         Assert.Equal(AgentKind.Grok, info!.Agent);
@@ -694,7 +747,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(eventsPath, stale);
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 1 };
-        var info = scanner.Scan();
+        var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
         Assert.Equal(AgentKind.Grok, info!.Agent);
@@ -726,7 +779,7 @@ public sealed class SessionActivityDetectionTests
         File.SetLastWriteTimeUtc(eventsPath, stale);
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 1 };
-        Assert.Null(scanner.Scan());
+        Assert.Null(scanner.Scan().Session);
     }
 
     [Fact]
@@ -743,7 +796,7 @@ public sealed class SessionActivityDetectionTests
             "{\"current_model_id\":\"grok-4.5\",\"last_active_at\":\"2026-01-01T00:00:00Z\"}");
 
         var scanner = new GrokSession(dir.Root) { ActiveWindowSeconds = 60 };
-        Assert.Null(scanner.Scan());
+        Assert.Null(scanner.Scan().Session);
     }
 
     [Theory]

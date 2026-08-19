@@ -14,7 +14,6 @@ public static class TrayStatusText
         UsageInfo? claudeUsage,
         CodexUsageInfo? codexUsage,
         CursorUsageInfo? cursorUsage,
-        AntigravityUsageInfo? antigravityUsage = null,
         GrokUsageInfo? grokUsage = null)
     {
         var lines = new List<string>();
@@ -24,7 +23,7 @@ public static class TrayStatusText
         else
             lines.Add(IdleLine(controller));
 
-        var usage = UsageLine(settings, claudeUsage, codexUsage, cursorUsage, antigravityUsage, grokUsage);
+        var usage = UsageLine(settings, claudeUsage, codexUsage, cursorUsage, grokUsage);
         if (usage is not null) lines.Add(usage);
 
         return Fit(string.Join("\n", lines));
@@ -61,21 +60,18 @@ public static class TrayStatusText
         UsageInfo? claudeUsage,
         CodexUsageInfo? codexUsage,
         CursorUsageInfo? cursorUsage,
-        AntigravityUsageInfo? antigravityUsage,
         GrokUsageInfo? grokUsage)
     {
         var claude = settings.IsAgentEnabled(AgentKind.Claude) ? claudeUsage : null;
         var codex = settings.IsAgentEnabled(AgentKind.Codex) ? codexUsage : null;
         var cursor = settings.IsAgentEnabled(AgentKind.Cursor) ? cursorUsage : null;
         var grok = settings.IsAgentEnabled(AgentKind.Grok) ? grokUsage : null;
-        var antigravity = settings.IsAgentEnabled(AgentKind.Antigravity) ? antigravityUsage : null;
 
         var contributing =
             (claude is not null ? 1 : 0)
             + (codex is not null ? 1 : 0)
             + (cursor is not null ? 1 : 0)
-            + (grok is not null ? 1 : 0)
-            + (antigravity is not null ? 1 : 0);
+            + (grok is not null ? 1 : 0);
         if (contributing == 0) return null;
 
         var multi = contributing > 1;
@@ -84,7 +80,6 @@ public static class TrayStatusText
         if (codex is not null) parts.Add(CodexUsage(codex, multi));
         if (cursor is not null) parts.Add(CursorUsage(cursor, multi));
         if (grok is not null) parts.Add(GrokUsageLine(grok, multi));
-        if (antigravity is not null) parts.Add(AntigravityUsageLine(antigravity, multi));
         return string.Join(" · ", parts);
     }
 
@@ -122,14 +117,6 @@ public static class TrayStatusText
     {
         var window = usage.Weekly;
         var text = $"Grok {window.Percent}%";
-        if (!labeled && ResetSuffix(window) is { } reset) text += $" ({reset})";
-        return text;
-    }
-
-    private static string AntigravityUsageLine(AntigravityUsageInfo usage, bool labeled)
-    {
-        var window = usage.FiveHour;
-        var text = labeled ? $"Antigravity {window.Percent}%" : $"5h {window.Percent}%";
         if (!labeled && ResetSuffix(window) is { } reset) text += $" ({reset})";
         return text;
     }

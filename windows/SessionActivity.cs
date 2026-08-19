@@ -1,5 +1,5 @@
-// Shared activity-timestamp helpers for Claude, Codex, Cursor, Grok, and
-// Antigravity session scanners. Prefer parseable event/runtime timestamps;
+// Shared activity-timestamp helpers for Claude, Codex, Cursor, and Grok
+// session scanners. Prefer parseable event/runtime timestamps;
 // fall back to mtime. Duration helpers backdate Discord's elapsed timer so
 // 1pm–2pm + 5pm–6pm shows as two hours, not five.
 

@@ -1,7 +1,7 @@
 # AgentCord for Windows (C# / .NET)
 
 A native Windows port of the macOS menu bar app, written in C# on .NET 10. Same
-idea: while a Claude Code, Codex, Cursor, Grok, or Antigravity session is running, your Discord
+idea: while a Claude Code, Codex, Cursor, or Grok session is running, your Discord
 profile shows what you're working on, and it clears itself when the session
 goes quiet or you quit. Cursor covers both the Cursor CLI and Cursor sessions
 driven through T3 Code. If several agents are active, the most recently updated
@@ -24,14 +24,13 @@ Discord IPC client is hand-written.
 |---|---|---|
 | Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` (`DiscordIpc.cs`) |
 | IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
-| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.cursor\projects/**/agent-transcripts`, `%USERPROFILE%\.grok\active_sessions.json`, and `%USERPROFILE%\.gemini\antigravity-cli\brain` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`, `AntigravitySession.cs`) |
+| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.cursor\projects/**/agent-transcripts`, and `%USERPROFILE%\.grok\active_sessions.json` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`) |
 | Presence controller | `PresenceController.swift` | `PresenceController.cs` |
 | Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs`, `CodexUsage.cs` (`codex app-server`), `CursorUsage.cs` (`auth.json` / dashboard API), and `GrokUsage.cs` (`~/.grok/auth.json` / SuperGrok billing API) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
 | Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` (`Settings.cs`) |
 | UI | `NSStatusItem` + SwiftUI popover | `NotifyIcon` (`TrayApplicationContext.cs`) + WPF popover (`PopoverWindow.xaml`) |
 | Launch at login | `SMAppService` | `HKCU\...\Run` via the registry API (`Autostart.cs`) |
-| Prevent sleep | `IOPMAssertion` | `SetThreadExecutionState` (`SleepGuard.cs`) |
 
 ## Prerequisites
 
@@ -55,7 +54,7 @@ dotnet run
 **Left-click** the tray icon for the popover: connection pill, optional unified
 usage card (one primary bar per linked agent), a row per enabled agent that
 opens a detail screen (session, usage, and Claude status), and a Settings
-screen with agent toggles, presence, launch-at-login, prevent-sleep, display
+screen with agent toggles, presence, launch-at-login, display
 fields (including Show unified usage), activity type, and the idle window.
 **Right-click** for a quick menu (show, toggle presence, quit).
 
@@ -97,16 +96,14 @@ exponential backoff capped at 30s, and the current activity is re-sent on
 every READY.
 
 **Session detection.** `ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`,
-`GrokSession.cs`, and `AntigravitySession.cs` re-scan their data on the
+and `GrokSession.cs` re-scan their data on the
 controller's 3-second tick and parse defensively. Claude sums tokens over the
 local calendar day and working time over the last 24 hours; Codex reports the
 current transcript's model, latest context token count, and a 24-hour working
 sum; Cursor sums working time over the last 24 hours
 and enriches from `~/.cursor/chats/**/meta.json`; Grok uses
 `last_active_at` and event-log mtimes (a live PID alone is not enough) and reads
-`summary.json` / `signals.json` for project, model, and context tokens;
-Antigravity detects active sessions, models (e.g. Gemini 3.7 Flash), workspaces,
-and presence locks under `%USERPROFILE%\.gemini\antigravity-cli`.
+`summary.json` / `signals.json` for project, model, and context tokens.
 Per-file aggregates are memoized by mtime so re-scans stay cheap. Repo names come from `git`
 (remote origin, then toplevel, then the directory name), spawned with
 `CreateNoWindow` so nothing flashes a console.

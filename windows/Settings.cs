@@ -28,6 +28,7 @@ public sealed class Settings
     [JsonPropertyName("agent_claude_enabled")] public bool AgentClaudeEnabled { get; set; } = true;
     [JsonPropertyName("agent_codex_enabled")] public bool AgentCodexEnabled { get; set; } = true;
     [JsonPropertyName("agent_cursor_enabled")] public bool AgentCursorEnabled { get; set; } = true;
+    /// <summary>Unused. Kept so a save does not strip the key GPUI still round-trips.</summary>
     [JsonPropertyName("agent_antigravity_enabled")] public bool AgentAntigravityEnabled { get; set; } = true;
     [JsonPropertyName("agent_grok_enabled")] public bool AgentGrokEnabled { get; set; } = true;
 
@@ -36,9 +37,6 @@ public sealed class Settings
 
     /// <summary>A transcript counts as active if touched within this many seconds.</summary>
     [JsonPropertyName("idle_window_seconds")] public double IdleWindowSeconds { get; set; } = 300.0;
-
-    /// <summary>Keep the machine awake while the app runs (macOS "Prevent sleep").</summary>
-    [JsonPropertyName("prevent_sleep")] public bool PreventSleep { get; set; }
 
     /// <summary>Activity types Discord permits for RPC updates (value, UI label).
     /// Streaming (1) and Custom (4) are intentionally excluded.</summary>
@@ -54,7 +52,7 @@ public sealed class Settings
     {
         AgentKind.Codex => AgentCodexEnabled,
         AgentKind.Cursor => AgentCursorEnabled,
-        AgentKind.Antigravity => AgentAntigravityEnabled,
+        AgentKind.Antigravity => false,
         AgentKind.Grok => AgentGrokEnabled,
         _ => AgentClaudeEnabled,
     };
@@ -64,12 +62,11 @@ public sealed class Settings
     {
         get
         {
-            var list = new List<AgentKind>(5);
+            var list = new List<AgentKind>(4);
             if (AgentClaudeEnabled) list.Add(AgentKind.Claude);
             if (AgentCodexEnabled) list.Add(AgentKind.Codex);
             if (AgentCursorEnabled) list.Add(AgentKind.Cursor);
             if (AgentGrokEnabled) list.Add(AgentKind.Grok);
-            if (AgentAntigravityEnabled) list.Add(AgentKind.Antigravity);
             return list;
         }
     }
@@ -80,7 +77,7 @@ public sealed class Settings
         {
             case AgentKind.Codex: AgentCodexEnabled = enabled; break;
             case AgentKind.Cursor: AgentCursorEnabled = enabled; break;
-            case AgentKind.Antigravity: AgentAntigravityEnabled = enabled; break;
+            case AgentKind.Antigravity: break;
             case AgentKind.Grok: AgentGrokEnabled = enabled; break;
             default: AgentClaudeEnabled = enabled; break;
         }
@@ -95,7 +92,6 @@ public sealed class Settings
         if (AgentCodexEnabled) return AgentKind.Codex;
         if (AgentCursorEnabled) return AgentKind.Cursor;
         if (AgentGrokEnabled) return AgentKind.Grok;
-        if (AgentAntigravityEnabled) return AgentKind.Antigravity;
         return AgentKind.Claude;
     }
 
@@ -117,7 +113,10 @@ public sealed class Settings
     {
         try
         {
-            return JsonSerializer.Deserialize<Settings>(File.ReadAllText(ConfigPath)) ?? new Settings();
+            var settings = JsonSerializer.Deserialize<Settings>(File.ReadAllText(ConfigPath)) ?? new Settings();
+            if (!settings.IsAgentEnabled(settings.SelectedAgent))
+                settings.SelectedAgent = settings.FirstEnabledAgent();
+            return settings;
         }
         catch
         {

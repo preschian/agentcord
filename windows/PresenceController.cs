@@ -2,8 +2,7 @@
 // selects the most recently active enabled agent, builds the Rich Presence
 // payload from the user's settings, and drives DiscordIpc. Clears the presence
 // when the session goes idle or the app quits. Port of
-// AgentCord/PresenceController.swift. Cursor covers both the Cursor CLI and
-// Cursor sessions driven via T3 Code.
+// AgentCord/PresenceController.swift. Cursor is live only while a hook turn is open.
 //
 // A 3-second tick both re-scans enabled agents (cheap: tree index + JSONL
 // tail) and serves as the update throttle — Discord rate-limits rapid

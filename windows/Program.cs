@@ -51,6 +51,7 @@ internal static class Program
     private static void Screenshot(string path)
     {
         var settings = Settings.Load();
+        CursorHooks.Ensure();
         using var controller = new PresenceController(settings);
         using var usage = new ClaudeUsage();
         using var codexUsage = new CodexUsage();

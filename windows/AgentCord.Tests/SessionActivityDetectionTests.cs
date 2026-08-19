@@ -1,6 +1,6 @@
-using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Xunit;
 
 namespace AgentCord.Tests;
@@ -362,168 +362,85 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
-    public void Cursor_detects_active_transcript_when_mtime_is_stale()
+    public void Cursor_open_start_is_live_and_ticks()
     {
         using var dir = TempDir.Create();
-        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
-        Directory.CreateDirectory(transcripts);
-        var transcript = Path.Combine(transcripts, "abc123.jsonl");
+        var uptime = Path.Combine(dir.Root, "today-uptime.json");
+        var start = DateTimeOffset.UtcNow.AddMinutes(-2).ToUnixTimeMilliseconds();
+        File.WriteAllText(uptime,
+            "{\"e\":\"start\",\"ms\":" + start + ",\"id\":\"c1\",\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}\n");
 
-        // Cursor embeds wall-clock stamps at minute resolution (no seconds).
-        // Stamp "now" and use an idle window wider than one minute so truncating
-        // seconds cannot push a fresh stamp outside the active window on CI.
-        var local = DateTimeOffset.Now;
-        var stamp = local.ToString("dddd, MMM d, yyyy, h:mm tt", CultureInfo.GetCultureInfo("en-US"));
-        var offsetLabel = FormatUtcOffset(local.Offset);
-        var updatedAtMs = DateTimeOffset.UtcNow.AddSeconds(-20).ToUnixTimeMilliseconds();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var scanner = new CursorSession(dir.Root, uptime);
+        var scan = scanner.ScanAt(uptime, now);
 
-        File.WriteAllText(transcript,
-            "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi <timestamp>" +
-            stamp + " (UTC" + offsetLabel + ")</timestamp>\"}]}}\n");
-        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddHours(-2));
-
-        // Precise activity signal via chat meta (also exercised by NormalizeMs).
-        var chatDir = Path.Combine(dir.Root, "chats", "workspace", "abc123");
-        Directory.CreateDirectory(chatDir);
-        File.WriteAllText(Path.Combine(chatDir, "meta.json"),
-            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"createdAtMs\":" + (updatedAtMs - 60_000) +
-            ",\"updatedAtMs\":" + updatedAtMs + "}");
-
-        const double windowSeconds = 180;
-        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = windowSeconds };
-        var info = scanner.Scan().Session;
-
-        Assert.NotNull(info);
-        Assert.Equal(AgentKind.Cursor, info!.Agent);
-        Assert.True(SessionActivity.IsWithinWindow(info.LastModifiedMs, windowSeconds));
-        Assert.True(info.LastModifiedMs >= updatedAtMs);
+        Assert.NotNull(scan.Session);
+        Assert.Equal(AgentKind.Cursor, scan.Session!.Agent);
+        Assert.Equal("agentcord", scan.Session.ProjectName);
+        Assert.InRange(scan.TodayMs, 2 * 60_000L - 5_000, 2 * 60_000L + 5_000);
+        Assert.Equal(now - scan.TodayMs, scan.Session.StartEpochMs);
     }
 
     [Fact]
-    public void Cursor_counts_a_live_agent_turn_longer_than_the_five_minute_gap()
+    public void Cursor_sealed_turns_are_idle_and_keep_the_sum()
     {
         using var dir = TempDir.Create();
-        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
-        Directory.CreateDirectory(transcripts);
-        var transcript = Path.Combine(transcripts, "abc123.jsonl");
+        var uptime = Path.Combine(dir.Root, "today-uptime.json");
+        File.WriteAllText(uptime,
+            "{\"e\":\"start\",\"ms\":1000,\"id\":\"c1\",\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}\n" +
+            "{\"e\":\"end\",\"ms\":2000,\"id\":\"c1\",\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}\n" +
+            "{\"e\":\"start\",\"ms\":5000,\"id\":\"c1\",\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}\n" +
+            "{\"e\":\"end\",\"ms\":8000,\"id\":\"c1\",\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}\n");
 
-        // One user stamp 12 minutes ago, then 12 minutes of agent writes.
-        // The 5-minute gap cap used to treat that as idle and reset Discord to 00:00.
-        var started = DateTimeOffset.Now.AddMinutes(-12);
-        File.WriteAllText(transcript, CursorUserLine(started, "long turn"));
-        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
+        var scanner = new CursorSession(dir.Root, uptime);
+        var scan = scanner.ScanAt(uptime, 10_000);
 
-        var createdAtMs = started.ToUnixTimeMilliseconds();
-        var updatedAtMs = DateTimeOffset.UtcNow.AddSeconds(-5).ToUnixTimeMilliseconds();
-        var chatDir = Path.Combine(dir.Root, "chats", "workspace", "abc123");
-        Directory.CreateDirectory(chatDir);
-        File.WriteAllText(Path.Combine(chatDir, "meta.json"),
-            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"createdAtMs\":" + createdAtMs +
-            ",\"updatedAtMs\":" + updatedAtMs + "}");
-
-        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan().Session;
-
-        Assert.NotNull(info);
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
-        Assert.InRange(elapsed, 10 * 60_000L, 14 * 60_000L);
+        Assert.Null(scan.Session);
+        Assert.Equal(4000, scan.TodayMs);
     }
 
     [Fact]
-    public void Cursor_keeps_elapsed_across_sparse_user_turns()
+    public void Cursor_ignores_other_day_uptime_files()
     {
         using var dir = TempDir.Create();
-        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
-        Directory.CreateDirectory(transcripts);
-        var transcript = Path.Combine(transcripts, "abc123.jsonl");
+        File.WriteAllText(Path.Combine(dir.Root, "1999-01-01-uptime.json"),
+            "{\"e\":\"start\",\"ms\":1,\"id\":\"old\",\"cwd\":\"D:\\\\old\"}\n" +
+            "{\"e\":\"end\",\"ms\":999999,\"id\":\"old\",\"cwd\":\"D:\\\\old\"}\n");
+        var today = Path.Combine(dir.Root, "today-uptime.json");
+        File.WriteAllText(today, "{\"e\":\"start\",\"ms\":1000,\"id\":\"c1\",\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}\n{\"e\":\"end\",\"ms\":1600,\"id\":\"c1\"}\n");
 
-        // Two user messages an hour apart — the 5-minute gap-sum used to drop
-        // that hour, then the new stamp snapped Discord to 00:00.
-        var started = DateTimeOffset.Now.AddMinutes(-60);
-        var latest = DateTimeOffset.Now.AddSeconds(-8);
-        File.WriteAllText(transcript, CursorUserLine(started, "first") + CursorUserLine(latest, "second"));
-        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
-
-        // Cursor user stamps are minute-resolution; 60s can miss a stamp that
-        // truncated to the previous minute on CI.
-        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 180 };
-        var info = scanner.Scan().Session;
-
-        Assert.NotNull(info);
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
-        Assert.InRange(elapsed, 55 * 60_000L, 65 * 60_000L);
+        var scanner = new CursorSession(dir.Root, today);
+        var scan = scanner.ScanAt(today, 2000);
+        Assert.Null(scan.Session);
+        Assert.Equal(600, scan.TodayMs);
     }
 
     [Fact]
-    public void Cursor_keeps_transcript_elapsed_when_acp_is_newer()
+    public void CursorHooks_install_once_does_not_duplicate()
     {
         using var dir = TempDir.Create();
-        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
-        Directory.CreateDirectory(transcripts);
-        var transcript = Path.Combine(transcripts, "abc123.jsonl");
-
-        var started = DateTimeOffset.Now.AddMinutes(-60);
-        var latest = DateTimeOffset.Now.AddSeconds(-8);
-        File.WriteAllText(transcript, CursorUserLine(started, "first") + CursorUserLine(latest, "second"));
-        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
-
-        var createdAtMs = started.ToUnixTimeMilliseconds();
-        var updatedAtMs = DateTimeOffset.UtcNow.AddSeconds(-5).ToUnixTimeMilliseconds();
-        var chatDir = Path.Combine(dir.Root, "chats", "workspace", "abc123");
-        Directory.CreateDirectory(chatDir);
-        File.WriteAllText(Path.Combine(chatDir, "meta.json"),
-            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"createdAtMs\":" + createdAtMs +
-            ",\"updatedAtMs\":" + updatedAtMs + "}");
-
-        var acp = Path.Combine(dir.Root, "acp-sessions", "live-turn");
-        Directory.CreateDirectory(acp);
-        File.WriteAllText(Path.Combine(acp, "store.db"), "x");
-        File.WriteAllText(Path.Combine(acp, "meta.json"), "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}");
-        File.SetLastWriteTimeUtc(Path.Combine(acp, "store.db"), DateTime.UtcNow);
-
-        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan().Session;
-
-        Assert.NotNull(info);
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
-        Assert.InRange(elapsed, 55 * 60_000L, 65 * 60_000L);
+        File.WriteAllText(Path.Combine(dir.Root, "hooks.json"),
+            """{"version":1,"hooks":{"stop":[{"command":"other"}]}}""");
+        Assert.True(CursorHooks.EnsureIn(dir.Root));
+        Assert.False(CursorHooks.EnsureIn(dir.Root));
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.Root, "hooks.json")));
+        var stop = doc.RootElement.GetProperty("hooks").GetProperty("stop");
+        Assert.Equal(1, stop.EnumerateArray().Count(x => CursorHooks.IsOurs(x.GetProperty("command").GetString()!)));
+        Assert.Equal(1, doc.RootElement.GetProperty("hooks").GetProperty("beforeSubmitPrompt")
+            .EnumerateArray().Count(x => CursorHooks.IsOurs(x.GetProperty("command").GetString()!)));
+        Assert.True(File.Exists(Path.Combine(dir.Root, "hooks", CursorHooks.Marker)));
     }
 
     [Fact]
-    public void Cursor_sums_working_time_across_sessions_in_the_last_24_hours()
+    public void CursorHooks_dedupes_existing_copies()
     {
         using var dir = TempDir.Create();
-        var transcripts = Path.Combine(dir.Root, "projects", "D-Workspace-agentcord", "agent-transcripts");
-        Directory.CreateDirectory(transcripts);
-        var now = DateTimeOffset.Now;
-
-        File.WriteAllText(Path.Combine(transcripts, "morning.jsonl"), CursorBurst(now.AddHours(-6), now.AddHours(-5)));
-        File.WriteAllText(Path.Combine(transcripts, "evening.jsonl"), CursorBurst(now.AddHours(-1), now.AddSeconds(-8)));
-        File.SetLastWriteTimeUtc(Path.Combine(transcripts, "morning.jsonl"), now.AddHours(-5).UtcDateTime);
-        File.SetLastWriteTimeUtc(Path.Combine(transcripts, "evening.jsonl"), now.AddSeconds(-8).UtcDateTime);
-
-        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
-        var info = scanner.Scan().Session;
-
-        Assert.NotNull(info);
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
-        Assert.InRange(elapsed, 2 * 3600_000L - 90_000, 2 * 3600_000L + 90_000);
-    }
-
-    private static string CursorBurst(DateTimeOffset start, DateTimeOffset end)
-    {
-        var text = "";
-        foreach (var ts in Burst(start, end))
-            text += CursorUserLine(ts, "hi");
-        return text;
-    }
-
-    private static string CursorUserLine(DateTimeOffset local, string text)
-    {
-        var stamp = local.ToString("dddd, MMM d, yyyy, h:mm tt", CultureInfo.GetCultureInfo("en-US"));
-        var offsetLabel = FormatUtcOffset(local.Offset);
-        return "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<timestamp>" +
-            stamp + " (UTC" + offsetLabel + ")</timestamp>\\n" + text + "\"}]}}\n";
+        File.WriteAllText(Path.Combine(dir.Root, "hooks.json"),
+            """{"version":1,"hooks":{"stop":[{"command":"agentcord-cursor-turn.ps1"},{"command":"agentcord-cursor-turn.ps1 extra"}]}}""");
+        Assert.True(CursorHooks.EnsureIn(dir.Root));
+        Assert.False(CursorHooks.EnsureIn(dir.Root));
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.Root, "hooks.json")));
+        Assert.Equal(1, doc.RootElement.GetProperty("hooks").GetProperty("stop").GetArrayLength());
     }
 
     [Fact]
@@ -899,15 +816,6 @@ public sealed class SessionActivityDetectionTests
         var text = TrayStatusText.Build(settings, controller, null, null, null);
         Assert.True(text.Length <= 63, $"Text length {text.Length} exceeded 63 chars: '{text}'");
         Assert.Equal(63, TrayStatusText.MaxLength);
-    }
-
-    private static string FormatUtcOffset(TimeSpan offset)
-    {
-        var sign = offset < TimeSpan.Zero ? "-" : "+";
-        var abs = offset.Duration();
-        return abs.Minutes == 0
-            ? $"{sign}{(int)abs.TotalHours}"
-            : $"{sign}{(int)abs.TotalHours}:{abs.Minutes:D2}";
     }
 }
 

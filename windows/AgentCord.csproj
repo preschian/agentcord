@@ -35,5 +35,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="AgentCord.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="hooks\agentcord-cursor-turn.ps1" LogicalName="agentcord-cursor-turn.ps1" />
+  </ItemGroup>
 
 </Project>

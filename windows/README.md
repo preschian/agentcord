@@ -3,8 +3,8 @@
 A native Windows port of the macOS menu bar app, written in C# on .NET 10. Same
 idea: while a Claude Code, Codex, Cursor, or Grok session is running, your Discord
 profile shows what you're working on, and it clears itself when the session
-goes quiet or you quit. Cursor covers both the Cursor CLI and Cursor sessions
-driven through T3 Code. If several agents are active, the most recently updated
+goes quiet or you quit. Cursor is active only while a hook turn is open.
+If several agents are active, the most recently updated
 session wins.
 
 The app lives entirely in the system tray — no taskbar entry. Left-clicking the
@@ -15,7 +15,7 @@ iOS-style switches.
 
 It uses the .NET base class library (WinForms for the tray icon, WPF for the
 popover, named pipes, `HttpClient`, `System.Text.Json`, the registry API) plus
-`Microsoft.Data.Sqlite` to read T3 Code's local session DB read-only. The
+`Microsoft.Data.Sqlite` to read Cursor's local dashboard DB read-only. The
 Discord IPC client is hand-written.
 
 ## Feature map
@@ -24,7 +24,7 @@ Discord IPC client is hand-written.
 |---|---|---|
 | Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` (`DiscordIpc.cs`) |
 | IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
-| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.cursor\projects/**/agent-transcripts`, and `%USERPROFILE%\.grok\active_sessions.json` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`) |
+| Session detection | `FSEvents` on agent data | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%TEMP%\AgentCord\yyyy-MM-dd-uptime.json` (Cursor hooks), and `%USERPROFILE%\.grok\active_sessions.json` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`) |
 | Presence controller | `PresenceController.swift` | `PresenceController.cs` |
 | Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs`, `CodexUsage.cs` (`codex app-server`), `CursorUsage.cs` (`auth.json` / dashboard API), and `GrokUsage.cs` (`~/.grok/auth.json` / SuperGrok billing API) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
@@ -100,8 +100,8 @@ and `GrokSession.cs` re-scan their data on the
 controller's 3-second tick and parse defensively. Claude sums tokens over the
 local calendar day and working time since local midnight; Codex reports the
 current transcript's model, latest context token count, and today's working
-sum; Cursor sums working time since local midnight
-and enriches from `~/.cursor/chats/**/meta.json`; Grok uses
+sum; Cursor sums today's hook `start`/`end` diffs
+from `%TEMP%\AgentCord\yyyy-MM-dd-uptime.json`; Grok uses
 `last_active_at` and event-log mtimes (a live PID alone is not enough) and reads
 `summary.json` / `signals.json` for project, model, and context tokens.
 Per-file aggregates are memoized by mtime so re-scans stay cheap. Repo names come from `git`

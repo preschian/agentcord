@@ -1,471 +1,142 @@
-// Detects the currently active Cursor agent session from:
-//   1. %USERPROFILE%\.cursor\projects\**\agent-transcripts\**\*.jsonl (CLI)
-//   2. T3 Code's ~/.t3/userdata/state.sqlite when provider is Cursor
-//   3. %USERPROFILE%\.cursor\acp-sessions\** (live ACP turn signal)
-//
-// Enrich transcripts with ~/.cursor/chats/**/<session-id>/meta.json plus
-// store.db (`lastUsedModel`) when sqlite3 is on PATH. Port of
-// AgentCord/CursorSession.swift, extended for T3 Code / ACP on Windows.
+// Detects the currently active Cursor agent session from today's hook file
+// (`%TEMP%\AgentCord\yyyy-MM-dd-uptime.json`). Cursor is live only while a
+// turn is open (unmatched `start`). Today's clock is the sum of start/end diffs.
 
-using System.Globalization;
 using System.IO;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace AgentCord;
 
 public sealed class CursorSession : IDisposable
 {
-    /// <summary>A transcript counts as active if modified within this window.</summary>
     public double ActiveWindowSeconds { get; set; } = SessionActivity.IdleWindowSeconds;
 
-    public bool IsLinked => _transcriptTree.RootExists || _chatsTree.RootExists;
-
-    private const long LookbackMs = 24 * 60 * 60 * 1000;
-
-    private static readonly Regex TimestampRegex = new(
-        @"<timestamp>(.*?)</timestamp>",
-        RegexOptions.Singleline | RegexOptions.Compiled);
-
-    private readonly string _chatsDir;
-    private readonly string _acpDir;
-    private readonly bool _enableT3;
-    private readonly T3CursorSession _t3Scanner = new();
-    private readonly SessionTreeIndex _transcriptTree;
-    private readonly SessionTreeIndex _chatsTree;
-    private readonly Dictionary<string, string> _metaBySessionId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string _cursorHome;
+    private readonly string _uptimeFile;
     private readonly Dictionary<string, string> _repoNameCache = [];
-    private readonly Dictionary<string, (DateTime? Stamp, string? Model)> _modelCache = [];
-    private readonly Dictionary<string, TranscriptCacheEntry> _transcriptCache = [];
-    private DateTime _metaIndexStamp = DateTime.MinValue;
 
-    public CursorSession(string? cursorHome = null, bool enableT3 = true)
+    public CursorSession(string? cursorHome = null, string? uptimeFile = null)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var resolved = cursorHome ?? Path.Combine(home, ".cursor");
-        var projectsDir = Path.Combine(resolved, "projects");
-        _chatsDir = Path.Combine(resolved, "chats");
-        _acpDir = Path.Combine(resolved, "acp-sessions");
-        _enableT3 = enableT3;
-        _transcriptTree = new SessionTreeIndex(projectsDir, "*.jsonl", IsAgentTranscript);
-        _chatsTree = new SessionTreeIndex(_chatsDir, "meta.json");
+        _cursorHome = cursorHome ?? Path.Combine(home, ".cursor");
+        _uptimeFile = uptimeFile ?? DefaultUptimeFile();
     }
 
-    public void Dispose()
+    public bool IsLinked =>
+        Directory.Exists(Path.Combine(_cursorHome, "projects"))
+        || Directory.Exists(Path.Combine(_cursorHome, "chats"));
+
+    public void Dispose() { }
+
+    public static string DefaultUptimeFile()
     {
-        _transcriptTree.Dispose();
-        _chatsTree.Dispose();
+        var dir = Environment.GetEnvironmentVariable("AGENTCORD_CURSOR_UPTIME_DIR");
+        if (string.IsNullOrWhiteSpace(dir))
+            dir = Path.Combine(Path.GetTempPath(), "AgentCord");
+        return Path.Combine(dir, $"{DateTime.Today:yyyy-MM-dd}-uptime.json");
     }
 
-    private static bool IsAgentTranscript(string path) =>
-        path.Contains($"{Path.DirectorySeparatorChar}agent-transcripts{Path.DirectorySeparatorChar}",
-            StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/agent-transcripts/", StringComparison.OrdinalIgnoreCase);
+    public AgentScan Scan() => ScanAt(_uptimeFile, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
-    /// <summary>Newest live Cursor session across CLI transcripts, T3 Code, and ACP.</summary>
-    public AgentScan Scan()
+    internal AgentScan ScanAt(string path, long nowMs)
     {
-        _t3Scanner.ActiveWindowSeconds = ActiveWindowSeconds;
-        var transcripts = ScanTranscripts();
-        var candidates = new List<SessionInfo?> { transcripts.Session, ScanAcp() };
-        if (_enableT3) candidates.Add(_t3Scanner.Scan());
-        var best = candidates
-            .Where(s => s is not null)
-            .MaxBy(s => s!.LastModifiedMs);
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var todayMs = transcripts.TodayMs;
-        if (best is null)
-            return new AgentScan(todayMs, null);
-        // T3/ACP win on recency (live turn) but their start is the current
-        // turn / session dir — that snaps Discord back to 00:00. Keep the
-        // daily transcript clock whenever we have one.
-        return new AgentScan(todayMs, best with { StartEpochMs = nowMs - todayMs });
-    }
+        var day = ParseDay(path, nowMs);
+        if (!day.Open)
+            return new AgentScan(day.TotalMs, null);
 
-    private AgentScan ScanTranscripts()
-    {
-        var files = _transcriptTree.Snapshot(TimeSpan.FromMilliseconds(LookbackMs));
-        if (files.Count == 0) return default;
-
-        RebuildMetaIndexIfNeeded();
-
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var cutoffMs = SessionActivity.LocalMidnightMs();
-
-        long totalActiveMs = 0;
-        string? bestPath = null;
-        long bestActivityMs = long.MinValue;
-        long? activeLastMs = null;
-
-        foreach (var file in files)
+        var project = string.IsNullOrEmpty(day.Project) ? "Cursor" : day.Project;
+        return new AgentScan(day.TotalMs, new SessionInfo
         {
-            var entry = TranscriptAggregate(file.Path, file.Mtime);
-            var lastStamp = entry.ConversationalStampsMs.Count > 0
-                ? entry.ConversationalStampsMs[^1]
-                : (long?)null;
-            var activityMs = SessionActivity.NormalizeMs(file.Mtime, lastStamp, entry.UpdatedAtMs);
-
-            var (activeMs, lastMs) = ActiveDuration(
-                entry.ConversationalStampsMs,
-                entry.CreatedAtMs,
-                entry.UpdatedAtMs,
-                cutoffMs,
-                nowMs);
-
-            totalActiveMs += activeMs;
-
-            if (bestPath is null || activityMs >= bestActivityMs)
-            {
-                bestPath = file.Path;
-                bestActivityMs = activityMs;
-                activeLastMs = lastMs ?? lastStamp ?? entry.UpdatedAtMs;
-            }
-        }
-
-        var livePaths = files.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var stale in _transcriptCache.Keys.Where(k => !livePaths.Contains(k)).ToList())
-            _transcriptCache.Remove(stale);
-
-        var live = bestPath is not null
-            && SessionActivity.IsWithinWindow(bestActivityMs, ActiveWindowSeconds);
-        var todayMs = SessionActivity.WithLiveTail(totalActiveMs, activeLastMs, nowMs, live);
-        if (!live)
-            return new AgentScan(todayMs, null);
-
-        var sessionId = Path.GetFileNameWithoutExtension(bestPath!);
-        var meta = ReadMeta(sessionId, includeModel: true);
-
-        var projectName = ResolveProjectName(meta?.Cwd, bestPath!);
-        if (string.IsNullOrWhiteSpace(projectName)) projectName = "Cursor";
-
-        return new AgentScan(todayMs, new SessionInfo
-        {
-            ProjectName = projectName,
-            Model = meta?.Model is { Length: > 0 } model ? PrettyModel(model) : null,
-            StartEpochMs = nowMs - todayMs,
+            ProjectName = project,
+            Model = null,
+            StartEpochMs = nowMs - day.TotalMs,
             TotalTokens = 0,
-            LastModifiedMs = bestActivityMs,
+            LastModifiedMs = nowMs,
             Agent = AgentKind.Cursor,
         });
     }
 
-    /// <summary>T3 Code (and other ACP hosts) keep the live turn in
-    /// acp-sessions/*/store.db(-wal) even when agent-transcripts are idle.</summary>
-    private SessionInfo? ScanAcp()
+    private Day ParseDay(string path, long nowMs)
     {
+        string text;
         try
         {
-            if (!Directory.Exists(_acpDir)) return null;
+            text = File.ReadAllText(path);
+        }
+        catch
+        {
+            return default;
+        }
 
-            string? bestDir = null;
-            DateTime bestMtime = DateTime.MinValue;
-            foreach (var dir in Directory.EnumerateDirectories(_acpDir))
+        var open = new Dictionary<string, List<long>>(StringComparer.Ordinal);
+        long total = 0;
+        var project = "";
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.Trim().TrimStart('\uFEFF');
+            if (line.Length == 0) continue;
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(line); }
+            catch { continue; }
+            using (doc)
             {
-                var mtime = AcpActivityUtc(dir);
-                if (mtime is null) continue;
-                if (mtime > bestMtime)
-                {
-                    bestMtime = mtime.Value;
-                    bestDir = dir;
-                }
-            }
+                var v = doc.RootElement;
+                if (v.ValueKind != JsonValueKind.Object) continue;
+                var kind = Str(v, "e");
+                if (kind is null) continue;
+                if (!TryInt64(v, "ms", out var ms)) continue;
+                var id = Str(v, "id") ?? "";
+                var cwd = Str(v, "cwd");
+                if (!string.IsNullOrEmpty(cwd))
+                    project = RepoNames.FromCwd(cwd, _repoNameCache);
 
-            if (bestDir is null) return null;
-            var activityMs = new DateTimeOffset(bestMtime).ToUnixTimeMilliseconds();
-            if (!SessionActivity.IsWithinWindow(activityMs, ActiveWindowSeconds)) return null;
-
-            string? cwd = null;
-            var metaPath = Path.Combine(bestDir, "meta.json");
-            if (File.Exists(metaPath))
-            {
-                try
+                if (kind == "start")
                 {
-                    using var doc = JsonDocument.Parse(File.ReadAllText(metaPath));
-                    if (doc.RootElement.TryGetProperty("cwd", out var cwdEl)
-                        && cwdEl.ValueKind == JsonValueKind.String)
+                    if (!open.TryGetValue(id, out var stack))
                     {
-                        cwd = cwdEl.GetString();
+                        stack = [];
+                        open[id] = stack;
                     }
+                    stack.Add(ms);
                 }
-                catch
+                else if (kind == "end" && open.TryGetValue(id, out var ends) && ends.Count > 0)
                 {
-                    // meta is optional enrichment.
-                }
-            }
-
-            var project = string.IsNullOrWhiteSpace(cwd) ? "Cursor" : RepoNames.FromCwd(cwd!, _repoNameCache);
-            var createdMs = new DateTimeOffset(Directory.GetCreationTimeUtc(bestDir)).ToUnixTimeMilliseconds();
-
-            return new SessionInfo
-            {
-                ProjectName = project,
-                Model = null,
-                StartEpochMs = createdMs > 0 && createdMs <= activityMs ? createdMs : activityMs,
-                TotalTokens = 0,
-                LastModifiedMs = activityMs,
-                Agent = AgentKind.Cursor,
-            };
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static DateTime? AcpActivityUtc(string dir)
-    {
-        DateTime? best = null;
-        foreach (var name in new[] { "store.db-wal", "store.db", "meta.json" })
-        {
-            var path = Path.Combine(dir, name);
-            try
-            {
-                if (!File.Exists(path)) continue;
-                var mtime = File.GetLastWriteTimeUtc(path);
-                if (best is null || mtime > best) best = mtime;
-            }
-            catch
-            {
-                // skip locked/vanished files
-            }
-        }
-        return best;
-    }
-
-    private sealed class TranscriptCacheEntry
-    {
-        public DateTime Mtime;
-        public JsonlCursor Cursor = new();
-        public List<long> ConversationalStampsMs = [];
-        public long? CreatedAtMs;
-        public long? UpdatedAtMs;
-    }
-
-    private sealed record SessionMeta(string? Cwd, long? CreatedAtMs, long? UpdatedAtMs, string? Model);
-
-    private TranscriptCacheEntry TranscriptAggregate(string path, DateTime mtime)
-    {
-        if (!_transcriptCache.TryGetValue(path, out var cached))
-            cached = new TranscriptCacheEntry();
-        if (cached.Mtime == mtime && _transcriptCache.ContainsKey(path) && cached.Cursor.IsCurrent(path))
-            return cached;
-
-        var sessionId = Path.GetFileNameWithoutExtension(path);
-        var meta = ReadMeta(sessionId, includeModel: false);
-        cached.CreatedAtMs = meta?.CreatedAtMs;
-        cached.UpdatedAtMs = meta?.UpdatedAtMs;
-
-        try
-        {
-            cached.Cursor.PullLines(
-                path,
-                line => cached.ConversationalStampsMs.AddRange(TimestampsInJsonlLine(line)),
-                () => cached.ConversationalStampsMs.Clear());
-        }
-        catch
-        {
-            // Live transcripts can be briefly locked; partial stamps are fine.
-        }
-
-        cached.ConversationalStampsMs.Sort();
-        cached.Mtime = mtime;
-        _transcriptCache[path] = cached;
-        return cached;
-    }
-
-    private static (long ActiveMs, long? LastMs) ActiveDuration(
-        List<long> conversationalStamps,
-        long? createdAtMs,
-        long? updatedAtMs,
-        long cutoffMs,
-        long nowMs)
-    {
-        var inWindow = conversationalStamps
-            .Where(ms => ms >= cutoffMs && ms <= nowMs)
-            .ToList();
-
-        if (inWindow.Count == 0)
-        {
-            if (createdAtMs is not long created || updatedAtMs is not long metaUpdated)
-                return (0, null);
-            var metaStart = Math.Max(created, cutoffMs);
-            var metaEnd = Math.Min(metaUpdated, nowMs);
-            return metaEnd > metaStart ? (metaEnd - metaStart, metaEnd) : (0, null);
-        }
-
-        // Cursor only stamps user turns (often >5 min apart). A 5-minute
-        // gap-sum treats that as idle, so elapsed is just the tail since the
-        // last message and snaps to 00:00 on the next one. One span per
-        // transcript: idle between chats is still dropped (separate files).
-        long start = inWindow.Min();
-        if (createdAtMs is long c && c >= cutoffMs && c <= nowMs && c < start)
-            start = c;
-        var lastStamp = inWindow.Max();
-        var endMs = lastStamp;
-        if (updatedAtMs is long updated)
-            endMs = Math.Max(lastStamp, Math.Min(updated, nowMs));
-        return endMs > start ? (endMs - start, endMs) : (0, endMs);
-    }
-
-    private static IEnumerable<long> TimestampsInJsonlLine(string line)
-    {
-        var trimmed = line.Trim();
-        if (trimmed.Length == 0) yield break;
-
-        JsonDocument doc;
-        try { doc = JsonDocument.Parse(trimmed); }
-        catch { yield break; }
-
-        using (doc)
-        {
-            var root = doc.RootElement;
-            if (!root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object)
-                yield break;
-
-            foreach (var text in MessageTexts(message))
-            {
-                foreach (Match match in TimestampRegex.Matches(text))
-                {
-                    if (ParseEmbeddedTimestamp(match.Groups[1].Value) is long ms)
-                        yield return ms;
+                    var start = ends[^1];
+                    ends.RemoveAt(ends.Count - 1);
+                    if (ms > start) total += ms - start;
                 }
             }
         }
-    }
 
-    private static IEnumerable<string> MessageTexts(JsonElement message)
-    {
-        if (!message.TryGetProperty("content", out var content)) yield break;
-        if (content.ValueKind == JsonValueKind.String && content.GetString() is { Length: > 0 } s)
+        var live = false;
+        foreach (var starts in open.Values)
         {
-            yield return s;
-            yield break;
-        }
-        if (content.ValueKind != JsonValueKind.Array) yield break;
-        foreach (var part in content.EnumerateArray())
-        {
-            if (part.ValueKind == JsonValueKind.Object
-                && part.TryGetProperty("text", out var text)
-                && text.ValueKind == JsonValueKind.String
-                && text.GetString() is { Length: > 0 } t)
+            foreach (var start in starts)
             {
-                yield return t;
+                live = true;
+                if (nowMs > start) total += nowMs - start;
             }
         }
+
+        return new Day(Math.Max(0, total), live, project);
     }
 
-    private static long? ParseEmbeddedTimestamp(string raw)
+    private readonly record struct Day(long TotalMs, bool Open, string Project);
+
+    private static string? Str(JsonElement v, string key) =>
+        v.TryGetProperty(key, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+
+    private static bool TryInt64(JsonElement v, string key, out long n)
     {
-        var trimmed = raw.Trim();
-        var utcAt = trimmed.LastIndexOf("(UTC", StringComparison.Ordinal);
-        if (utcAt < 0 || !trimmed.EndsWith(')')) return null;
-
-        var offsetBody = trimmed[(utcAt + "(UTC".Length)..^1];
-        if (ParseUtcOffsetSeconds(offsetBody) is not int offsetSeconds) return null;
-        var body = trimmed[..utcAt].Trim();
-
-        var tz = TimeSpan.FromSeconds(offsetSeconds);
-        string[] formats =
-        [
-            "dddd, MMM d, yyyy, h:mm tt",
-            "dddd, MMMM d, yyyy, h:mm tt",
-        ];
-        var culture = CultureInfo.GetCultureInfo("en-US");
-        foreach (var format in formats)
+        n = 0;
+        if (!v.TryGetProperty(key, out var p)) return false;
+        if (p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out n)) return true;
+        if (p.ValueKind == JsonValueKind.Number && p.TryGetDouble(out var d))
         {
-            if (DateTime.TryParseExact(body, format, culture, DateTimeStyles.None, out var dt))
-                return new DateTimeOffset(dt, tz).ToUnixTimeMilliseconds();
+            n = (long)d;
+            return true;
         }
-        return null;
-    }
-
-    private static int? ParseUtcOffsetSeconds(string raw)
-    {
-        var trimmed = raw.Trim();
-        if (trimmed.Length == 0) return null;
-        var signChar = trimmed[0];
-        if (signChar is not ('+' or '-')) return null;
-        var sign = signChar == '-' ? -1 : 1;
-        var body = trimmed[1..];
-        var parts = body.Split(':', 2);
-        if (!int.TryParse(parts[0], out var hours) || hours is < 0 or > 18) return null;
-        var minutes = 0;
-        if (parts.Length == 2)
-        {
-            if (!int.TryParse(parts[1], out minutes) || minutes is < 0 or > 59) return null;
-        }
-        return sign * (hours * 3600 + minutes * 60);
-    }
-
-    private SessionMeta? ReadMeta(string sessionId, bool includeModel)
-    {
-        if (!_metaBySessionId.TryGetValue(sessionId, out var metaPath)) return null;
-        try
-        {
-            using var doc = JsonDocument.Parse(File.ReadAllText(metaPath));
-            var root = doc.RootElement;
-            string? cwd = root.TryGetProperty("cwd", out var cwdEl) && cwdEl.ValueKind == JsonValueKind.String
-                ? cwdEl.GetString()
-                : null;
-            long? created = LongProp(root, "createdAtMs");
-            long? updated = LongProp(root, "updatedAtMs");
-            string? model = includeModel
-                ? ReadLastUsedModel(Path.GetDirectoryName(metaPath)!)
-                : null;
-            return new SessionMeta(cwd, created, updated, model);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static long? LongProp(JsonElement obj, string name)
-    {
-        if (!obj.TryGetProperty(name, out var value)) return null;
-        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var n)) return n;
-        return null;
-    }
-
-    private string? ReadLastUsedModel(string chatDir)
-    {
-        var dbPath = Path.Combine(chatDir, "store.db");
-        if (!File.Exists(dbPath)) return null;
-
-        DateTime? Stamp(string path)
-        {
-            try { return File.GetLastWriteTimeUtc(path); }
-            catch { return null; }
-        }
-
-        var stamp = new[] { Stamp(dbPath), Stamp(dbPath + "-wal") }.Where(d => d is not null).Max();
-        if (_modelCache.TryGetValue(dbPath, out var cached) && cached.Stamp == stamp)
-            return cached.Model;
-
-        var model = QueryLastUsedModel(dbPath);
-        _modelCache[dbPath] = (stamp, model);
-        return model;
-    }
-
-    private static string? QueryLastUsedModel(string dbPath)
-    {
-        var bytes = LocalSqlite.QueryBytes(dbPath, "SELECT value FROM meta WHERE key = 0 LIMIT 1;");
-        if (bytes is null || bytes.Length == 0) return null;
-        try
-        {
-            using var doc = JsonDocument.Parse(bytes);
-            if (doc.RootElement.TryGetProperty("lastUsedModel", out var model)
-                && model.ValueKind == JsonValueKind.String
-                && model.GetString() is { Length: > 0 } m)
-            {
-                return m;
-            }
-        }
-        catch
-        {
-            // Blob is not JSON — model stays unknown.
-        }
-        return null;
+        return false;
     }
 
     public static string PrettyModel(string raw)
@@ -483,41 +154,4 @@ public sealed class CursorSession : IDisposable
             return char.ToUpperInvariant(part[0]) + part[1..];
         }));
     }
-
-    private void RebuildMetaIndexIfNeeded()
-    {
-        var files = _chatsTree.Snapshot(TimeSpan.FromMilliseconds(LookbackMs));
-        DateTime newest = DateTime.MinValue;
-        foreach (var file in files)
-            if (file.Mtime > newest) newest = file.Mtime;
-        if (newest == _metaIndexStamp && _metaBySessionId.Count == files.Count)
-            return;
-
-        _metaBySessionId.Clear();
-        foreach (var file in files)
-        {
-            var sessionId = Path.GetFileName(Path.GetDirectoryName(file.Path));
-            if (string.IsNullOrEmpty(sessionId)) continue;
-            _metaBySessionId[sessionId] = file.Path;
-        }
-        _metaIndexStamp = newest;
-    }
-
-    private string ResolveProjectName(string? cwd, string transcriptPath)
-    {
-        if (!string.IsNullOrWhiteSpace(cwd)) return RepoNames.FromCwd(cwd, _repoNameCache);
-
-        // ...\projects\<encoded-cwd>\agent-transcripts\...
-        var parts = transcriptPath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var projectsIdx = Array.FindIndex(parts, p => p.Equals("projects", StringComparison.OrdinalIgnoreCase));
-        if (projectsIdx >= 0 && projectsIdx + 1 < parts.Length)
-        {
-            var encoded = parts[projectsIdx + 1];
-            var segs = encoded.Split('-', StringSplitOptions.RemoveEmptyEntries);
-            if (segs.Length > 0) return segs[^1];
-            return encoded;
-        }
-        return "";
-    }
-
 }

@@ -30,6 +30,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext(bool showPopoverOnStart = false)
     {
         _settings = Settings.Load();
+        CursorHooks.Ensure();
         _controller = new PresenceController(_settings);
 
         BuildMenu();

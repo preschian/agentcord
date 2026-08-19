@@ -34,7 +34,8 @@ public partial class PopoverWindow : Window
     // drives, so no WPF Dispatcher assumptions are needed.
     private readonly FormsTimer _timer = new() { Interval = 1000 };
 
-    private readonly List<UsageRow> _unifiedRows = [];
+    private readonly List<CompactUsageRow> _unifiedRows = [];
+    private readonly List<UsageRow> _usageDetailRows = [];
     private readonly Dictionary<AgentKind, AgentRow> _agentRows = new();
     private readonly HashSet<AgentKind> _revealedEmails = [];
     private readonly AgentDetailView _agentDetail = new();
@@ -133,7 +134,8 @@ public partial class PopoverWindow : Window
     {
         if (e.Key != Key.Escape) return;
         if (SettingsScreen.Visibility == Visibility.Visible
-            || AgentDetailScreen.Visibility == Visibility.Visible)
+            || AgentDetailScreen.Visibility == Visibility.Visible
+            || UsageScreen.Visibility == Visibility.Visible)
             ShowMainScreen();
         else
             HidePopover();
@@ -227,6 +229,7 @@ public partial class PopoverWindow : Window
         MainScreen.Visibility = Visibility.Visible;
         SettingsScreen.Visibility = Visibility.Collapsed;
         AgentDetailScreen.Visibility = Visibility.Collapsed;
+        UsageScreen.Visibility = Visibility.Collapsed;
     }
 
     private void ShowSettingsScreen()
@@ -235,6 +238,16 @@ public partial class PopoverWindow : Window
         MainScreen.Visibility = Visibility.Collapsed;
         SettingsScreen.Visibility = Visibility.Visible;
         AgentDetailScreen.Visibility = Visibility.Collapsed;
+        UsageScreen.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowUsageScreen()
+    {
+        LeaveAgentDetail();
+        MainScreen.Visibility = Visibility.Collapsed;
+        SettingsScreen.Visibility = Visibility.Collapsed;
+        AgentDetailScreen.Visibility = Visibility.Collapsed;
+        UsageScreen.Visibility = Visibility.Visible;
     }
 
     private void ShowAgentDetail(AgentKind agent)
@@ -249,6 +262,7 @@ public partial class PopoverWindow : Window
         MainScreen.Visibility = Visibility.Collapsed;
         SettingsScreen.Visibility = Visibility.Collapsed;
         AgentDetailScreen.Visibility = Visibility.Visible;
+        UsageScreen.Visibility = Visibility.Collapsed;
     }
 
     private void LeaveAgentDetail()
@@ -266,6 +280,14 @@ public partial class PopoverWindow : Window
     }
 
     private void OnCloseSettings(object sender, RoutedEventArgs e) => ShowMainScreen();
+
+    private void OnOpenUsage(object sender, RoutedEventArgs e)
+    {
+        ShowUsageScreen();
+        UpdateUi();
+    }
+
+    private void OnCloseUsage(object sender, RoutedEventArgs e) => ShowMainScreen();
 
     private void OnCloseAgentDetail(object sender, RoutedEventArgs e) => ShowMainScreen();
 
@@ -387,6 +409,7 @@ public partial class PopoverWindow : Window
             SetPill(StatusPill, StatusPillDot, StatusPillText, Yellow, YellowText, "Connecting");
 
         RenderUnifiedUsage(enabled);
+        RenderUsageDetail(enabled);
 
         foreach (var agent in enabled)
         {
@@ -492,24 +515,48 @@ public partial class PopoverWindow : Window
         UnifiedUsageCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (!show) return;
 
-        var linked = enabled.Where(IsAgentLinked).ToList();
-        UnifiedUsageEmpty.Visibility = linked.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        UnifiedUsageRows.Visibility = linked.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        if (linked.Count == 0)
+        var rows = PrimaryWindows(enabled);
+        UnifiedUsageEmpty.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UnifiedUsageRows.Visibility = rows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (rows.Count == 0)
         {
             _unifiedRows.Clear();
             UnifiedUsageRows.Children.Clear();
             return;
         }
 
-        EnsureUsageRows(_unifiedRows, UnifiedUsageRows, linked.Count);
-        for (var i = 0; i < linked.Count; i++)
+        EnsureCompactRows(_unifiedRows, UnifiedUsageRows, rows.Count);
+        for (var i = 0; i < rows.Count; i++)
+            _unifiedRows[i].Update(rows[i].Agent.DisplayName(), rows[i].Window);
+    }
+
+    private void RenderUsageDetail(IReadOnlyList<AgentKind> enabled)
+    {
+        if (UsageScreen.Visibility != Visibility.Visible) return;
+        var rows = PrimaryWindows(enabled);
+        UsageDetailEmpty.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UsageDetailRows.Visibility = rows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (rows.Count == 0)
         {
-            var agent = linked[i];
-            var live = _controller.SessionFor(agent) is not null;
-            var window = UnifiedWindow(agent);
-            _unifiedRows[i].Update(agent.DisplayName(), window, live ? 1.0 : 0.55);
+            _usageDetailRows.Clear();
+            UsageDetailRows.Children.Clear();
+            return;
         }
+
+        EnsureUsageRows(_usageDetailRows, UsageDetailRows, rows.Count);
+        for (var i = 0; i < rows.Count; i++)
+            _usageDetailRows[i].Update(rows[i].Agent.DisplayName(), rows[i].Window);
+    }
+
+    private List<(AgentKind Agent, UsageWindow Window)> PrimaryWindows(IReadOnlyList<AgentKind> enabled)
+    {
+        var rows = new List<(AgentKind, UsageWindow)>();
+        foreach (var agent in enabled)
+        {
+            if (UnifiedWindow(agent) is { } window)
+                rows.Add((agent, window));
+        }
+        return rows;
     }
 
     private UsageWindow? UnifiedWindow(AgentKind agent) => agent switch
@@ -619,6 +666,20 @@ public partial class PopoverWindow : Window
         for (var i = 0; i < wanted; i++)
         {
             var row = new UsageRow();
+            pool.Add(row);
+            host.Children.Add(row.Root);
+        }
+    }
+
+    private static void EnsureCompactRows(List<CompactUsageRow> pool, Panel host, int wanted)
+    {
+        if (pool.Count == wanted) return;
+        pool.Clear();
+        host.Children.Clear();
+        for (var i = 0; i < wanted; i++)
+        {
+            var row = new CompactUsageRow();
+            if (i > 0) row.Root.Margin = new Thickness(0, 7, 0, 0);
             pool.Add(row);
             host.Children.Add(row.Root);
         }
@@ -1328,7 +1389,69 @@ public partial class PopoverWindow : Window
         return char.ToUpperInvariant(value[0]) + (value.Length > 1 ? value[1..] : "");
     }
 
-    /// <summary>One usage row: label + "46% · resets …" + a colored progress
+    /// <summary>Main-card compact row: 52px name + bar + percent only.</summary>
+    private sealed class CompactUsageRow
+    {
+        public readonly DockPanel Root = new();
+        private readonly TextBlock _label = new()
+        {
+            Width = 52,
+            FontSize = 12.5,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        private readonly TextBlock _value = new()
+        {
+            FontSize = 12.5,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        private readonly ColumnDefinition _fillCol = new();
+        private readonly ColumnDefinition _restCol = new();
+        private readonly Border _fill = new() { CornerRadius = new CornerRadius(3) };
+
+        public CompactUsageRow()
+        {
+            Typography.SetNumeralAlignment(_value, FontNumeralAlignment.Tabular);
+            var bar = new Grid { Height = 6 };
+            bar.ColumnDefinitions.Add(_fillCol);
+            bar.ColumnDefinitions.Add(_restCol);
+            Grid.SetColumn(_fill, 0);
+            bar.Children.Add(_fill);
+            var track = new Border
+            {
+                Height = 6,
+                CornerRadius = new CornerRadius(3),
+                Background = Brush(WithAlpha(Track, 0x29)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = bar,
+            };
+            DockPanel.SetDock(_label, Dock.Left);
+            DockPanel.SetDock(_value, Dock.Right);
+            Root.Children.Add(_label);
+            Root.Children.Add(_value);
+            Root.Children.Add(track);
+        }
+
+        public void Update(string label, UsageWindow window)
+        {
+            _label.Text = label;
+            _value.Text = $"{window.Percent}%";
+            var fraction = Math.Clamp(window.Percent / 100.0, 0.015, 1.0);
+            _fillCol.Width = new GridLength(fraction, GridUnitType.Star);
+            _restCol.Width = new GridLength(1 - fraction, GridUnitType.Star);
+            var severity = window.Severity.ToLowerInvariant();
+            var color = severity switch
+            {
+                "normal" => Blue,
+                "warning" or "warn" or "low" => Orange,
+                _ => Red,
+            };
+            _fill.Background = Brush(color);
+        }
+    }
+
+    /// <summary>One usage row: label + "46% · 6d 22h" + a colored progress
     /// bar. The fill fraction is expressed with star-sized grid columns so no
     /// manual width math is needed.</summary>
     private sealed class UsageRow
@@ -1378,13 +1501,7 @@ public partial class PopoverWindow : Window
             }
             else
             {
-                var reset = "";
-                if (window.ResetsAtMs is long ms)
-                {
-                    var left = Format.ResetIn(ms);
-                    reset = left == "now" ? " · resets now" : $" · resets in {left}";
-                }
-                _value.Text = $"{window.Percent}%{reset}";
+                _value.Text = Format.WindowValue(window);
             }
 
             var fraction = Math.Clamp((window?.Percent ?? 0) / 100.0, 0.015, 1.0);

@@ -40,7 +40,7 @@ pub fn cursor_linked() -> bool {
     })
 }
 
-pub fn scan_cursor(_idle_secs: f64) -> AgentScan {
+pub fn scan_cursor() -> AgentScan {
     scan_cursor_at(&cursor_uptime_path(), now_ms())
 }
 

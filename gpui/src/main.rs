@@ -667,52 +667,6 @@ fn settings_screen(app: &AgentCord, cx: &mut Context<AgentCord>) -> impl IntoEle
                                 .text_size(px(12.5))
                                 .child(app.settings.activity_label().to_string()),
                         ),
-                )
-                .child(div().h(px(1.)).bg(rgb(HAIR)))
-                .child(
-                    div()
-                        .px(px(11.))
-                        .py(px(8.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .child(div().flex_1().text_size(px(13.)).child("Idle window"))
-                                .child(
-                                    div()
-                                        .text_size(px(12.5))
-                                        .text_color(rgb(SEC))
-                                        .child(app.settings.idle_label()),
-                                ),
-                        )
-                        .child({
-                            let selected = app.settings.idle_minutes();
-                            let mut row = div().flex().justify_between().mt(px(6.));
-                            for &mins in &settings::IDLE_MINUTES {
-                                let on = selected == mins;
-                                row = row.child(
-                                    div()
-                                        .id(SharedString::from(format!("idle-{mins}")))
-                                        .cursor_pointer()
-                                        .px(px(3.))
-                                        .py(px(2.))
-                                        .rounded(px(4.))
-                                        .when(on, |d| {
-                                            d.bg(rgba(0x7878801a)).font_weight(FontWeight::SEMIBOLD)
-                                        })
-                                        .text_size(px(11.))
-                                        .text_color(rgb(if on { TEXT } else { SEC }))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.settings.set_idle_minutes(mins);
-                                            this.persist();
-                                            this.tick();
-                                            cx.notify();
-                                        }))
-                                        .child(format!("{mins}m")),
-                                );
-                            }
-                            row
-                        }),
                 ),
         )
 }

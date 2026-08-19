@@ -30,11 +30,11 @@ pub fn grok_linked() -> bool {
     })
 }
 
-pub fn scan_grok(idle_secs: f64) -> AgentScan {
+pub fn scan_grok() -> AgentScan {
     let Some(home) = grok_home() else {
         return AgentScan::default();
     };
-    scan_grok_from(&home, idle_secs)
+    scan_grok_from(&home, IDLE_WINDOW_SECS)
 }
 
 pub(super) fn scan_grok_from(home: &Path, idle_secs: f64) -> AgentScan {

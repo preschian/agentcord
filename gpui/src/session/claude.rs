@@ -54,11 +54,11 @@ pub fn claude_linked() -> bool {
     claude_home().is_some_and(|home| home.join("projects").is_dir())
 }
 
-pub fn scan_claude(idle_secs: f64) -> AgentScan {
+pub fn scan_claude() -> AgentScan {
     let Some(home) = claude_home() else {
         return AgentScan::default();
     };
-    scan_claude_from(&home.join("projects"), idle_secs)
+    scan_claude_from(&home.join("projects"), IDLE_WINDOW_SECS)
 }
 
 pub(super) fn scan_claude_from(projects: &Path, idle_secs: f64) -> AgentScan {

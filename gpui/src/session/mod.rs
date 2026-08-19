@@ -13,7 +13,7 @@ pub mod hooks;
 
 pub use claude::{claude_linked, pretty_claude_model, scan_claude};
 pub use codex::{codex_linked, pretty_codex_model, scan_codex};
-pub use cursor::{cursor_linked, pretty_cursor_model, scan_cursor, CursorScan};
+pub use cursor::{cursor_linked, pretty_cursor_model, scan_cursor};
 pub use grok::{grok_linked, pretty_grok_model, scan_grok};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -27,7 +27,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const DISCORD_CLIENT_ID: &str = "1517099756063686677";
 pub const IDLE_WINDOW_SECS: f64 = 300.0;
 pub(super) const GAP_TOLERANCE_MS: i64 = 5 * 60 * 1000;
-pub(super) const LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
 pub(super) const TREE_WALK_MS: i64 = 30_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +74,12 @@ pub struct SessionInfo {
     pub start_epoch_ms: i64,
     pub activity_ms: i64,
     pub tokens: i64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AgentScan {
+    pub today_ms: i64,
+    pub session: Option<SessionInfo>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -138,6 +143,9 @@ pub struct ScanSnapshot {
     pub codex_linked: bool,
     pub grok_linked: bool,
     pub cursor_linked: bool,
+    pub claude_today_ms: i64,
+    pub codex_today_ms: i64,
+    pub grok_today_ms: i64,
     pub cursor_today_ms: i64,
 }
 
@@ -180,22 +188,41 @@ impl ScanHandle {
 }
 
 pub(super) fn scan_wanted(w: ScanWanted) -> ScanSnapshot {
+    let empty = AgentScan::default();
+    let claude = if w.claude {
+        scan_claude(w.idle_secs)
+    } else {
+        empty.clone()
+    };
+    let codex = if w.codex {
+        scan_codex(w.idle_secs)
+    } else {
+        empty.clone()
+    };
+    let grok = if w.grok {
+        scan_grok(w.idle_secs)
+    } else {
+        empty.clone()
+    };
     let cursor = if w.cursor {
         scan_cursor(w.idle_secs)
     } else {
-        CursorScan::default()
+        empty
     };
     ScanSnapshot {
         sessions: LiveSessions {
-            claude: w.claude.then(|| scan_claude(w.idle_secs)).flatten(),
-            codex: w.codex.then(|| scan_codex(w.idle_secs)).flatten(),
-            grok: w.grok.then(|| scan_grok(w.idle_secs)).flatten(),
+            claude: claude.session,
+            codex: codex.session,
+            grok: grok.session,
             cursor: cursor.session,
         },
         claude_linked: claude_linked(),
         codex_linked: codex_linked(),
         grok_linked: grok_linked(),
         cursor_linked: cursor_linked(),
+        claude_today_ms: claude.today_ms,
+        codex_today_ms: codex.today_ms,
+        grok_today_ms: grok.today_ms,
         cursor_today_ms: cursor.today_ms,
     }
 }
@@ -564,9 +591,22 @@ pub(super) fn pull_jsonl(path: &Path, agg: &mut JsonlAgg, parse: impl Fn(&str, &
     agg.offset = len;
 }
 
-pub(super) fn rolling_start(files: &[(PathBuf, i64)], parse: impl Fn(&str, &mut JsonlAgg) + Copy) -> i64 {
-    let now = now_ms();
-    let cutoff = now - LOOKBACK_MS;
+pub(super) fn day_uptime(
+    files: &[(PathBuf, i64)],
+    parse: impl Fn(&str, &mut JsonlAgg) + Copy,
+    now: i64,
+    live: bool,
+) -> i64 {
+    day_uptime_since(files, parse, now, live, local_midnight_ms())
+}
+
+pub(super) fn day_uptime_since(
+    files: &[(PathBuf, i64)],
+    parse: impl Fn(&str, &mut JsonlAgg) + Copy,
+    now: i64,
+    live: bool,
+    cutoff: i64,
+) -> i64 {
     let mut total = 0;
     let mut newest_last = None;
     for (path, _) in files {
@@ -583,7 +623,14 @@ pub(super) fn rolling_start(files: &[(PathBuf, i64)], parse: impl Fn(&str, &mut 
             newest_last = Some(newest_last.map_or(l, |n: i64| n.max(l)));
         }
     }
-    elapsed_start_ms(total, newest_last, now)
+    if live {
+        if let Some(last) = newest_last {
+            if now > last {
+                total += now - last;
+            }
+        }
+    }
+    total.max(0)
 }
 
 /// Ticking clock like the production popover: "1:02:03" / "2:03".
@@ -599,7 +646,130 @@ pub fn format_clock(ms: i64) -> String {
     }
 }
 
+pub fn row_trailing(linked: bool, live: bool, today_ms: i64) -> String {
+    if !linked {
+        return "Connect".into();
+    }
+    if live || today_ms > 0 {
+        format_clock(today_ms)
+    } else {
+        "idle".into()
+    }
+}
 
+pub(super) fn local_ymd() -> String {
+    #[cfg(windows)]
+    {
+        let st = local_system_time();
+        format!("{:04}-{:02}-{:02}", st.year, st.month, st.day)
+    }
+    #[cfg(not(windows))]
+    {
+        let secs = now_ms() / 1000;
+        let days = secs.div_euclid(86_400);
+        let (year, month, day) = civil_ymd(days);
+        format!("{year:04}-{month:02}-{day:02}")
+    }
+}
+
+pub(super) fn local_midnight_ms() -> i64 {
+    #[cfg(windows)]
+    {
+        let mut local = local_system_time();
+        local.hour = 0;
+        local.minute = 0;
+        local.second = 0;
+        local.milliseconds = 0;
+        let mut utc = WinSystemTime::zero();
+        if unsafe { TzSpecificLocalTimeToSystemTime(std::ptr::null(), &local, &mut utc) } == 0 {
+            return utc_midnight_ms();
+        }
+        let mut ft = WinFileTime { low: 0, high: 0 };
+        if unsafe { SystemTimeToFileTime(&utc, &mut ft) } == 0 {
+            return utc_midnight_ms();
+        }
+        let ticks = ((ft.high as u64) << 32) | ft.low as u64;
+        (ticks / 10_000) as i64 - 11_644_473_600_000
+    }
+    #[cfg(not(windows))]
+    {
+        utc_midnight_ms()
+    }
+}
+
+fn utc_midnight_ms() -> i64 {
+    let now = now_ms();
+    now - now.rem_euclid(86_400_000)
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WinSystemTime {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
+}
+
+#[cfg(windows)]
+impl WinSystemTime {
+    fn zero() -> Self {
+        Self {
+            year: 0,
+            month: 0,
+            day_of_week: 0,
+            day: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            milliseconds: 0,
+        }
+    }
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WinFileTime {
+    low: u32,
+    high: u32,
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn GetLocalTime(st: *mut WinSystemTime);
+    fn TzSpecificLocalTimeToSystemTime(
+        tz: *const core::ffi::c_void,
+        local: *const WinSystemTime,
+        utc: *mut WinSystemTime,
+    ) -> i32;
+    fn SystemTimeToFileTime(st: *const WinSystemTime, ft: *mut WinFileTime) -> i32;
+}
+
+#[cfg(windows)]
+fn local_system_time() -> WinSystemTime {
+    let mut st = WinSystemTime::zero();
+    unsafe { GetLocalTime(&mut st) };
+    st
+}
+
+#[cfg(not(windows))]
+fn civil_ymd(days: i64) -> (i32, u32, u32) {
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    (year as i32, m as u32, d as u32)
+}
 
 pub(super) fn env_home(key: &str) -> Option<PathBuf> {
     std::env::var(key)
@@ -805,8 +975,8 @@ mod tests {
     use super::*;
     use super::claude::scan_claude_from;
     use super::codex::scan_codex_from;
-    use super::cursor::{cursor_day_uptime_from, local_ymd, scan_cursor_at};
-    use super::grok::{grok_rolling_start, scan_grok_from};
+    use super::cursor::{cursor_day_uptime_from, scan_cursor_at};
+    use super::grok::{grok_day_uptime, scan_grok_from};
 
     #[test]
     fn pretty_claude_formats_id() {
@@ -967,7 +1137,7 @@ mod tests {
             "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"message\":{\"model\":\"claude-opus-4-5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}}\n",
         )
         .unwrap();
-        let info = scan_claude_from(&dir, 300.0).unwrap();
+        let info = scan_claude_from(&dir, 300.0).session.unwrap();
         assert_eq!(info.agent, AgentKind::Claude);
         assert_eq!(info.project, "agentcord");
         assert_eq!(info.model, "Opus 4.5");
@@ -992,7 +1162,7 @@ mod tests {
 "#,
         )
         .unwrap();
-        let info = scan_codex_from(&dir, 300.0).unwrap();
+        let info = scan_codex_from(&dir, 300.0).session.unwrap();
         assert_eq!(info.agent, AgentKind::Codex);
         assert_eq!(info.project, "agentcord");
         assert_eq!(info.model, "GPT-5.2");
@@ -1003,7 +1173,7 @@ mod tests {
     #[test]
     fn duration_drops_idle_gaps() {
         let now = 10_000_000i64;
-        let cutoff = now - LOOKBACK_MS;
+        let cutoff = now - 24 * 60 * 60 * 1000;
         let morning: Vec<i64> = (0..=15)
             .map(|i| now - 6 * 3600_000 + i * 4 * 60_000)
             .collect();
@@ -1046,7 +1216,7 @@ mod tests {
             &[last_stamp],
             Some(created),
             Some(now),
-            now - LOOKBACK_MS,
+            now - 24 * 60 * 60 * 1000,
             now,
         );
         assert_eq!(last, Some(last_stamp));
@@ -1193,7 +1363,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let info = scan_claude_from(&dir, 300.0).unwrap();
+        let info = scan_claude_from(&dir, 300.0).session.unwrap();
         assert_eq!(info.project, "live-repo");
         assert_eq!(info.model, "Opus 4.5");
         let _ = fs::remove_dir_all(&dir);
@@ -1247,12 +1417,8 @@ mod tests {
         let _ = tree_snapshot(&sessions, "grok-summary", 8, |p| {
             p.file_name().and_then(|n| n.to_str()) == Some("summary.json")
         });
-        let start = grok_rolling_start(&home);
-        let elapsed = now_ms() - start;
-        assert!(
-            elapsed >= 50_000 && elapsed < 90_000,
-            "elapsed={elapsed}"
-        );
+        let today = grok_day_uptime(&home, now_ms(), true);
+        assert!(today >= 50_000 && today < 90_000, "today={today}");
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -1280,7 +1446,158 @@ mod tests {
             "{\"ts\":\"2026-01-01T00:00:00Z\",\"type\":\"mcp_init_completed\"}\n",
         )
         .unwrap();
-        assert!(scan_grok_from(&home, 300.0).is_none());
+        assert!(scan_grok_from(&home, 300.0).session.is_none());
         let _ = fs::remove_dir_all(&home);
+    }
+
+    fn parse_ts(line: &str, agg: &mut JsonlAgg) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        if let Some(ms) = json_time(v.get("timestamp")) {
+            note_stamp(agg, ms);
+        }
+    }
+
+    fn write_ts_jsonl(path: &Path, stamps: &[i64]) {
+        let body: String = stamps
+            .iter()
+            .map(|ms| format!("{{\"timestamp\":{ms}}}\n"))
+            .collect();
+        fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn day_uptime_sealed_equals_gap_sum() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentcord-day-sealed-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let cutoff = 1_700_000_000_000;
+        let now = cutoff + 3_600_000;
+        write_ts_jsonl(&path, &[cutoff + 60_000, cutoff + 180_000]);
+        let files = vec![(path, now)];
+        let scan_now = now + 20 * 60_000;
+        let today = day_uptime_since(&files, parse_ts, scan_now, false, cutoff);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(today, 120_000);
+    }
+
+    #[test]
+    fn day_uptime_drops_yesterday() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentcord-day-yday-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let cutoff = 1_700_000_000_000;
+        let now = cutoff + 3_600_000;
+        write_ts_jsonl(
+            &path,
+            &[
+                cutoff - 180_000,
+                cutoff - 60_000,
+                cutoff + 10_000,
+                cutoff + 70_000,
+            ],
+        );
+        let files = vec![(path, now)];
+        let today = day_uptime_since(&files, parse_ts, now, false, cutoff);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(today, 60_000);
+    }
+
+    #[test]
+    fn day_uptime_live_tail_then_freezes() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentcord-day-tail-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let cutoff = 1_700_000_000_000;
+        let last = cutoff + 55_000;
+        write_ts_jsonl(&path, &[cutoff, last]);
+        let files = vec![(path, last)];
+        let live_now = last + 5_000;
+        let idle_now = last + 180_000;
+        let live = day_uptime_since(&files, parse_ts, live_now, true, cutoff);
+        let frozen = day_uptime_since(&files, parse_ts, idle_now, false, cutoff);
+        let still_live = day_uptime_since(&files, parse_ts, idle_now, true, cutoff);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(live, 60_000);
+        assert_eq!(frozen, 55_000);
+        assert_eq!(still_live, 235_000);
+    }
+
+    #[test]
+    fn claude_idle_keeps_today_ms() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentcord-claude-today-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let project = dir.join("C-Users-test-agentcord");
+        fs::create_dir_all(&project).unwrap();
+        let midnight = local_midnight_ms();
+        let a = midnight + 10_000;
+        let b = midnight + 70_000;
+        fs::write(
+            project.join("session.jsonl"),
+            format!(
+                "{{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":{a}}}\n\
+                 {{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":{b},\"message\":{{\"model\":\"claude-opus-4-5\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n"
+            ),
+        )
+        .unwrap();
+        let scan = scan_claude_from(&dir, 1.0);
+        let _ = fs::remove_dir_all(&dir);
+        assert!(scan.session.is_none());
+        assert_eq!(scan.today_ms, 60_000);
+    }
+
+    #[test]
+    fn grok_idle_still_sums_today() {
+        *grok::LAST_GROK.lock().unwrap() = None;
+        let home = std::env::temp_dir().join(format!(
+            "agentcord-grok-today-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let sess = home.join("sessions").join("proj").join("sid");
+        fs::create_dir_all(&sess).unwrap();
+        fs::write(home.join("active_sessions.json"), "[]\n").unwrap();
+        fs::write(
+            sess.join("summary.json"),
+            r#"{"last_active_at":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        let midnight = local_midnight_ms();
+        let a = midnight + 10_000;
+        let b = midnight + 70_000;
+        fs::write(
+            sess.join("events.jsonl"),
+            format!("{{\"ts\":{a}}}\n{{\"ts\":{b}}}\n"),
+        )
+        .unwrap();
+        let scan = scan_grok_from(&home, 1.0);
+        let _ = fs::remove_dir_all(&home);
+        assert!(scan.session.is_none());
+        assert_eq!(scan.today_ms, 60_000);
+    }
+
+    #[test]
+    fn idle_zero_today_is_not_a_clock() {
+        assert_eq!(row_trailing(true, false, 0), "idle");
+        assert_eq!(row_trailing(true, false, 60_000), "1:00");
+        assert_eq!(row_trailing(true, true, 0), "0:00");
+        assert_eq!(row_trailing(true, true, 60_000), "1:00");
+        assert_eq!(row_trailing(false, false, 90_000), "Connect");
     }
 }

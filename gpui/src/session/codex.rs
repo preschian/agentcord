@@ -44,13 +44,16 @@ pub fn codex_linked() -> bool {
 }
 
 
-pub fn scan_codex(idle_secs: f64) -> Option<SessionInfo> {
-    scan_codex_from(&codex_home()?.join("sessions"), idle_secs)
+pub fn scan_codex(idle_secs: f64) -> AgentScan {
+    let Some(home) = codex_home() else {
+        return AgentScan::default();
+    };
+    scan_codex_from(&home.join("sessions"), idle_secs)
 }
 
-pub(super) fn scan_codex_from(sessions: &Path, idle_secs: f64) -> Option<SessionInfo> {
+pub(super) fn scan_codex_from(sessions: &Path, idle_secs: f64) -> AgentScan {
     if !sessions.is_dir() {
-        return None;
+        return AgentScan::default();
     }
     let now = now_ms();
     let files = tree_snapshot(sessions, "codex-jsonl", 8, |p| {
@@ -67,24 +70,30 @@ pub(super) fn scan_codex_from(sessions: &Path, idle_secs: f64) -> Option<Session
             best = Some((path.clone(), activity, agg));
         }
     }
-    let (_transcript, activity, tail) = best?;
-    if !within_idle(activity, now, idle_secs) {
-        return None;
-    }
-    let project = tail
-        .cwd
-        .as_deref()
-        .map(repo_from_cwd)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Codex".into());
-    Some(SessionInfo {
-        agent: AgentKind::Codex,
-        project,
-        model: tail.model.unwrap_or_else(|| "Codex".into()),
-        start_epoch_ms: rolling_start(&files, parse_codex_line),
-        activity_ms: activity,
-        tokens: tail.tokens,
-    })
+    let live = best
+        .as_ref()
+        .is_some_and(|(_, activity, _)| within_idle(*activity, now, idle_secs));
+    let today_ms = day_uptime(&files, parse_codex_line, now, live);
+    let session = match best {
+        Some((_transcript, activity, tail)) if live => {
+            let project = tail
+                .cwd
+                .as_deref()
+                .map(repo_from_cwd)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Codex".into());
+            Some(SessionInfo {
+                agent: AgentKind::Codex,
+                project,
+                model: tail.model.unwrap_or_else(|| "Codex".into()),
+                start_epoch_ms: now - today_ms,
+                activity_ms: activity,
+                tokens: tail.tokens,
+            })
+        }
+        _ => None,
+    };
+    AgentScan { today_ms, session }
 }
 
 fn codex_home() -> Option<PathBuf> {

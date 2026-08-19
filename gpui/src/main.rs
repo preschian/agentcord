@@ -4,7 +4,7 @@
 
 use agentcord_gpui::discord::{Client, ConnState};
 use agentcord_gpui::session::{
-    build_activity, format_clock, format_tokens, now_ms, pick_winner, AgentKind, LiveSessions,
+    build_activity, format_tokens, now_ms, pick_winner, row_trailing, AgentKind, LiveSessions,
     ScanHandle, ScanWanted, SessionInfo, DISCORD_CLIENT_ID,
 };
 use agentcord_gpui::settings::{self, Settings};
@@ -73,6 +73,9 @@ struct AgentCord {
     codex_is_linked: bool,
     grok_is_linked: bool,
     cursor_is_linked: bool,
+    claude_today_ms: i64,
+    codex_today_ms: i64,
+    grok_today_ms: i64,
     cursor_today_ms: i64,
     screen: Screen,
     usage: Arc<Mutex<UsageSnapshot>>,
@@ -108,6 +111,9 @@ impl AgentCord {
             codex_is_linked: false,
             grok_is_linked: false,
             cursor_is_linked: false,
+            claude_today_ms: 0,
+            codex_today_ms: 0,
+            grok_today_ms: 0,
             cursor_today_ms: 0,
             screen: Screen::Main,
             usage: usage::spawn(),
@@ -134,6 +140,9 @@ impl AgentCord {
         self.codex_is_linked = snap.codex_linked;
         self.grok_is_linked = snap.grok_linked;
         self.cursor_is_linked = snap.cursor_linked;
+        self.claude_today_ms = snap.claude_today_ms;
+        self.codex_today_ms = snap.codex_today_ms;
+        self.grok_today_ms = snap.grok_today_ms;
         self.cursor_today_ms = snap.cursor_today_ms;
 
         let discord_snap = self.discord.snapshot();
@@ -199,6 +208,15 @@ impl AgentCord {
             AgentKind::Codex => self.codex_is_linked,
             AgentKind::Grok => self.grok_is_linked,
             AgentKind::Cursor => self.cursor_is_linked,
+        }
+    }
+
+    fn today_ms(&self, agent: AgentKind) -> i64 {
+        match agent {
+            AgentKind::Claude => self.claude_today_ms,
+            AgentKind::Codex => self.codex_today_ms,
+            AgentKind::Grok => self.grok_today_ms,
+            AgentKind::Cursor => self.cursor_today_ms,
         }
     }
 
@@ -1162,7 +1180,7 @@ fn agent_list(
             linked,
             session,
             app.settings.show_project,
-            app.cursor_today_ms,
+            app.today_ms(agent),
             cx,
         ));
     }
@@ -1174,7 +1192,7 @@ fn agent_row(
     linked: bool,
     session: Option<SessionInfo>,
     show_project: bool,
-    cursor_today_ms: i64,
+    today_ms: i64,
     cx: &mut Context<AgentCord>,
 ) -> impl IntoElement {
     let name_color = if linked { TEXT } else { SEC };
@@ -1190,16 +1208,7 @@ fn agent_row(
         "Connected".into()
     };
     let live = session.is_some();
-    let trailing: SharedString = if agent == AgentKind::Cursor && linked && (live || cursor_today_ms > 0)
-    {
-        format_clock(cursor_today_ms).into()
-    } else if let Some(s) = &session {
-        format_clock(now_ms() - s.start_epoch_ms).into()
-    } else if linked {
-        "idle".into()
-    } else {
-        "Connect".into()
-    };
+    let trailing: SharedString = row_trailing(linked, live, today_ms).into();
     let trailing_color = if live {
         TEXT
     } else if linked {

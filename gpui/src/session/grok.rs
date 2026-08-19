@@ -30,11 +30,14 @@ pub fn grok_linked() -> bool {
     })
 }
 
-pub fn scan_grok(idle_secs: f64) -> Option<SessionInfo> {
-    scan_grok_from(&grok_home()?, idle_secs)
+pub fn scan_grok(idle_secs: f64) -> AgentScan {
+    let Some(home) = grok_home() else {
+        return AgentScan::default();
+    };
+    scan_grok_from(&home, idle_secs)
 }
 
-pub(super) fn scan_grok_from(home: &Path, idle_secs: f64) -> Option<SessionInfo> {
+pub(super) fn scan_grok_from(home: &Path, idle_secs: f64) -> AgentScan {
     let now = now_ms();
     let mut best: Option<SessionInfo> = None;
     if let Some(json) = read_to_string(&home.join("active_sessions.json")) {
@@ -64,12 +67,17 @@ pub(super) fn scan_grok_from(home: &Path, idle_secs: f64) -> Option<SessionInfo>
     if best.is_none() {
         best = grok_newest_recent(home, idle_secs, now);
     }
-    let mut info = best?;
-    info.start_epoch_ms = grok_rolling_start(home);
-    if let Ok(mut g) = LAST_GROK.lock() {
-        *g = Some(info.clone());
+    let today_ms = grok_day_uptime(home, now, best.is_some());
+    if let Some(ref mut info) = best {
+        info.start_epoch_ms = now - today_ms;
+        if let Ok(mut g) = LAST_GROK.lock() {
+            *g = Some(info.clone());
+        }
     }
-    Some(info)
+    AgentScan {
+        today_ms,
+        session: best,
+    }
 }
 
 fn grok_live_item(home: &Path, item: &Value, now: i64, idle_secs: f64) -> Option<SessionInfo> {
@@ -191,15 +199,15 @@ fn grok_info_from(
     })
 }
 
-pub(super) fn grok_rolling_start(home: &Path) -> i64 {
+pub(super) fn grok_day_uptime(home: &Path, now: i64, live: bool) -> i64 {
     let sessions = home.join("sessions");
     if !sessions.is_dir() {
-        return now_ms();
+        return 0;
     }
     let files = tree_snapshot(&sessions, "grok-events", 8, |p| {
         p.file_name().and_then(|n| n.to_str()) == Some("events.jsonl")
     });
-    rolling_start(&files, parse_grok_event_line)
+    day_uptime(&files, parse_grok_event_line, now, live)
 }
 
 fn parse_grok_event_line(line: &str, agg: &mut JsonlAgg) {

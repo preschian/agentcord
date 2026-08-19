@@ -444,7 +444,9 @@ public sealed class SessionActivityDetectionTests
         File.WriteAllText(transcript, CursorUserLine(started, "first") + CursorUserLine(latest, "second"));
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddSeconds(-5));
 
-        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 60 };
+        // Cursor user stamps are minute-resolution; 60s can miss a stamp that
+        // truncated to the previous minute on CI.
+        var scanner = new CursorSession(dir.Root, enableT3: false) { ActiveWindowSeconds = 180 };
         var info = scanner.Scan().Session;
 
         Assert.NotNull(info);

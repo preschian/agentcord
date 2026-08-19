@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 const MARKER: &str = "agentcord-cursor-turn.ps1";
 const HOOK_CMD: &str =
     r#"powershell.exe -NoProfile -ExecutionPolicy Bypass -File "./hooks/agentcord-cursor-turn.ps1""#;
-const SCRIPT: &str = include_str!("../hooks/agentcord-cursor-turn.ps1");
+const SCRIPT: &str = include_str!("../../hooks/agentcord-cursor-turn.ps1");
 const EVENTS: [&str; 2] = ["beforeSubmitPrompt", "stop"];
 
 pub fn ensure() {

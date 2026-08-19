@@ -1,7 +1,20 @@
 //! Session scans and Discord activity. Cheap: stat/read only the files
-//! needed for the current decision. Agents: Claude, Codex, Cursor, Grok.
+//! needed for the current decision.
+//!
+//! Agents live in `claude` / `codex` / `cursor` / `grok`.
 
 use crate::settings::Settings;
+
+mod claude;
+mod codex;
+mod cursor;
+mod grok;
+pub mod hooks;
+
+pub use claude::{claude_linked, pretty_claude_model, scan_claude};
+pub use codex::{codex_linked, pretty_codex_model, scan_codex};
+pub use cursor::{cursor_linked, pretty_cursor_model, scan_cursor};
+pub use grok::{grok_linked, pretty_grok_model, scan_grok};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -13,11 +26,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const DISCORD_CLIENT_ID: &str = "1517099756063686677";
 pub const IDLE_WINDOW_SECS: f64 = 300.0;
-const GAP_TOLERANCE_MS: i64 = 5 * 60 * 1000;
-const LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
-const TREE_WALK_MS: i64 = 30_000;
+pub(super) const GAP_TOLERANCE_MS: i64 = 5 * 60 * 1000;
+pub(super) const LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
+pub(super) const TREE_WALK_MS: i64 = 30_000;
 // ponytail: 30m cap; abandoned last-user chats shouldn't stay live forever
-const CURSOR_THINK_MS: i64 = 30 * 60 * 1000;
+pub(super) const CURSOR_THINK_MS: i64 = 30 * 60 * 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentKind {
@@ -167,7 +180,7 @@ impl ScanHandle {
     }
 }
 
-fn scan_wanted(w: ScanWanted) -> ScanSnapshot {
+pub(super) fn scan_wanted(w: ScanWanted) -> ScanSnapshot {
     ScanSnapshot {
         sessions: LiveSessions {
             claude: w.claude.then(|| scan_claude(w.idle_secs)).flatten(),
@@ -299,131 +312,6 @@ pub fn format_tokens(count: i64) -> String {
     }
 }
 
-pub fn pretty_grok_model(raw: &str) -> String {
-    if let Some(rest) = raw
-        .strip_prefix("grok-")
-        .or_else(|| raw.strip_prefix("Grok-"))
-    {
-        if rest.is_empty() {
-            "Grok".into()
-        } else {
-            format!("Grok {rest}")
-        }
-    } else if raw.is_empty() {
-        "Grok".into()
-    } else {
-        raw.to_string()
-    }
-}
-
-pub fn pretty_claude_model(raw: &str) -> String {
-    let lower = raw.to_ascii_lowercase();
-    let family = if lower.contains("opus") {
-        "Opus"
-    } else if lower.contains("sonnet") {
-        "Sonnet"
-    } else if lower.contains("haiku") {
-        "Haiku"
-    } else if lower.contains("fable") {
-        "Fable"
-    } else {
-        return raw.to_string();
-    };
-    match claude_version(raw) {
-        Some(ver) => format!("{family} {ver}"),
-        None => family.into(),
-    }
-}
-
-fn claude_version(raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && !bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == bytes.len() {
-        return None;
-    }
-    let start = i;
-    i += 1;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i + 1 < bytes.len()
-        && (bytes[i] == b'.' || bytes[i] == b'-')
-        && bytes[i + 1].is_ascii_digit()
-    {
-        i += 2;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        return Some(raw[start..i].replace('-', "."));
-    }
-    Some(raw[start..i].to_string())
-}
-
-pub fn pretty_codex_model(raw: &str) -> String {
-    let rest = match raw
-        .strip_prefix("gpt-")
-        .or_else(|| raw.strip_prefix("GPT-"))
-    {
-        Some(r) => r,
-        None => return raw.to_string(),
-    };
-    let mut version = Vec::new();
-    let mut suffix = Vec::new();
-    for part in rest.split('-').filter(|p| !p.is_empty()) {
-        if suffix.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            version.push(part);
-        } else {
-            let mut chars = part.chars();
-            let pretty = match chars.next() {
-                Some(c) => format!("{}{}", c.to_ascii_uppercase(), chars.as_str()),
-                None => String::new(),
-            };
-            suffix.push(pretty);
-        }
-    }
-    let ver = version.join(".");
-    let suf = if suffix.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", suffix.join(" "))
-    };
-    if ver.is_empty() {
-        format!("GPT{suf}")
-    } else {
-        format!("GPT-{ver}{suf}")
-    }
-}
-
-pub fn pretty_cursor_model(raw: &str) -> String {
-    if raw.eq_ignore_ascii_case("default") {
-        return "Auto".into();
-    }
-    let value = raw
-        .strip_prefix("cursor-")
-        .or_else(|| raw.strip_prefix("Cursor-"))
-        .unwrap_or(raw);
-    value
-        .split('-')
-        .filter(|p| !p.is_empty())
-        .map(|part| {
-            if part.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                part.to_string()
-            } else if part.eq_ignore_ascii_case("gpt") {
-                "GPT".into()
-            } else {
-                let mut chars = part.chars();
-                match chars.next() {
-                    Some(c) => format!("{}{}", c.to_ascii_uppercase(), chars.as_str()),
-                    None => String::new(),
-                }
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 pub fn repo_name_from_remote(remote: &str) -> String {
     let base = remote.rsplit(['/', '\\', ':']).next().unwrap_or(remote);
@@ -463,7 +351,7 @@ pub fn repo_from_cwd(cwd: &str) -> String {
     name
 }
 
-fn find_working_tree_root(start: &Path) -> Option<PathBuf> {
+pub(super) fn find_working_tree_root(start: &Path) -> Option<PathBuf> {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let git = d.join(".git");
@@ -475,7 +363,7 @@ fn find_working_tree_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-fn find_git_dir(start: &Path) -> Option<PathBuf> {
+pub(super) fn find_git_dir(start: &Path) -> Option<PathBuf> {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let git = d.join(".git");
@@ -517,7 +405,7 @@ fn find_git_dir(start: &Path) -> Option<PathBuf> {
     None
 }
 
-fn read_origin_url(git_dir: &Path) -> Option<String> {
+pub(super) fn read_origin_url(git_dir: &Path) -> Option<String> {
     let text = read_to_string(&git_dir.join("config"))?;
     let mut in_origin = false;
     for raw in text.lines() {
@@ -545,13 +433,13 @@ fn read_origin_url(git_dir: &Path) -> Option<String> {
     None
 }
 
-struct TreeSnap {
+pub(super) struct TreeSnap {
     files: Vec<(PathBuf, i64)>,
     walked_at: i64,
 }
 
 #[derive(Default, Clone)]
-struct JsonlAgg {
+pub(super) struct JsonlAgg {
     offset: u64,
     leftover: String,
     stamps: Vec<i64>,
@@ -564,15 +452,14 @@ struct JsonlAgg {
     updated_at_ms: Option<i64>,
 }
 
-static TREES: LazyLock<Mutex<HashMap<String, TreeSnap>>> =
+pub(super) static TREES: LazyLock<Mutex<HashMap<String, TreeSnap>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static JSONL_CACHE: LazyLock<Mutex<HashMap<PathBuf, JsonlAgg>>> =
+pub(super) static JSONL_CACHE: LazyLock<Mutex<HashMap<PathBuf, JsonlAgg>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static REPO_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+pub(super) static REPO_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static LAST_GROK: Mutex<Option<SessionInfo>> = Mutex::new(None);
 
-fn note_stamp(agg: &mut JsonlAgg, ms: i64) {
+pub(super) fn note_stamp(agg: &mut JsonlAgg, ms: i64) {
     if ms <= 0 {
         return;
     }
@@ -582,7 +469,7 @@ fn note_stamp(agg: &mut JsonlAgg, ms: i64) {
 }
 
 // ponytail: 30s tree walk, watcher if new sessions lag
-fn tree_snapshot(
+pub(super) fn tree_snapshot(
     root: &Path,
     tag: &str,
     max_depth: usize,
@@ -623,7 +510,7 @@ fn tree_snapshot(
     snap.files.clone()
 }
 
-fn jsonl_cached(path: &Path, parse: impl Fn(&str, &mut JsonlAgg)) -> JsonlAgg {
+pub(super) fn jsonl_cached(path: &Path, parse: impl Fn(&str, &mut JsonlAgg)) -> JsonlAgg {
     let key = path.to_path_buf();
     let mut cache = JSONL_CACHE.lock().unwrap();
     let mut agg = cache.remove(&key).unwrap_or_default();
@@ -632,7 +519,7 @@ fn jsonl_cached(path: &Path, parse: impl Fn(&str, &mut JsonlAgg)) -> JsonlAgg {
     agg
 }
 
-fn pull_jsonl(path: &Path, agg: &mut JsonlAgg, parse: impl Fn(&str, &mut JsonlAgg)) {
+pub(super) fn pull_jsonl(path: &Path, agg: &mut JsonlAgg, parse: impl Fn(&str, &mut JsonlAgg)) {
     let Some(mut file) = open_shared(path) else {
         return;
     };
@@ -672,7 +559,7 @@ fn pull_jsonl(path: &Path, agg: &mut JsonlAgg, parse: impl Fn(&str, &mut JsonlAg
     agg.offset = len;
 }
 
-fn rolling_start(files: &[(PathBuf, i64)], parse: impl Fn(&str, &mut JsonlAgg) + Copy) -> i64 {
+pub(super) fn rolling_start(files: &[(PathBuf, i64)], parse: impl Fn(&str, &mut JsonlAgg) + Copy) -> i64 {
     let now = now_ms();
     let cutoff = now - LOOKBACK_MS;
     let mut total = 0;
@@ -694,27 +581,6 @@ fn rolling_start(files: &[(PathBuf, i64)], parse: impl Fn(&str, &mut JsonlAgg) +
     elapsed_start_ms(total, newest_last, now)
 }
 
-pub fn grok_linked() -> bool {
-    grok_home().is_some_and(|home| {
-        home.join("auth.json").is_file() || home.join("active_sessions.json").is_file()
-    })
-}
-
-pub fn cursor_linked() -> bool {
-    dirs_home().is_some_and(|home| {
-        let c = home.join(".cursor");
-        c.join("projects").is_dir() || c.join("chats").is_dir()
-    })
-}
-
-pub fn claude_linked() -> bool {
-    claude_home().is_some_and(|home| home.join("projects").is_dir())
-}
-
-pub fn codex_linked() -> bool {
-    codex_home().is_some_and(|home| home.join("sessions").is_dir())
-}
-
 /// Ticking clock like the production popover: "1:02:03" / "2:03".
 pub fn format_clock(ms: i64) -> String {
     let total = (ms / 1000).max(0);
@@ -728,609 +594,23 @@ pub fn format_clock(ms: i64) -> String {
     }
 }
 
-pub fn scan_grok(idle_secs: f64) -> Option<SessionInfo> {
-    scan_grok_from(&grok_home()?, idle_secs)
-}
 
-fn scan_grok_from(home: &Path, idle_secs: f64) -> Option<SessionInfo> {
-    let now = now_ms();
-    let mut best: Option<SessionInfo> = None;
-    if let Some(json) = read_to_string(&home.join("active_sessions.json")) {
-        if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&json) {
-            for item in items {
-                let Some(info) = grok_live_item(home, &item, now, idle_secs) else {
-                    continue;
-                };
-                if best
-                    .as_ref()
-                    .is_none_or(|b| info.activity_ms >= b.activity_ms)
-                {
-                    best = Some(info);
-                }
-            }
-        }
-    }
-    if best.is_none() {
-        if let Ok(g) = LAST_GROK.lock() {
-            if let Some(prev) = g.as_ref() {
-                if within_idle(prev.activity_ms, now, idle_secs) {
-                    best = Some(prev.clone());
-                }
-            }
-        }
-    }
-    if best.is_none() {
-        best = grok_newest_recent(home, idle_secs, now);
-    }
-    let mut info = best?;
-    info.start_epoch_ms = grok_rolling_start(home);
-    if let Ok(mut g) = LAST_GROK.lock() {
-        *g = Some(info.clone());
-    }
-    Some(info)
-}
 
-fn grok_live_item(home: &Path, item: &Value, now: i64, idle_secs: f64) -> Option<SessionInfo> {
-    let sid = item.get("session_id")?.as_str()?;
-    let cwd = item.get("cwd")?.as_str()?;
-    let pid = item.get("pid")?.as_i64()?;
-    if pid <= 0 || !process_is_alive(pid as u32) {
-        return None;
-    }
-    let opened = item
-        .get("opened_at")
-        .and_then(|v| v.as_str())
-        .and_then(parse_iso_ms)
-        .unwrap_or(now);
-    grok_info_from(home, sid, cwd, Some(opened), now, idle_secs, true)
-}
-
-fn grok_newest_recent(home: &Path, idle_secs: f64, now: i64) -> Option<SessionInfo> {
-    let sessions = home.join("sessions");
-    if !sessions.is_dir() {
-        return None;
-    }
-    let files = tree_snapshot(&sessions, "grok-summary", 8, |p| {
-        p.file_name().and_then(|n| n.to_str()) == Some("summary.json")
-    });
-    let mut best: Option<SessionInfo> = None;
-    for (path, _) in files {
-        let Some(dir) = path.parent() else {
-            continue;
-        };
-        let sid = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let encoded = dir
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let cwd = percent_decode(encoded);
-        let Some(info) = grok_info_from(home, sid, &cwd, None, now, idle_secs, false) else {
-            continue;
-        };
-        if best
-            .as_ref()
-            .is_none_or(|b| info.activity_ms >= b.activity_ms)
-        {
-            best = Some(info);
-        }
-    }
-    best
-}
-
-fn grok_info_from(
-    home: &Path,
-    sid: &str,
-    cwd: &str,
-    opened: Option<i64>,
-    now: i64,
-    idle_secs: f64,
-    live: bool,
-) -> Option<SessionInfo> {
-    let summary_path = find_grok_summary(home, cwd, sid);
-    let (model, remotes, last_active, created) = summary_path
-        .as_ref()
-        .and_then(|p| read_grok_summary(p))
-        .unwrap_or_default();
-    let (tokens, signal_model) = summary_path
-        .as_ref()
-        .and_then(|p| p.parent().map(|d| d.join("signals.json")))
-        .and_then(|p| read_grok_signals(&p))
-        .unwrap_or((0, None));
-    let mut activity = last_active.or(opened).unwrap_or(0);
-    if let Some(path) = &summary_path {
-        if live {
-            activity = activity.max(file_mtime_ms(path).unwrap_or(0));
-            if let Some(dir) = path.parent() {
-                for name in [
-                    "events.jsonl",
-                    "updates.jsonl",
-                    "chat_history.jsonl",
-                    "signals.json",
-                    "hunk_records.jsonl",
-                ] {
-                    activity = activity.max(file_mtime_ms(&dir.join(name)).unwrap_or(0));
-                }
-                // ponytail: mid-turn think can pause writes; last event != turn_ended still counts.
-                if !within_idle(activity, now, idle_secs) && is_open_turn(dir) {
-                    activity = now;
-                }
-            }
-        } else if activity == 0 {
-            activity = file_mtime_ms(path).unwrap_or(0);
-        }
-    }
-    if !within_idle(activity, now, idle_secs) {
-        return None;
-    }
-    let project = remotes
-        .first()
-        .map(|r| repo_name_from_remote(r))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            let from_git = repo_from_cwd(cwd);
-            if from_git.is_empty() {
-                "Grok".into()
-            } else {
-                from_git
-            }
-        });
-    let model = model
-        .or(signal_model)
-        .map(|m| pretty_grok_model(&m))
-        .unwrap_or_else(|| "Grok".into());
-    Some(SessionInfo {
-        agent: AgentKind::Grok,
-        project,
-        model,
-        start_epoch_ms: created.or(opened).unwrap_or(activity),
-        activity_ms: activity,
-        tokens,
-    })
-}
-
-fn grok_rolling_start(home: &Path) -> i64 {
-    let sessions = home.join("sessions");
-    if !sessions.is_dir() {
-        return now_ms();
-    }
-    let files = tree_snapshot(&sessions, "grok-events", 8, |p| {
-        p.file_name().and_then(|n| n.to_str()) == Some("events.jsonl")
-    });
-    rolling_start(&files, parse_grok_event_line)
-}
-
-fn parse_grok_event_line(line: &str, agg: &mut JsonlAgg) {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return;
-    };
-    if let Some(ms) = json_time(v.get("timestamp")).or_else(|| json_time(v.get("ts"))) {
-        note_stamp(agg, ms);
-    }
-}
-
-pub fn scan_claude(idle_secs: f64) -> Option<SessionInfo> {
-    scan_claude_from(&claude_home()?.join("projects"), idle_secs)
-}
-
-pub fn scan_codex(idle_secs: f64) -> Option<SessionInfo> {
-    scan_codex_from(&codex_home()?.join("sessions"), idle_secs)
-}
-
-fn scan_claude_from(projects: &Path, idle_secs: f64) -> Option<SessionInfo> {
-    if !projects.is_dir() {
-        return None;
-    }
-    let now = now_ms();
-    let files = tree_snapshot(projects, "claude-jsonl", 8, |p| {
-        p.extension().and_then(|e| e.to_str()) == Some("jsonl")
-    });
-    let mut best: Option<(PathBuf, i64, JsonlAgg)> = None;
-    for (path, mtime) in &files {
-        let agg = jsonl_cached(path, parse_claude_line);
-        let activity = normalize_ms(agg.last_event_ms, *mtime);
-        if best
-            .as_ref()
-            .is_none_or(|(_, a, _)| activity >= *a)
-        {
-            best = Some((path.clone(), activity, agg));
-        }
-    }
-    let (transcript, activity, tail) = best?;
-    if !within_idle(activity, now, idle_secs) {
-        return None;
-    }
-    let project = tail
-        .cwd
-        .as_deref()
-        .map(repo_from_cwd)
-        .filter(|s| !s.is_empty())
-        .or_else(|| claude_project_from_dir(&transcript))
-        .unwrap_or_else(|| "Claude".into());
-    Some(SessionInfo {
-        agent: AgentKind::Claude,
-        project,
-        model: tail.model.unwrap_or_default(),
-        start_epoch_ms: rolling_start(&files, parse_claude_line),
-        activity_ms: activity,
-        tokens: tail.tokens,
-    })
-}
-
-fn scan_codex_from(sessions: &Path, idle_secs: f64) -> Option<SessionInfo> {
-    if !sessions.is_dir() {
-        return None;
-    }
-    let now = now_ms();
-    let files = tree_snapshot(sessions, "codex-jsonl", 8, |p| {
-        p.extension().and_then(|e| e.to_str()) == Some("jsonl")
-    });
-    let mut best: Option<(PathBuf, i64, JsonlAgg)> = None;
-    for (path, mtime) in &files {
-        let agg = jsonl_cached(path, parse_codex_line);
-        let activity = normalize_ms(agg.last_event_ms, *mtime);
-        if best
-            .as_ref()
-            .is_none_or(|(_, a, _)| activity >= *a)
-        {
-            best = Some((path.clone(), activity, agg));
-        }
-    }
-    let (_transcript, activity, tail) = best?;
-    if !within_idle(activity, now, idle_secs) {
-        return None;
-    }
-    let project = tail
-        .cwd
-        .as_deref()
-        .map(repo_from_cwd)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Codex".into());
-    Some(SessionInfo {
-        agent: AgentKind::Codex,
-        project,
-        model: tail.model.unwrap_or_else(|| "Codex".into()),
-        start_epoch_ms: rolling_start(&files, parse_codex_line),
-        activity_ms: activity,
-        tokens: tail.tokens,
-    })
-}
-
-pub fn scan_cursor(idle_secs: f64) -> Option<SessionInfo> {
-    scan_cursor_from(&dirs_home()?.join(".cursor"), idle_secs)
-}
-
-fn scan_cursor_from(home: &Path, idle_secs: f64) -> Option<SessionInfo> {
-    let now = now_ms();
-    let chats = home.join("chats");
-    let projects = home.join("projects");
-    let metas = cursor_meta_files(home);
-    let files = if projects.is_dir() {
-        tree_snapshot(&projects, "cursor-jsonl", 12, |p| {
-            let s = p.to_string_lossy();
-            s.contains("agent-transcripts") && s.ends_with(".jsonl")
-        })
-    } else {
-        Vec::new()
-    };
-    let mut cwd_by_sid: HashMap<String, String> = HashMap::new();
-    let mut best_activity = 0i64;
-    let mut best_cwd: Option<String> = None;
-    let mut best_path: Option<PathBuf> = None;
-    for (meta_path, meta_mtime) in &metas {
-        let sid = meta_path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let (cwd, _, updated) = read_cursor_meta(meta_path).unwrap_or((None, None, None));
-        if let Some(c) = cwd.clone().filter(|s| !s.is_empty()) {
-            cwd_by_sid.insert(sid.to_string(), c);
-        }
-        let activity = updated.unwrap_or(0).max(*meta_mtime);
-        if activity >= best_activity {
-            best_activity = activity;
-            best_cwd = cwd;
-            best_path = Some(meta_path.clone());
-        }
-    }
-    for (path, mtime) in &files {
-        let mut activity = *mtime;
-        if now.saturating_sub(*mtime) <= CURSOR_THINK_MS && cursor_open_turn(path) {
-            activity = now;
-        }
-        if activity >= best_activity {
-            best_activity = activity;
-            best_cwd = cwd_by_sid.get(&cursor_session_id(path)).cloned();
-            best_path = Some(path.clone());
-        }
-    }
-    if best_activity <= 0 || !within_idle(best_activity, now, idle_secs) {
-        return None;
-    }
-    let project = best_cwd
-        .as_deref()
-        .map(repo_from_cwd)
-        .filter(|s| !s.is_empty())
-        .or_else(|| best_path.as_deref().and_then(project_from_transcript))
-        .unwrap_or_else(|| "Cursor".into());
-    Some(SessionInfo {
-        agent: AgentKind::Cursor,
-        project,
-        model: String::new(),
-        start_epoch_ms: cursor_rolling_start(&files, &chats),
-        activity_ms: best_activity,
-        tokens: 0,
-    })
-}
-
-fn cursor_meta_files(home: &Path) -> Vec<(PathBuf, i64)> {
-    let mut out = Vec::new();
-    for (dir, tag) in [
-        (home.join("chats"), "cursor-meta"),
-        (home.join("acp-sessions"), "cursor-acp-meta"),
-    ] {
-        if dir.is_dir() {
-            out.extend(tree_snapshot(&dir, tag, 8, |p| {
-                p.file_name().and_then(|n| n.to_str()) == Some("meta.json")
-            }));
-        }
-    }
-    out
-}
-
-fn cursor_open_turn(path: &Path) -> bool {
-    let Some(text) = read_tail(path, 8192) else {
-        return false;
-    };
-    let Some(last) = text.lines().rev().find(|l| !l.trim().is_empty()) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<Value>(last.trim()) else {
-        return false;
-    };
-    match str_field(&v, "role").as_deref() {
-        Some("user") => true,
-        Some("assistant") => v
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-            .is_some_and(|arr| {
-                arr.iter()
-                    .any(|p| str_field(p, "type").as_deref() == Some("tool_use"))
-            }),
-        _ => false,
-    }
-}
-
-fn cursor_session_id(transcript: &Path) -> String {
-    let stem = transcript
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    let parent = transcript
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
-    if parent == "agent-transcripts" {
-        stem.to_string()
-    } else {
-        parent.to_string()
-    }
-}
-
-fn cursor_turns_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("AGENTCORD_CURSOR_TURNS") {
-        return Some(PathBuf::from(p));
-    }
-    let base = std::env::var_os("APPDATA").map(PathBuf::from)?;
-    Some(base.join("AgentCord").join("cursor-turns.jsonl"))
-}
-
-fn cursor_hook_duration(cutoff_ms: i64, now_ms: i64) -> Option<(i64, Option<i64>)> {
-    let text = read_to_string(&cursor_turns_path()?)?;
-    let mut open: HashMap<String, Vec<i64>> = HashMap::new();
-    let mut total = 0i64;
-    let mut last = None;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let Some(kind) = str_field(&v, "e") else {
-            continue;
-        };
-        let Some(ms) = v.get("ms").and_then(json_i64) else {
-            continue;
-        };
-        let id = str_field(&v, "id").unwrap_or_default();
-        if kind == "start" {
-            open.entry(id).or_default().push(ms);
-        } else if kind == "end" {
-            if let Some(stack) = open.get_mut(&id) {
-                if let Some(start) = stack.pop() {
-                    let a = start.max(cutoff_ms);
-                    let b = ms.min(now_ms);
-                    if b > a {
-                        total += b - a;
-                    }
-                    last = Some(last.map_or(ms, |l: i64| l.max(ms)));
-                }
-            }
-        }
-    }
-    for starts in open.values() {
-        for start in starts {
-            let a = (*start).max(cutoff_ms);
-            if now_ms > a {
-                total += now_ms - a;
-            }
-            last = Some(last.map_or(now_ms, |l| l.max(now_ms)));
-        }
-    }
-    Some((total, last))
-}
-
-/// Cursor transcripts only stamp user turns. Span first→last (plus
-/// created/updated) so a new message does not snap elapsed to 0.
-fn cursor_session_span(
-    stamps: &[i64],
-    created_at_ms: Option<i64>,
-    updated_at_ms: Option<i64>,
-    cutoff_ms: i64,
-    now_ms: i64,
-) -> (i64, Option<i64>) {
-    let in_window: Vec<i64> = stamps
-        .iter()
-        .copied()
-        .filter(|ms| *ms >= cutoff_ms && *ms <= now_ms)
-        .collect();
-    if in_window.is_empty() {
-        return active_duration(stamps, created_at_ms, updated_at_ms, cutoff_ms, now_ms);
-    }
-    let mut start = *in_window.iter().min().unwrap();
-    if let Some(c) = created_at_ms {
-        if c >= cutoff_ms && c <= now_ms && c < start {
-            start = c;
-        }
-    }
-    let last_stamp = *in_window.iter().max().unwrap();
-    let end = updated_at_ms
-        .map(|u| last_stamp.max(u.min(now_ms)))
-        .unwrap_or(last_stamp);
-    if end > start {
-        (end - start, Some(end))
-    } else {
-        (0, Some(end))
-    }
-}
-
-fn cursor_rolling_start(files: &[(PathBuf, i64)], chats: &Path) -> i64 {
-    let now = now_ms();
-    let cutoff = now - LOOKBACK_MS;
-    if let Some((total, _)) = cursor_hook_duration(cutoff, now) {
-        if total > 0 {
-            return now - total;
-        }
-    }
-    let mut total = 0;
-    let mut newest_last = None;
-    for (path, _) in files {
-        let agg = jsonl_cached(path, parse_cursor_line);
-        let sid = cursor_session_id(path);
-        let (created, updated) = find_cursor_meta(chats, &sid)
-            .and_then(|p| read_cursor_meta(&p))
-            .map(|(_, c, u)| (c, u))
-            .unwrap_or((None, None));
-        let (active, last) = cursor_session_span(
-            &agg.stamps,
-            created.or(agg.created_at_ms),
-            updated.or(agg.updated_at_ms),
-            cutoff,
-            now,
-        );
-        total += active;
-        if let Some(l) = last {
-            newest_last = Some(newest_last.map_or(l, |n: i64| n.max(l)));
-        }
-    }
-    elapsed_start_ms(total, newest_last, now)
-}
-
-fn grok_home() -> Option<PathBuf> {
-    env_home("GROK_HOME").or_else(|| Some(dirs_home()?.join(".grok")))
-}
-
-fn claude_home() -> Option<PathBuf> {
-    env_home("CLAUDE_HOME").or_else(|| Some(dirs_home()?.join(".claude")))
-}
-
-fn codex_home() -> Option<PathBuf> {
-    env_home("CODEX_HOME").or_else(|| Some(dirs_home()?.join(".codex")))
-}
-
-fn env_home(key: &str) -> Option<PathBuf> {
+pub(super) fn env_home(key: &str) -> Option<PathBuf> {
     std::env::var(key)
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
 }
 
-fn dirs_home() -> Option<PathBuf> {
+pub(super) fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
 }
 
-fn find_grok_summary(home: &Path, cwd: &str, sid: &str) -> Option<PathBuf> {
-    let direct = home
-        .join("sessions")
-        .join(percent_encode(cwd))
-        .join(sid)
-        .join("summary.json");
-    if direct.is_file() {
-        return Some(direct);
-    }
-    let sessions = home.join("sessions");
-    let groups = fs::read_dir(sessions).ok()?;
-    for group in groups.flatten() {
-        let session = group.path().join(sid).join("summary.json");
-        if session.is_file() {
-            return Some(session);
-        }
-    }
-    None
-}
 
-fn read_grok_summary(
-    path: &Path,
-) -> Option<(Option<String>, Vec<String>, Option<i64>, Option<i64>)> {
-    let v: Value = serde_json::from_str(&read_to_string(path)?).ok()?;
-    let model = str_field(&v, "current_model_id");
-    let last = str_field(&v, "last_active_at")
-        .or_else(|| str_field(&v, "updated_at"))
-        .and_then(|s| parse_iso_ms(&s));
-    let created = str_field(&v, "created_at").and_then(|s| parse_iso_ms(&s));
-    let remotes = v
-        .get("git_remotes")
-        .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    Some((model, remotes, last, created))
-}
-
-fn read_grok_signals(path: &Path) -> Option<(i64, Option<String>)> {
-    let v: Value = serde_json::from_str(&read_to_string(path)?).ok()?;
-    let tokens = v.get("contextTokensUsed").and_then(json_i64).unwrap_or(0);
-    let model = str_field(&v, "primaryModelId");
-    Some((tokens, model))
-}
-
-fn is_open_turn(session_dir: &Path) -> bool {
-    let path = session_dir.join("events.jsonl");
-    let ty = last_jsonl_type(&path).unwrap_or_default();
-    !ty.is_empty()
-        && !ty.eq_ignore_ascii_case("turn_ended")
-        && !ty.eq_ignore_ascii_case("session_end")
-        && !ty.eq_ignore_ascii_case("session_ended")
-}
-
-fn last_jsonl_type(path: &Path) -> Option<String> {
-    let text = read_tail(path, 8192)?;
-    let last = text.lines().rev().find(|l| !l.trim().is_empty())?;
-    let v: Value = serde_json::from_str(last.trim()).ok()?;
-    str_field(&v, "type")
-}
-
-fn read_tail(path: &Path, max: u64) -> Option<String> {
+pub(super) fn read_tail(path: &Path, max: u64) -> Option<String> {
     let mut file = open_shared(path)?;
     let len = file.metadata().ok()?.len();
     if len == 0 {
@@ -1349,96 +629,8 @@ fn read_tail(path: &Path, max: u64) -> Option<String> {
     Some(text)
 }
 
-fn parse_claude_line(line: &str, agg: &mut JsonlAgg) {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return;
-    };
-    if agg.cwd.is_none() {
-        if let Some(cwd) = str_field(&v, "cwd").filter(|s| !s.is_empty()) {
-            agg.cwd = Some(cwd);
-        }
-    }
-    if let Some(ms) = json_time(v.get("timestamp")) {
-        note_stamp(agg, ms);
-    }
-    let Some(message) = v.get("message") else {
-        return;
-    };
-    if let Some(model) =
-        str_field(message, "model").filter(|m| m != "<synthetic>" && !m.is_empty())
-    {
-        agg.model = Some(pretty_claude_model(&model));
-    }
-    if let Some(usage) = message.get("usage") {
-        agg.tokens += usage.get("input_tokens").and_then(json_i64).unwrap_or(0)
-            + usage.get("output_tokens").and_then(json_i64).unwrap_or(0);
-    }
-}
 
-fn parse_codex_line(line: &str, agg: &mut JsonlAgg) {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return;
-    };
-    if let Some(ms) = json_time(v.get("timestamp")) {
-        note_stamp(agg, ms);
-    }
-    let Some(ty) = str_field(&v, "type") else {
-        return;
-    };
-    let Some(payload) = v.get("payload") else {
-        return;
-    };
-    if ty == "session_meta" || ty == "turn_context" {
-        if let Some(cwd) = str_field(payload, "cwd").filter(|s| !s.is_empty()) {
-            agg.cwd = Some(cwd);
-        }
-        if ty == "turn_context" {
-            if let Some(model) = str_field(payload, "model").filter(|s| !s.is_empty()) {
-                agg.model = Some(pretty_codex_model(&model));
-            }
-        }
-        if ty == "session_meta" {
-            if let Some(ms) = json_time(payload.get("timestamp")) {
-                note_stamp(agg, ms);
-            }
-        }
-    }
-    if ty == "event_msg" && str_field(payload, "type").as_deref() == Some("token_count") {
-        if let Some(usage) = payload.get("info").and_then(|i| i.get("last_token_usage")) {
-            let total = usage.get("total_tokens").and_then(json_i64).unwrap_or(0);
-            agg.tokens = if total > 0 {
-                total
-            } else {
-                usage.get("input_tokens").and_then(json_i64).unwrap_or(0)
-                    + usage.get("output_tokens").and_then(json_i64).unwrap_or(0)
-            };
-        }
-    }
-}
-
-fn parse_cursor_line(line: &str, agg: &mut JsonlAgg) {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return;
-    };
-    let Some(message) = v.get("message") else {
-        return;
-    };
-    for text in message_texts(message) {
-        let mut rest = text.as_str();
-        while let Some(start) = rest.find("<timestamp>") {
-            rest = &rest[start + 11..];
-            let Some(end) = rest.find("</timestamp>") else {
-                break;
-            };
-            if let Some(ms) = parse_embedded_timestamp(&rest[..end]) {
-                note_stamp(agg, ms);
-            }
-            rest = &rest[end + 12..];
-        }
-    }
-}
-
-fn message_texts(message: &Value) -> Vec<String> {
+pub(super) fn message_texts(message: &Value) -> Vec<String> {
     let Some(content) = message.get("content") else {
         return Vec::new();
     };
@@ -1453,7 +645,7 @@ fn message_texts(message: &Value) -> Vec<String> {
         .collect()
 }
 
-fn parse_embedded_timestamp(raw: &str) -> Option<i64> {
+pub(super) fn parse_embedded_timestamp(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     let utc_at = trimmed.rfind("(UTC")?;
     if !trimmed.ends_with(')') {
@@ -1473,7 +665,7 @@ fn parse_embedded_timestamp(raw: &str) -> Option<i64> {
     Some((local - offset_secs) * 1000)
 }
 
-fn parse_utc_offset_secs(raw: &str) -> Option<i64> {
+pub(super) fn parse_utc_offset_secs(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     let (sign, body) = match trimmed.as_bytes().first()? {
         b'+' => (1i64, &trimmed[1..]),
@@ -1490,7 +682,7 @@ fn parse_utc_offset_secs(raw: &str) -> Option<i64> {
     Some(sign * (hours as i64 * 3600 + minutes as i64 * 60))
 }
 
-fn parse_mon_day(s: &str) -> Option<(u32, u32)> {
+pub(super) fn parse_mon_day(s: &str) -> Option<(u32, u32)> {
     let (mon, day) = s.rsplit_once(' ')?;
     const SHORT: [&str; 12] = [
         "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
@@ -1521,7 +713,7 @@ fn parse_mon_day(s: &str) -> Option<(u32, u32)> {
     Some((idx as u32 + 1, day))
 }
 
-fn parse_ampm(s: &str) -> Option<(u32, u32)> {
+pub(super) fn parse_ampm(s: &str) -> Option<(u32, u32)> {
     let (time, mer) = s.rsplit_once(' ')?;
     let (h, m) = time.split_once(':')?;
     let mut hour: u32 = h.parse().ok()?;
@@ -1538,47 +730,8 @@ fn parse_ampm(s: &str) -> Option<(u32, u32)> {
     Some((hour, minute))
 }
 
-fn claude_project_from_dir(transcript: &Path) -> Option<String> {
-    let dir = transcript.parent()?.file_name()?.to_str()?;
-    dir.rsplit_once('-')
-        .map(|(_, tail)| tail)
-        .filter(|t| !t.is_empty())
-        .or(Some(dir))
-        .map(str::to_string)
-}
 
-fn find_cursor_meta(chats: &Path, session_id: &str) -> Option<PathBuf> {
-    if !chats.is_dir() || session_id.is_empty() {
-        return None;
-    }
-    tree_snapshot(chats, "cursor-meta", 8, |p| {
-        p.file_name().and_then(|n| n.to_str()) == Some("meta.json")
-    })
-    .into_iter()
-    .find(|(path, _)| {
-        path.parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            == Some(session_id)
-    })
-    .map(|(path, _)| path)
-}
-
-fn read_cursor_meta(path: &Path) -> Option<(Option<String>, Option<i64>, Option<i64>)> {
-    let v: Value = serde_json::from_str(&read_to_string(path)?).ok()?;
-    let cwd = str_field(&v, "cwd").filter(|s| !s.is_empty());
-    let created = v
-        .get("createdAtMs")
-        .and_then(json_i64)
-        .filter(|n| *n > 0);
-    let updated = v
-        .get("updatedAtMs")
-        .and_then(json_i64)
-        .filter(|n| *n > 0);
-    Some((cwd, created, updated))
-}
-
-fn project_from_transcript(path: &Path) -> Option<String> {
+pub(super) fn project_from_transcript(path: &Path) -> Option<String> {
     let text = path.to_string_lossy();
     let marker = if text.contains("\\projects\\") {
         "\\projects\\"
@@ -1595,7 +748,7 @@ fn project_from_transcript(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-fn walk_files(root: &Path, max_depth: usize, visit: &mut dyn FnMut(&Path)) {
+pub(super) fn walk_files(root: &Path, max_depth: usize, visit: &mut dyn FnMut(&Path)) {
     fn rec(dir: &Path, depth: usize, max_depth: usize, visit: &mut dyn FnMut(&Path)) {
         if depth > max_depth {
             return;
@@ -1616,7 +769,7 @@ fn walk_files(root: &Path, max_depth: usize, visit: &mut dyn FnMut(&Path)) {
     rec(root, 0, max_depth, visit);
 }
 
-fn percent_encode(s: &str) -> String {
+pub(super) fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for b in s.bytes() {
         match b {
@@ -1644,7 +797,7 @@ pub fn parse_iso_ms(iso: &str) -> Option<i64> {
     Some((days * 86_400 + hour as i64 * 3600 + minute as i64 * 60 + second as i64) * 1000)
 }
 
-fn days_from_civil(mut year: i32, month: u32, day: u32) -> Option<i64> {
+pub(super) fn days_from_civil(mut year: i32, month: u32, day: u32) -> Option<i64> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
@@ -1660,15 +813,15 @@ fn days_from_civil(mut year: i32, month: u32, day: u32) -> Option<i64> {
     Some(era * 146097 + doe - 719468)
 }
 
-fn str_field(v: &Value, key: &str) -> Option<String> {
+pub(super) fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key)?.as_str().map(str::to_string)
 }
 
-fn json_i64(v: &Value) -> Option<i64> {
+pub(super) fn json_i64(v: &Value) -> Option<i64> {
     v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))
 }
 
-fn json_time(v: Option<&Value>) -> Option<i64> {
+pub(super) fn json_time(v: Option<&Value>) -> Option<i64> {
     let v = v?;
     if let Some(s) = v.as_str() {
         return parse_iso_ms(s);
@@ -1677,7 +830,7 @@ fn json_time(v: Option<&Value>) -> Option<i64> {
     Some(if n.abs() < 1_000_000_000_000 { n * 1000 } else { n })
 }
 
-fn percent_decode(s: &str) -> String {
+pub(super) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -1695,7 +848,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn from_hex(b: u8) -> Option<u8> {
+pub(super) fn from_hex(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'f' => Some(b - b'a' + 10),
@@ -1704,27 +857,27 @@ fn from_hex(b: u8) -> Option<u8> {
     }
 }
 
-fn basename(path: &str) -> Option<String> {
+pub(super) fn basename(path: &str) -> Option<String> {
     Path::new(path)
         .file_name()
         .and_then(|s| s.to_str())
         .map(str::to_string)
 }
 
-fn file_mtime_ms(path: &Path) -> Option<i64> {
+pub(super) fn file_mtime_ms(path: &Path) -> Option<i64> {
     let meta = fs::metadata(path).ok()?;
     let d = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
     Some(d.as_millis() as i64)
 }
 
-fn read_to_string(path: &Path) -> Option<String> {
+pub(super) fn read_to_string(path: &Path) -> Option<String> {
     let mut file = open_shared(path)?;
     let mut s = String::new();
     file.read_to_string(&mut s).ok()?;
     Some(s)
 }
 
-fn open_shared(path: &Path) -> Option<File> {
+pub(super) fn open_shared(path: &Path) -> Option<File> {
     let mut opts = fs::OpenOptions::new();
     opts.read(true);
     #[cfg(windows)]
@@ -1736,7 +889,7 @@ fn open_shared(path: &Path) -> Option<File> {
 }
 
 #[cfg(windows)]
-fn process_is_alive(pid: u32) -> bool {
+pub(super) fn process_is_alive(pid: u32) -> bool {
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     const STILL_ACTIVE: u32 = 259;
     extern "system" {
@@ -1757,13 +910,17 @@ fn process_is_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(windows))]
-fn process_is_alive(_pid: u32) -> bool {
+pub(super) fn process_is_alive(_pid: u32) -> bool {
     false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::claude::scan_claude_from;
+    use super::codex::scan_codex_from;
+    use super::cursor::{cursor_hook_duration, cursor_session_span, scan_cursor_from};
+    use super::grok::{grok_rolling_start, scan_grok_from};
 
     #[test]
     fn pretty_claude_formats_id() {
@@ -2320,7 +1477,7 @@ mod tests {
 
     #[test]
     fn grok_open_turn_without_live_pid_is_idle() {
-        *LAST_GROK.lock().unwrap() = None;
+        *grok::LAST_GROK.lock().unwrap() = None;
         let home = std::env::temp_dir().join(format!(
             "agentcord-grok-idle-{}-{}",
             std::process::id(),

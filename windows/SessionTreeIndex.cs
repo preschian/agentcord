@@ -32,6 +32,8 @@ internal sealed class SessionTreeIndex : IDisposable
         _match = match;
     }
 
+    public bool RootExists => Directory.Exists(_root);
+
     /// <summary>Current path+mtime snapshot. Walks at most every 30s or when
     /// the watcher reports a structural change.</summary>
     public IReadOnlyList<(string Path, DateTime Mtime)> Snapshot(TimeSpan lookback)

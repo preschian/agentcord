@@ -24,6 +24,10 @@ public sealed class PresenceController : IDisposable
     public SessionInfo? CodexSession { get; private set; }
     public SessionInfo? CursorSession { get; private set; }
     public SessionInfo? GrokSession { get; private set; }
+    public long ClaudeTodayMs { get; private set; }
+    public long CodexTodayMs { get; private set; }
+    public long CursorTodayMs { get; private set; }
+    public long GrokTodayMs { get; private set; }
     public bool GrokAuthenticated => _grokScanner.IsAuthenticated;
 
     public event Action? Changed;
@@ -84,16 +88,24 @@ public sealed class PresenceController : IDisposable
         if (Interlocked.Exchange(ref _ticking, 1) == 1) return;
         try
         {
-            var activeWindow = Math.Max(_settings.IdleWindowSeconds, 1);
-            _claudeScanner.ActiveWindowSeconds = activeWindow;
-            _codexScanner.ActiveWindowSeconds = activeWindow;
-            _cursorScanner.ActiveWindowSeconds = activeWindow;
-            _grokScanner.ActiveWindowSeconds = activeWindow;
+            const double idle = SessionActivity.IdleWindowSeconds;
+            _claudeScanner.ActiveWindowSeconds = idle;
+            _codexScanner.ActiveWindowSeconds = idle;
+            _cursorScanner.ActiveWindowSeconds = idle;
+            _grokScanner.ActiveWindowSeconds = idle;
             // Disabled agents must not walk their on-disk trees.
-            ClaudeSession = _settings.AgentClaudeEnabled ? _claudeScanner.Scan() : null;
-            CodexSession = _settings.AgentCodexEnabled ? _codexScanner.Scan() : null;
-            CursorSession = _settings.AgentCursorEnabled ? _cursorScanner.Scan() : null;
-            GrokSession = _settings.AgentGrokEnabled ? _grokScanner.Scan() : null;
+            var claude = _settings.AgentClaudeEnabled ? _claudeScanner.Scan() : default;
+            var codex = _settings.AgentCodexEnabled ? _codexScanner.Scan() : default;
+            var cursor = _settings.AgentCursorEnabled ? _cursorScanner.Scan() : default;
+            var grok = _settings.AgentGrokEnabled ? _grokScanner.Scan() : default;
+            ClaudeSession = claude.Session;
+            CodexSession = codex.Session;
+            CursorSession = cursor.Session;
+            GrokSession = grok.Session;
+            ClaudeTodayMs = claude.TodayMs;
+            CodexTodayMs = codex.TodayMs;
+            CursorTodayMs = cursor.TodayMs;
+            GrokTodayMs = grok.TodayMs;
 
             var info = new[] { ClaudeSession, CodexSession, CursorSession, GrokSession }
                 .Where(session => session is not null && _settings.IsAgentEnabled(session.Agent))
@@ -161,6 +173,22 @@ public sealed class PresenceController : IDisposable
         AgentKind.Cursor => CursorSession,
         AgentKind.Grok => GrokSession,
         _ => ClaudeSession,
+    };
+
+    public long TodayMs(AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => CodexTodayMs,
+        AgentKind.Cursor => CursorTodayMs,
+        AgentKind.Grok => GrokTodayMs,
+        _ => ClaudeTodayMs,
+    };
+
+    public bool IsInstalled(AgentKind agent) => agent switch
+    {
+        AgentKind.Codex => _codexScanner.IsLinked,
+        AgentKind.Cursor => _cursorScanner.IsLinked,
+        AgentKind.Grok => _grokScanner.IsLinked,
+        _ => _claudeScanner.IsLinked,
     };
 
     private static string LargeImageKey(AgentKind agent) => agent switch

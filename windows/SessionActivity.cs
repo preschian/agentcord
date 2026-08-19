@@ -10,8 +10,24 @@ internal static class SessionActivity
     /// <summary>A gap longer than this between consecutive stamps is idle, not work.</summary>
     public const long GapToleranceMs = 5 * 60 * 1000;
 
-    /// <summary>Rolling window for the combined duration shown on Discord / in the UI.</summary>
+    /// <summary>Presence idle timeout. Scans ignore Settings.IdleWindowSeconds.</summary>
+    public const double IdleWindowSeconds = 60.0;
+
+    /// <summary>File-retention bound for tree snapshots, not the clock cutoff.</summary>
     public const long LookbackMs = 24 * 60 * 60 * 1000;
+
+    /// <summary>Local calendar-day start, used as the work-clock cutoff.</summary>
+    public static long LocalMidnightMs() =>
+        new DateTimeOffset(DateTime.Today).ToUnixTimeMilliseconds();
+
+    /// <summary>Add <c>now - last</c> only while the session is live, so idle clocks freeze.</summary>
+    public static long WithLiveTail(long totalActiveMs, long? lastMs, long nowMs, bool live)
+    {
+        var total = totalActiveMs;
+        if (live && lastMs is long last && nowMs > last)
+            total += nowMs - last;
+        return Math.Max(0, total);
+    }
 
     /// <summary>Activity signal from an optional event timestamp and filesystem
     /// mtime. The filesystem timestamp is only a fallback when no event

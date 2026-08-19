@@ -83,6 +83,9 @@ public static class AgentKindExtensions
     };
 }
 
+/// <summary>One scan tick: today's work time, plus a live session when active.</summary>
+public readonly record struct AgentScan(long TodayMs, SessionInfo? Session);
+
 /// <summary>A snapshot of a currently active coding-agent session.</summary>
 public sealed record SessionInfo
 {

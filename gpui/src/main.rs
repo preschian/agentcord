@@ -73,6 +73,7 @@ struct AgentCord {
     codex_is_linked: bool,
     grok_is_linked: bool,
     cursor_is_linked: bool,
+    cursor_today_ms: i64,
     screen: Screen,
     usage: Arc<Mutex<UsageSnapshot>>,
     status: Arc<Mutex<Option<StatusInfo>>>,
@@ -107,6 +108,7 @@ impl AgentCord {
             codex_is_linked: false,
             grok_is_linked: false,
             cursor_is_linked: false,
+            cursor_today_ms: 0,
             screen: Screen::Main,
             usage: usage::spawn(),
             status: status::spawn(),
@@ -132,6 +134,7 @@ impl AgentCord {
         self.codex_is_linked = snap.codex_linked;
         self.grok_is_linked = snap.grok_linked;
         self.cursor_is_linked = snap.cursor_linked;
+        self.cursor_today_ms = snap.cursor_today_ms;
 
         let discord_snap = self.discord.snapshot();
         let winner = pick_winner(&self.sessions).cloned();
@@ -1159,6 +1162,7 @@ fn agent_list(
             linked,
             session,
             app.settings.show_project,
+            app.cursor_today_ms,
             cx,
         ));
     }
@@ -1170,6 +1174,7 @@ fn agent_row(
     linked: bool,
     session: Option<SessionInfo>,
     show_project: bool,
+    cursor_today_ms: i64,
     cx: &mut Context<AgentCord>,
 ) -> impl IntoElement {
     let name_color = if linked { TEXT } else { SEC };
@@ -1185,7 +1190,9 @@ fn agent_row(
         "Connected".into()
     };
     let live = session.is_some();
-    let trailing: SharedString = if let Some(s) = &session {
+    let trailing: SharedString = if agent == AgentKind::Cursor && linked {
+        format_clock(cursor_today_ms).into()
+    } else if let Some(s) = &session {
         format_clock(now_ms() - s.start_epoch_ms).into()
     } else if linked {
         "idle".into()

@@ -220,12 +220,22 @@ final class PresenceController: ObservableObject {
         let type = SettingsStore.allowedActivityTypes.map(\.value).contains(settings.activityType)
             ? settings.activityType : 0
 
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         return RichPresence(
             type: type,
             name: name,
             details: details,
             state: state,
-            timestamps: Timestamps(start: info.startEpochMs, end: nil),
+            timestamps: Timestamps(
+                start: Self.presenceStartMs(
+                    nowMs: nowMs,
+                    claude: claudeTodayMs,
+                    codex: codexTodayMs,
+                    cursor: cursorTodayMs,
+                    grok: grokTodayMs
+                ),
+                end: nil
+            ),
             assets: assets,
             buttons: [Self.repoButton]
         )
@@ -262,6 +272,19 @@ final class PresenceController: ObservableObject {
         case .cursor: return cursorSession.isLinked
         case .grok: return grokSession.isLinked
         }
+    }
+
+    /// Discord elapsed is `now - start`. Backdate by the four daily totals so
+    /// switching the winning agent does not jump the clock. Disabled agents
+    /// publish `0` from `stop()`, so they drop out of the sum.
+    static func presenceStartMs(
+        nowMs: Int64,
+        claude: Int64,
+        codex: Int64,
+        cursor: Int64,
+        grok: Int64
+    ) -> Int64 {
+        nowMs - (max(0, claude) + max(0, codex) + max(0, cursor) + max(0, grok))
     }
 
     static func formatTokens(_ count: Int) -> String {

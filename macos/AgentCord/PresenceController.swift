@@ -22,11 +22,13 @@ final class PresenceController: ObservableObject {
     @Published private(set) var codexTodayMs: Int64 = 0
     @Published private(set) var cursorTodayMs: Int64 = 0
     @Published private(set) var grokTodayMs: Int64 = 0
+    @Published private(set) var antigravityTodayMs: Int64 = 0
 
     let session = ClaudeSession()
     let codexSession = CodexSession()
     let cursorSession = CursorSession()
     let grokSession = GrokSession()
+    let antigravitySession = AntigravitySession()
     let settings: SettingsStore
 
     private let ipc = DiscordIPC()
@@ -82,6 +84,15 @@ final class PresenceController: ObservableObject {
             }
             .store(in: &cancellables)
 
+        antigravitySession.$current
+            .combineLatest(antigravitySession.$todayMs)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _, today in
+                self?.antigravityTodayMs = today
+                self?.selectActiveSession()
+            }
+            .store(in: &cancellables)
+
         // Display-affecting settings (toggles, DND, image keys) only need a
         // rebuild. Deferred to the next runloop tick so the new value is set.
         settings.objectWillChange
@@ -116,6 +127,7 @@ final class PresenceController: ObservableObject {
         codexSession.stop()
         cursorSession.stop()
         grokSession.stop()
+        antigravitySession.stop()
         ipc.disconnect()
     }
 
@@ -152,6 +164,7 @@ final class PresenceController: ObservableObject {
         codexSession.activeWindowSeconds = idle
         cursorSession.activeWindowSeconds = idle
         grokSession.activeWindowSeconds = idle
+        antigravitySession.activeWindowSeconds = idle
     }
 
     /// Only watch agents the user has enabled. Each scanner walks a large
@@ -161,6 +174,7 @@ final class PresenceController: ObservableObject {
         if settings.agentCodexEnabled { codexSession.start() } else { codexSession.stop() }
         if settings.agentCursorEnabled { cursorSession.start() } else { cursorSession.stop() }
         if settings.agentGrokEnabled { grokSession.start() } else { grokSession.stop() }
+        if settings.agentAntigravityEnabled { antigravitySession.start() } else { antigravitySession.stop() }
     }
 
     private func handleSettingsChange() {
@@ -176,6 +190,7 @@ final class PresenceController: ObservableObject {
         if settings.agentCodexEnabled, let codex = codexSession.current { candidates.append(codex) }
         if settings.agentCursorEnabled, let cursor = cursorSession.current { candidates.append(cursor) }
         if settings.agentGrokEnabled, let grok = grokSession.current { candidates.append(grok) }
+        if settings.agentAntigravityEnabled, let antigravity = antigravitySession.current { candidates.append(antigravity) }
         let selected = candidates.max { $0.lastModified < $1.lastModified }
         if currentSession != selected { currentSession = selected }
         let agent = selected?.agent
@@ -232,7 +247,8 @@ final class PresenceController: ObservableObject {
                     claude: claudeTodayMs,
                     codex: codexTodayMs,
                     cursor: cursorTodayMs,
-                    grok: grokTodayMs
+                    grok: grokTodayMs,
+                    antigravity: antigravityTodayMs
                 ),
                 end: nil
             ),
@@ -248,6 +264,7 @@ final class PresenceController: ObservableObject {
         case .claude: return "logo-claude"
         case .cursor: return "logo-cursor"
         case .grok: return "logo-grok"
+        case .antigravity: return "logo-antigravity"
         }
     }
 
@@ -262,6 +279,7 @@ final class PresenceController: ObservableObject {
         case .codex: return codexTodayMs
         case .cursor: return cursorTodayMs
         case .grok: return grokTodayMs
+        case .antigravity: return antigravityTodayMs
         }
     }
 
@@ -271,6 +289,7 @@ final class PresenceController: ObservableObject {
         case .codex: return codexSession.isLinked
         case .cursor: return cursorSession.isLinked
         case .grok: return grokSession.isLinked
+        case .antigravity: return antigravitySession.isLinked
         }
     }
 
@@ -282,9 +301,10 @@ final class PresenceController: ObservableObject {
         claude: Int64,
         codex: Int64,
         cursor: Int64,
-        grok: Int64
+        grok: Int64,
+        antigravity: Int64
     ) -> Int64 {
-        nowMs - (max(0, claude) + max(0, codex) + max(0, cursor) + max(0, grok))
+        nowMs - (max(0, claude) + max(0, codex) + max(0, cursor) + max(0, grok) + max(0, antigravity))
     }
 
     static func formatTokens(_ count: Int) -> String {

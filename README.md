@@ -1,6 +1,6 @@
 # agentcord
 
-AgentCord puts your coding-agent activity on your Discord profile. The Windows app tracks Claude Code, Codex, Cursor, and Grok; the macOS app supports Claude, Codex, Cursor, and Grok. When several sessions are running, the most recently active enabled agent wins. Your Discord status shows what you're working on: the current project, model, elapsed time, and token count. When the session goes quiet or you quit the app, the status clears itself.
+AgentCord puts your coding-agent activity on your Discord profile. The Windows app tracks Claude Code, Codex, Cursor, Grok, and Antigravity; the macOS app supports Claude, Codex, Cursor, Grok, and Antigravity. When several sessions are running, the most recently active enabled agent wins. Your Discord status shows what you're working on: the current project, model, elapsed time, and token count. When the session goes quiet or you quit the app, the status clears itself.
 
 The app lives in the macOS menu bar or Windows system tray with no window in the way. Elapsed time is today's working duration (local midnight) on every platform. On macOS, Discord elapsed is the sum of enabled agents' daily totals; the title stays the most recently active session. Claude's token totals still reset at midnight.
 

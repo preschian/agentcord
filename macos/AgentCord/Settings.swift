@@ -31,6 +31,7 @@ final class SettingsStore: ObservableObject {
         static let agentCursorEnabled = "agentCursorEnabled"
         static let agentCodexEnabled = "agentCodexEnabled"
         static let agentGrokEnabled = "agentGrokEnabled"
+        static let agentAntigravityEnabled = "agentAntigravityEnabled"
     }
 
     /// The Discord Application ID this app reports as. Not a secret; safe to
@@ -63,6 +64,7 @@ final class SettingsStore: ObservableObject {
     @Published var agentCursorEnabled: Bool { didSet { defaults.set(agentCursorEnabled, forKey: Key.agentCursorEnabled) } }
     @Published var agentCodexEnabled: Bool { didSet { defaults.set(agentCodexEnabled, forKey: Key.agentCodexEnabled) } }
     @Published var agentGrokEnabled: Bool { didSet { defaults.set(agentGrokEnabled, forKey: Key.agentGrokEnabled) } }
+    @Published var agentAntigravityEnabled: Bool { didSet { defaults.set(agentAntigravityEnabled, forKey: Key.agentAntigravityEnabled) } }
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
@@ -83,7 +85,8 @@ final class SettingsStore: ObservableObject {
             Key.agentCursorEnabled: true,
             // Codex defaults on; Connect card shows if not signed in.
             Key.agentCodexEnabled: true,
-            Key.agentGrokEnabled: true
+            Key.agentGrokEnabled: true,
+            Key.agentAntigravityEnabled: true
         ])
 
         clientID = defaults.string(forKey: Key.clientID) ?? Self.defaultClientID
@@ -103,6 +106,7 @@ final class SettingsStore: ObservableObject {
         agentCursorEnabled = defaults.bool(forKey: Key.agentCursorEnabled)
         agentCodexEnabled = defaults.bool(forKey: Key.agentCodexEnabled)
         agentGrokEnabled = defaults.bool(forKey: Key.agentGrokEnabled)
+        agentAntigravityEnabled = defaults.bool(forKey: Key.agentAntigravityEnabled)
     }
 
     /// Agents the user has toggled on in Settings.
@@ -116,6 +120,7 @@ final class SettingsStore: ObservableObject {
         case .cursor: return agentCursorEnabled
         case .codex: return agentCodexEnabled
         case .grok: return agentGrokEnabled
+        case .antigravity: return agentAntigravityEnabled
         }
     }
 
@@ -125,6 +130,7 @@ final class SettingsStore: ObservableObject {
         case .cursor: agentCursorEnabled = enabled
         case .codex: agentCodexEnabled = enabled
         case .grok: agentGrokEnabled = enabled
+        case .antigravity: agentAntigravityEnabled = enabled
         }
         // Keep the selected tab pointing at an enabled agent.
         if !isAgentEnabled(selectedAgent), let first = enabledAgents.first {

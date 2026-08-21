@@ -635,6 +635,7 @@ struct MenuContentView: View {
         case .codex: return codexSession.current
         case .grok: return grokSession.current
         case .antigravity: return antigravitySession.current
+        case .opencode: return controller.opencodeSession.current
         }
     }
 
@@ -1030,6 +1031,7 @@ struct MenuContentView: View {
         case .codex: return codexUsage.accountEmail
         case .grok: return grokUsage.accountEmail
         case .antigravity: return antigravityUsage.accountEmail
+        case .opencode: return nil
         }
     }
 
@@ -1067,6 +1069,7 @@ struct MenuContentView: View {
         case .codex: return codexUsage.current?.planType
         case .grok: return nil
         case .antigravity: return antigravityUsage.current?.planName
+        case .opencode: return nil
         }
     }
 
@@ -1140,6 +1143,7 @@ struct MenuContentView: View {
         case .codex: urlString = "https://developers.openai.com/codex/auth"
         case .grok: urlString = "https://grok.x.ai"
         case .antigravity: urlString = "https://antigravity.google/docs/cli/getting-started"
+        case .opencode: urlString = "https://opencode.ai/docs"
         }
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
@@ -1325,6 +1329,8 @@ struct MenuContentView: View {
             return (agent.displayName, grokUsage.current?.weekly)
         case .antigravity:
             return ("Agy", antigravityUsage.current?.fiveHour)
+        case .opencode:
+            return (agent.displayName, nil)
         }
     }
 
@@ -1341,6 +1347,7 @@ struct MenuContentView: View {
             case .codex: codexUsageRows
             case .grok: grokUsageRows
             case .antigravity: antigravityUsageRows
+            case .opencode: usagePlaceholder("No usage limits reported")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

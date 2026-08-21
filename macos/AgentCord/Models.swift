@@ -91,6 +91,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     case cursor
     case grok
     case antigravity
+    case opencode
 
     var id: String { rawValue }
 
@@ -101,6 +102,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .cursor: return "Cursor"
         case .grok: return "Grok"
         case .antigravity: return "Antigravity"
+        case .opencode: return "OpenCode"
         }
     }
 
@@ -111,6 +113,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .cursor: return "Cursor"
         case .grok: return "xAI"
         case .antigravity: return "Google"
+        case .opencode: return "OpenCode"
         }
     }
 
@@ -122,6 +125,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .cursor: return (0.0, 0.0, 0.0)        // #000000
         case .grok: return (0.114, 0.114, 0.122)   // #1d1d1f
         case .antigravity: return (0.259, 0.522, 0.957) // #4285f4
+        case .opencode: return (0.984, 0.455, 0.098) // #fb7419
         }
     }
 }

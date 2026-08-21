@@ -1,7 +1,7 @@
 # AgentCord for Windows (C# / .NET)
 
 A native Windows port of the macOS menu bar app, written in C# on .NET 10. Same
-idea: while a Claude Code, Codex, Cursor, or Grok session is running, your Discord
+idea: while a Claude Code, Codex, Cursor, Grok, or Antigravity session is running, your Discord
 profile shows what you're working on, and it clears itself when the session
 goes quiet or you quit. Cursor is active only while a hook turn is open.
 If several agents are active, the most recently updated
@@ -24,9 +24,9 @@ Discord IPC client is hand-written.
 |---|---|---|
 | Discord IPC | Unix socket `$TMPDIR/discord-ipc-N` | named pipe `\\.\pipe\discord-ipc-N` (`DiscordIpc.cs`) |
 | IPC payload models | `Models.swift` (Codable) | `Models.cs` (System.Text.Json) |
-| Session detection | `FSEvents` on agent data; Cursor from `$TMPDIR/AgentCord/yyyy-MM-dd-uptime.json` | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%TEMP%\AgentCord\yyyy-MM-dd-uptime.json` (Cursor hooks), and `%USERPROFILE%\.grok\active_sessions.json` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`) |
+| Session detection | `FSEvents` on agent data; Cursor from `$TMPDIR/AgentCord/yyyy-MM-dd-uptime.json` | timer re-scan of `%USERPROFILE%\.claude\projects`, `%USERPROFILE%\.codex\sessions`, `%TEMP%\AgentCord\yyyy-MM-dd-uptime.json` (Cursor hooks), `%USERPROFILE%\.grok\active_sessions.json`, and `%USERPROFILE%\.gemini\antigravity-cli` (`ClaudeSession.cs`, `CodexSession.cs`, `CursorSession.cs`, `GrokSession.cs`, `AntigravitySession.cs`) |
 | Presence controller | `PresenceController.swift` | `PresenceController.cs` |
-| Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs`, `CodexUsage.cs` (`codex app-server`), `CursorUsage.cs` (`auth.json` / dashboard API), and `GrokUsage.cs` (`~/.grok/auth.json` / SuperGrok billing API) |
+| Usage limits (5h / weekly / per-model) | provider usage pollers | `ClaudeUsage.cs`, `CodexUsage.cs` (`codex app-server`), `CursorUsage.cs` (`auth.json` / dashboard API), `GrokUsage.cs` (`~/.grok/auth.json` / SuperGrok billing API), and `AntigravityUsage.cs` (`agy /usage`) |
 | Claude status page | `AnthropicStatus.swift` | `AnthropicStatus.cs` |
 | Settings | `UserDefaults` | JSON in `%APPDATA%\AgentCord` (`Settings.cs`) |
 | UI | `NSStatusItem` + SwiftUI popover | `NotifyIcon` (`TrayApplicationContext.cs`) + WPF popover (`PopoverWindow.xaml`) |

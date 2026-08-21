@@ -42,7 +42,7 @@ extension AgentKind {
         case xaiFeed(URL)
     }
 
-    var statusSource: StatusSource {
+    var statusSource: StatusSource? {
         switch self {
         case .claude:
             return .statuspage(URL(string: "https://status.claude.com/api/v2/summary.json")!)
@@ -52,16 +52,19 @@ extension AgentKind {
             return .statuspage(URL(string: "https://status.cursor.com/api/v2/summary.json")!)
         case .grok:
             return .xaiFeed(URL(string: "https://status.x.ai/feed.xml")!)
+        case .antigravity:
+            return nil
         }
     }
 
     /// The human-facing page the status card footer links to.
-    var statusPageURL: URL {
+    var statusPageURL: URL? {
         switch self {
         case .claude: return URL(string: "https://status.claude.com")!
         case .codex: return URL(string: "https://status.openai.com")!
         case .cursor: return URL(string: "https://status.cursor.com")!
         case .grok: return URL(string: "https://status.x.ai")!
+        case .antigravity: return nil
         }
     }
 
@@ -74,6 +77,7 @@ extension AgentKind {
         case .codex: return "OpenAI"
         case .cursor: return "Cursor"
         case .grok: return "xAI"
+        case .antigravity: return "Google"
         }
     }
 }
@@ -92,8 +96,9 @@ final class ProviderStatusHub: ObservableObject {
     private var pollers: [ProviderStatusPoller] = []
 
     init() {
-        pollers = AgentKind.allCases.map { agent in
-            ProviderStatusPoller(agent: agent) { [weak self] agent, info in
+        pollers = AgentKind.allCases.compactMap { agent in
+            guard agent.statusSource != nil else { return nil }
+            return ProviderStatusPoller(agent: agent) { [weak self] agent, info in
                 guard let self else { return }
                 if self.statuses[agent] != info {
                     if let info {
@@ -166,6 +171,7 @@ final class ProviderStatusPoller {
     private var endpoint: URL {
         switch agent.statusSource {
         case .statuspage(let url), .xaiFeed(let url): return url
+        case .none: fatalError("No status source for \(agent)")
         }
     }
 
@@ -201,6 +207,8 @@ final class ProviderStatusPoller {
             return decoded.toStatusInfo(fetchedAt: Date())
         case .xaiFeed:
             return XAIStatusFeed.parse(data, fetchedAt: Date())
+        case .none:
+            return nil
         }
     }
 

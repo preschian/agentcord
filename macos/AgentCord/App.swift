@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let cursorUsage = CursorUsage()
     let codexUsage = CodexUsage()
     let grokUsage = GrokUsage()
+    let antigravityUsage = AntigravityUsage()
     let providerStatus = ProviderStatusHub()
     let sleepGuard = SleepGuard()
     lazy var controller = PresenceController(settings: settings)
@@ -90,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if settings.agentCursorEnabled { cursorUsage.start() } else { cursorUsage.stop() }
         if settings.agentCodexEnabled { codexUsage.start() } else { codexUsage.stop() }
         if settings.agentGrokEnabled { grokUsage.start() } else { grokUsage.stop() }
+        if settings.agentAntigravityEnabled { antigravityUsage.start() } else { antigravityUsage.stop() }
     }
 
     // MARK: NSPopoverDelegate
@@ -141,6 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .environmentObject(controller.cursorSession)
             .environmentObject(grokUsage)
             .environmentObject(controller.grokSession)
+            .environmentObject(antigravityUsage)
+            .environmentObject(controller.antigravitySession)
             .environmentObject(providerStatus)
         // Size the popover ourselves instead of using `.preferredContentSize`.
         // That automatic path animates the resize, so expanding/collapsing the
@@ -195,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         cursorUsage.refresh()
         codexUsage.refresh()
         grokUsage.refresh()
+        antigravityUsage.refresh()
         providerStatus.refresh()
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -274,7 +279,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 claudeUsage: usage.current,
                 cursorUsage: cursorUsage.current,
                 codexUsage: codexUsage.current,
-                grokUsage: grokUsage.current
+                grokUsage: grokUsage.current,
+                antigravityUsage: antigravityUsage.current
             )
         }
 
@@ -323,18 +329,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         claudeUsage: UsageInfo?,
         cursorUsage: CursorUsageInfo?,
         codexUsage: CodexUsageInfo?,
-        grokUsage: GrokUsageInfo?
+        grokUsage: GrokUsageInfo?,
+        antigravityUsage: AntigravityUsageInfo?
     ) {
         let claudeSnapshot = settings.isAgentEnabled(.claude) ? claudeUsage : nil
         let cursorSnapshot = settings.isAgentEnabled(.cursor) ? cursorUsage : nil
         let codexSnapshot = settings.isAgentEnabled(.codex) ? codexUsage : nil
         let grokSnapshot = settings.isAgentEnabled(.grok) ? grokUsage : nil
+        let antigravitySnapshot = settings.isAgentEnabled(.antigravity) ? antigravityUsage : nil
 
         let contributing =
             (claudeSnapshot != nil ? 1 : 0)
             + (cursorSnapshot != nil ? 1 : 0)
             + (codexSnapshot != nil ? 1 : 0)
             + (grokSnapshot != nil ? 1 : 0)
+            + (antigravitySnapshot != nil ? 1 : 0)
         // When more than one agent contributes, drop the "5h" tag and label
         // each percentage with the agent name so the title stays scannable.
         let multi = contributing > 1
@@ -357,6 +366,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let snapshot = grokSnapshot {
             Self.appendMenuBarSegment(to: title, font: font) {
                 Self.appendGrokUsage(snapshot, to: $0, font: font, labeled: multi)
+            }
+        }
+        if let snapshot = antigravitySnapshot {
+            Self.appendMenuBarSegment(to: title, font: font) {
+                Self.appendAntigravityUsage(snapshot, to: $0, font: font, labeled: multi)
             }
         }
     }
@@ -463,6 +477,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    /// Appends a compact Antigravity readout. Alone: "Agy NN% (2h 17m)".
+    /// Shared: "Agy NN%".
+    static func appendAntigravityUsage(
+        _ usage: AntigravityUsageInfo, to title: NSMutableAttributedString, font: NSFont, labeled: Bool
+    ) {
+        let window = usage.fiveHour
+        let color = severityNSColor(window.severity)
+        let text = "Agy \(window.percent)%"
+        title.append(NSAttributedString(
+            string: text,
+            attributes: [.font: font, .foregroundColor: color]
+        ))
+        if !labeled, let reset = MenuContentView.formatResetDuration(window) {
+            title.append(NSAttributedString(
+                string: " (\(reset))",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+    }
+
     private static func severityNSColor(_ severity: String) -> NSColor {
         switch severity.lowercased() {
         case "normal": return .labelColor
@@ -556,6 +590,8 @@ struct MenuContentView: View {
     @EnvironmentObject private var cursorSession: CursorSession
     @EnvironmentObject private var grokUsage: GrokUsage
     @EnvironmentObject private var grokSession: GrokSession
+    @EnvironmentObject private var antigravityUsage: AntigravityUsage
+    @EnvironmentObject private var antigravitySession: AntigravitySession
     @EnvironmentObject private var providerStatus: ProviderStatusHub
 
     @State private var screen: PopoverScreen = .main
@@ -598,6 +634,7 @@ struct MenuContentView: View {
         case .cursor: return cursorSession.current
         case .codex: return codexSession.current
         case .grok: return grokSession.current
+        case .antigravity: return antigravitySession.current
         }
     }
 
@@ -992,6 +1029,7 @@ struct MenuContentView: View {
         case .cursor: return cursorUsage.accountEmail
         case .codex: return codexUsage.accountEmail
         case .grok: return grokUsage.accountEmail
+        case .antigravity: return antigravityUsage.accountEmail
         }
     }
 
@@ -1028,6 +1066,7 @@ struct MenuContentView: View {
         case .cursor: return cursorUsage.current?.planName
         case .codex: return codexUsage.current?.planType
         case .grok: return nil
+        case .antigravity: return antigravityUsage.current?.planName
         }
     }
 
@@ -1100,6 +1139,7 @@ struct MenuContentView: View {
         case .cursor: urlString = "https://cursor.com"
         case .codex: urlString = "https://developers.openai.com/codex/auth"
         case .grok: urlString = "https://grok.x.ai"
+        case .antigravity: urlString = "https://antigravity.google/docs/cli/getting-started"
         }
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
@@ -1199,7 +1239,7 @@ struct MenuContentView: View {
                         .italic()
                 } else {
                     ForEach(entries, id: \.agent.id) { item in
-                        compactUsageRow(item.agent.displayName, item.window)
+                        compactUsageRow(item.label, item.window)
                     }
                 }
             }
@@ -1236,9 +1276,10 @@ struct MenuContentView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private func primaryWindows(_ agents: [AgentKind]) -> [(agent: AgentKind, window: UsageInfo.Window)] {
+    private func primaryWindows(_ agents: [AgentKind]) -> [(agent: AgentKind, label: String, window: UsageInfo.Window)] {
         agents.compactMap { agent in
-            unifiedUsageEntry(for: agent).window.map { (agent, $0) }
+            let entry = unifiedUsageEntry(for: agent)
+            return entry.window.map { (agent, entry.label, $0) }
         }
     }
 
@@ -1282,6 +1323,8 @@ struct MenuContentView: View {
             return (agent.displayName, codexUsage.current?.primary)
         case .grok:
             return (agent.displayName, grokUsage.current?.weekly)
+        case .antigravity:
+            return ("Agy", antigravityUsage.current?.fiveHour)
         }
     }
 
@@ -1297,6 +1340,7 @@ struct MenuContentView: View {
             case .cursor: cursorUsageRows
             case .codex: codexUsageRows
             case .grok: grokUsageRows
+            case .antigravity: antigravityUsageRows
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1370,6 +1414,18 @@ struct MenuContentView: View {
             usagePlaceholder("Waiting for Grok usage…")
         } else {
             usagePlaceholder("Not signed in — run grok login")
+        }
+    }
+
+    @ViewBuilder
+    private var antigravityUsageRows: some View {
+        if let info = antigravityUsage.current {
+            usageRow("Five-hour limit", info.fiveHour)
+            usageRow("Weekly limit", info.weekly)
+        } else if antigravityUsage.isAuthenticated {
+            usagePlaceholder("Waiting for Antigravity usage…")
+        } else {
+            usagePlaceholder("Not signed in — run agy login")
         }
     }
 
@@ -1476,9 +1532,9 @@ struct MenuContentView: View {
     /// rather than a broken row.
     @ViewBuilder
     private func statusSection(_ agent: AgentKind) -> some View {
-        if let status = providerStatus.info(for: agent) {
+        if let status = providerStatus.info(for: agent), let statusPageURL = agent.statusPageURL {
             VStack(alignment: .leading, spacing: 5) {
-                Link(destination: agent.statusPageURL) {
+                Link(destination: statusPageURL) {
                     HStack(spacing: 8) {
                         Circle()
                             .fill(statusPillStyle(status.level).dot)

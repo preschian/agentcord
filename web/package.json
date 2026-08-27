@@ -14,12 +14,12 @@
     "deploy": "bun run build && wrangler deploy"
   },
   "dependencies": {
-    "@astrojs/cloudflare": "^14.2.1",
+    "@astrojs/cloudflare": "^14.2.3",
     "@astrojs/sitemap": "^3.7.3",
-    "astro": "^7.2.2"
+    "astro": "^7.2.4"
   },
   "devDependencies": {
-    "wrangler": "^4.123.0"
+    "wrangler": "^4.125.0"
   },
   "overrides": {
     "@cloudflare/vite-plugin": "^1.46.0",

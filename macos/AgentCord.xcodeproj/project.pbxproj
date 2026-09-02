@@ -28,6 +28,7 @@
 		BB0000000000000000000013 /* CursorHooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* CursorHooks.swift */; };
 		BB0000000000000000000014 /* AntigravitySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000016 /* AntigravitySession.swift */; };
 		BB0000000000000000000015 /* AntigravityUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000017 /* AntigravityUsage.swift */; };
+		BB0000000000000000000016 /* UsageDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000018 /* UsageDock.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -54,6 +55,7 @@
 		AA0000000000000000000015 /* CursorHooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorHooks.swift; sourceTree = "<group>"; };
 		AA0000000000000000000016 /* AntigravitySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravitySession.swift; sourceTree = "<group>"; };
 		AA0000000000000000000017 /* AntigravityUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityUsage.swift; sourceTree = "<group>"; };
+		AA0000000000000000000018 /* UsageDock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageDock.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -98,6 +100,7 @@
 				AA0000000000000000000010 /* CursorUsage.swift */,
 				AA0000000000000000000016 /* AntigravitySession.swift */,
 				AA0000000000000000000017 /* AntigravityUsage.swift */,
+				AA0000000000000000000018 /* UsageDock.swift */,
 				AA0000000000000000000009 /* Assets.xcassets */,
 				AA0000000000000000000007 /* AgentCord.entitlements */,
 			);
@@ -201,6 +204,7 @@
 				BB000000000000000000000E /* CursorUsage.swift in Sources */,
 				BB0000000000000000000014 /* AntigravitySession.swift in Sources */,
 				BB0000000000000000000015 /* AntigravityUsage.swift in Sources */,
+				BB0000000000000000000016 /* UsageDock.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -28,7 +28,6 @@ public sealed class Settings
     [JsonPropertyName("agent_claude_enabled")] public bool AgentClaudeEnabled { get; set; } = true;
     [JsonPropertyName("agent_codex_enabled")] public bool AgentCodexEnabled { get; set; } = true;
     [JsonPropertyName("agent_cursor_enabled")] public bool AgentCursorEnabled { get; set; } = true;
-    /// <summary>Unused. Kept so a save does not strip the key GPUI still round-trips.</summary>
     [JsonPropertyName("agent_antigravity_enabled")] public bool AgentAntigravityEnabled { get; set; } = true;
     [JsonPropertyName("agent_grok_enabled")] public bool AgentGrokEnabled { get; set; } = true;
 
@@ -52,7 +51,7 @@ public sealed class Settings
     {
         AgentKind.Codex => AgentCodexEnabled,
         AgentKind.Cursor => AgentCursorEnabled,
-        AgentKind.Antigravity => false,
+        AgentKind.Antigravity => AgentAntigravityEnabled,
         AgentKind.Grok => AgentGrokEnabled,
         _ => AgentClaudeEnabled,
     };
@@ -62,11 +61,12 @@ public sealed class Settings
     {
         get
         {
-            var list = new List<AgentKind>(4);
+            var list = new List<AgentKind>(5);
             if (AgentClaudeEnabled) list.Add(AgentKind.Claude);
             if (AgentCodexEnabled) list.Add(AgentKind.Codex);
             if (AgentCursorEnabled) list.Add(AgentKind.Cursor);
             if (AgentGrokEnabled) list.Add(AgentKind.Grok);
+            if (AgentAntigravityEnabled) list.Add(AgentKind.Antigravity);
             return list;
         }
     }
@@ -77,7 +77,7 @@ public sealed class Settings
         {
             case AgentKind.Codex: AgentCodexEnabled = enabled; break;
             case AgentKind.Cursor: AgentCursorEnabled = enabled; break;
-            case AgentKind.Antigravity: break;
+            case AgentKind.Antigravity: AgentAntigravityEnabled = enabled; break;
             case AgentKind.Grok: AgentGrokEnabled = enabled; break;
             default: AgentClaudeEnabled = enabled; break;
         }
@@ -92,6 +92,7 @@ public sealed class Settings
         if (AgentCodexEnabled) return AgentKind.Codex;
         if (AgentCursorEnabled) return AgentKind.Cursor;
         if (AgentGrokEnabled) return AgentKind.Grok;
+        if (AgentAntigravityEnabled) return AgentKind.Antigravity;
         return AgentKind.Claude;
     }
 

@@ -1,4 +1,4 @@
-// Observes active Claude Code, Codex, Cursor, and Grok sessions,
+// Observes active Claude Code, Codex, Cursor, Grok, and Antigravity sessions,
 // selects the most recently active enabled agent, builds the Rich Presence
 // payload from the user's settings, and drives DiscordIpc. Clears the presence
 // when the session goes idle or the app quits. Port of
@@ -22,11 +22,15 @@ public sealed class PresenceController : IDisposable
     public SessionInfo? ClaudeSession { get; private set; }
     public SessionInfo? CodexSession { get; private set; }
     public SessionInfo? CursorSession { get; private set; }
+    public SessionInfo? AntigravitySession { get; private set; }
     public SessionInfo? GrokSession { get; private set; }
     public long ClaudeTodayMs { get; private set; }
     public long CodexTodayMs { get; private set; }
     public long CursorTodayMs { get; private set; }
+    public long AntigravityTodayMs { get; private set; }
     public long GrokTodayMs { get; private set; }
+    public string? AntigravityAccountEmail => _antigravityScanner.AccountEmail;
+    public string? AntigravityPlanType => _antigravityScanner.PlanType;
     public bool GrokAuthenticated => _grokScanner.IsAuthenticated;
 
     public event Action? Changed;
@@ -37,6 +41,7 @@ public sealed class PresenceController : IDisposable
     private readonly ClaudeSession _claudeScanner = new();
     private readonly CodexSession _codexScanner = new();
     private readonly CursorSession _cursorScanner = new();
+    private readonly AntigravitySession _antigravityScanner = new();
     private readonly GrokSession _grokScanner = new();
     private readonly DiscordIpc _ipc = new();
     private System.Threading.Timer? _timer;
@@ -79,6 +84,7 @@ public sealed class PresenceController : IDisposable
         _claudeScanner.Dispose();
         _codexScanner.Dispose();
         _cursorScanner.Dispose();
+        _antigravityScanner.Dispose();
     }
 
     private void Tick()
@@ -91,22 +97,26 @@ public sealed class PresenceController : IDisposable
             _claudeScanner.ActiveWindowSeconds = idle;
             _codexScanner.ActiveWindowSeconds = idle;
             _cursorScanner.ActiveWindowSeconds = idle;
+            _antigravityScanner.ActiveWindowSeconds = idle;
             _grokScanner.ActiveWindowSeconds = idle;
             // Disabled agents must not walk their on-disk trees.
             var claude = _settings.AgentClaudeEnabled ? _claudeScanner.Scan() : default;
             var codex = _settings.AgentCodexEnabled ? _codexScanner.Scan() : default;
             var cursor = _settings.AgentCursorEnabled ? _cursorScanner.Scan() : default;
+            var antigravity = _settings.AgentAntigravityEnabled ? _antigravityScanner.Scan() : default;
             var grok = _settings.AgentGrokEnabled ? _grokScanner.Scan() : default;
             ClaudeSession = claude.Session;
             CodexSession = codex.Session;
             CursorSession = cursor.Session;
+            AntigravitySession = antigravity.Session;
             GrokSession = grok.Session;
             ClaudeTodayMs = claude.TodayMs;
             CodexTodayMs = codex.TodayMs;
             CursorTodayMs = cursor.TodayMs;
+            AntigravityTodayMs = antigravity.TodayMs;
             GrokTodayMs = grok.TodayMs;
 
-            var info = new[] { ClaudeSession, CodexSession, CursorSession, GrokSession }
+            var info = new[] { ClaudeSession, CodexSession, CursorSession, AntigravitySession, GrokSession }
                 .Where(session => session is not null && _settings.IsAgentEnabled(session.Agent))
                 .MaxBy(session => session!.LastModifiedMs);
             var changed = !Equals(info, CurrentSession);
@@ -170,6 +180,7 @@ public sealed class PresenceController : IDisposable
     {
         AgentKind.Codex => CodexSession,
         AgentKind.Cursor => CursorSession,
+        AgentKind.Antigravity => AntigravitySession,
         AgentKind.Grok => GrokSession,
         _ => ClaudeSession,
     };
@@ -178,6 +189,7 @@ public sealed class PresenceController : IDisposable
     {
         AgentKind.Codex => CodexTodayMs,
         AgentKind.Cursor => CursorTodayMs,
+        AgentKind.Antigravity => AntigravityTodayMs,
         AgentKind.Grok => GrokTodayMs,
         _ => ClaudeTodayMs,
     };
@@ -186,6 +198,7 @@ public sealed class PresenceController : IDisposable
     {
         AgentKind.Codex => _codexScanner.IsLinked,
         AgentKind.Cursor => _cursorScanner.IsLinked,
+        AgentKind.Antigravity => _antigravityScanner.IsLinked,
         AgentKind.Grok => _grokScanner.IsLinked,
         _ => _claudeScanner.IsLinked,
     };
@@ -194,6 +207,7 @@ public sealed class PresenceController : IDisposable
     {
         AgentKind.Codex => "logo-chatgpt",
         AgentKind.Cursor => "logo-cursor",
+        AgentKind.Antigravity => "logo-antigravity",
         AgentKind.Grok => "logo-grok",
         _ => "logo-claude",
     };

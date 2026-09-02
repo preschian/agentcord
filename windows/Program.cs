@@ -56,12 +56,14 @@ internal static class Program
         using var usage = new ClaudeUsage();
         using var codexUsage = new CodexUsage();
         using var cursorUsage = new CursorUsage();
+        using var antigravityUsage = new AntigravityUsage();
         using var grokUsage = new GrokUsage();
         using var status = new AnthropicStatus();
         controller.Start();
         usage.Start();
         codexUsage.Start();
         cursorUsage.Start();
+        antigravityUsage.Start();
         grokUsage.Start();
         status.Start();
 
@@ -75,7 +77,7 @@ internal static class Program
         }
 
         var window = new PopoverWindow(
-            settings, controller, usage, codexUsage, cursorUsage, grokUsage, status, () => { });
+            settings, controller, usage, codexUsage, cursorUsage, antigravityUsage, grokUsage, status, () => { });
         window.CaptureForDebug(path);
         controller.Shutdown();
     }

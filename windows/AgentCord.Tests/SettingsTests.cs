@@ -17,15 +17,18 @@ public sealed class SettingsTests
     {
         var json = JsonSerializer.Serialize(new Settings());
         Assert.Contains("idle_window_seconds", json);
-        Assert.Contains("agent_antigravity_enabled", json);
     }
 
     [Fact]
-    public void EnabledAgents_never_includes_antigravity()
+    public void EnabledAgents_reflects_antigravity_setting()
     {
-        var settings = new Settings { AgentAntigravityEnabled = true };
-        Assert.DoesNotContain(AgentKind.Antigravity, settings.EnabledAgents);
-        Assert.False(settings.IsAgentEnabled(AgentKind.Antigravity));
+        var enabled = new Settings { AgentAntigravityEnabled = true };
+        Assert.Contains(AgentKind.Antigravity, enabled.EnabledAgents);
+        Assert.True(enabled.IsAgentEnabled(AgentKind.Antigravity));
+
+        var disabled = new Settings { AgentAntigravityEnabled = false };
+        Assert.DoesNotContain(AgentKind.Antigravity, disabled.EnabledAgents);
+        Assert.False(disabled.IsAgentEnabled(AgentKind.Antigravity));
     }
 
     [Fact]

@@ -16,6 +16,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ClaudeUsage _usage = new();
     private readonly CodexUsage _codexUsage = new();
     private readonly CursorUsage _cursorUsage = new();
+    private readonly AntigravityUsage _antigravityUsage = new();
     private readonly GrokUsage _grokUsage = new();
     private readonly AnthropicStatus _status = new();
 
@@ -75,7 +76,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     /// NotifyIcon.</summary>
     private PopoverWindow Popover =>
         _popover ??= new PopoverWindow(
-            _settings, _controller, _usage, _codexUsage, _cursorUsage, _grokUsage, _status, Quit, SyncPollers);
+            _settings, _controller, _usage, _codexUsage, _cursorUsage, _antigravityUsage, _grokUsage, _status, Quit, SyncPollers);
 
     private void BuildMenu()
     {
@@ -100,6 +101,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _usage.SetEnabled(_settings.AgentClaudeEnabled);
         _codexUsage.SetEnabled(_settings.AgentCodexEnabled);
         _cursorUsage.SetEnabled(_settings.AgentCursorEnabled);
+        _antigravityUsage.SetEnabled(_settings.AgentAntigravityEnabled);
         _grokUsage.SetEnabled(_settings.AgentGrokEnabled);
         _status.SetEnabled(_settings.AgentClaudeEnabled);
     }
@@ -111,7 +113,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             // Mirrors the macOS menu bar line: session bits + compact usage.
             // NotifyIcon.Text is plain text (multi-line via \n) and capped at 63 chars.
             var text = TrayStatusText.Build(
-                _settings, _controller, _usage.Current, _codexUsage.Current, _cursorUsage.Current, _grokUsage.Current);
+                _settings, _controller, _usage.Current, _codexUsage.Current, _cursorUsage.Current, _antigravityUsage.Current, _grokUsage.Current);
             if (_notifyIcon.Text != text) _notifyIcon.Text = text;
         }
         catch { }
@@ -170,6 +172,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _usage.Dispose();
         _codexUsage.Dispose();
         _cursorUsage.Dispose();
+        _antigravityUsage.Dispose();
         _grokUsage.Dispose();
         _status.Dispose();
         _notifyIcon.Visible = false;

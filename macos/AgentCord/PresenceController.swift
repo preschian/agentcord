@@ -23,12 +23,14 @@ final class PresenceController: ObservableObject {
     @Published private(set) var cursorTodayMs: Int64 = 0
     @Published private(set) var grokTodayMs: Int64 = 0
     @Published private(set) var antigravityTodayMs: Int64 = 0
+    @Published private(set) var opencodeTodayMs: Int64 = 0
 
     let session = ClaudeSession()
     let codexSession = CodexSession()
     let cursorSession = CursorSession()
     let grokSession = GrokSession()
     let antigravitySession = AntigravitySession()
+    let opencodeSession = OpenCodeSession()
     let settings: SettingsStore
 
     private let ipc = DiscordIPC()
@@ -93,6 +95,15 @@ final class PresenceController: ObservableObject {
             }
             .store(in: &cancellables)
 
+        opencodeSession.$current
+            .combineLatest(opencodeSession.$todayMs)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _, today in
+                self?.opencodeTodayMs = today
+                self?.selectActiveSession()
+            }
+            .store(in: &cancellables)
+
         // Display-affecting settings (toggles, DND, image keys) only need a
         // rebuild. Deferred to the next runloop tick so the new value is set.
         settings.objectWillChange
@@ -128,6 +139,7 @@ final class PresenceController: ObservableObject {
         cursorSession.stop()
         grokSession.stop()
         antigravitySession.stop()
+        opencodeSession.stop()
         ipc.disconnect()
     }
 
@@ -165,6 +177,7 @@ final class PresenceController: ObservableObject {
         cursorSession.activeWindowSeconds = idle
         grokSession.activeWindowSeconds = idle
         antigravitySession.activeWindowSeconds = idle
+        opencodeSession.activeWindowSeconds = idle
     }
 
     /// Only watch agents the user has enabled. Each scanner walks a large
@@ -175,6 +188,7 @@ final class PresenceController: ObservableObject {
         if settings.agentCursorEnabled { cursorSession.start() } else { cursorSession.stop() }
         if settings.agentGrokEnabled { grokSession.start() } else { grokSession.stop() }
         if settings.agentAntigravityEnabled { antigravitySession.start() } else { antigravitySession.stop() }
+        if settings.agentOpencodeEnabled { opencodeSession.start() } else { opencodeSession.stop() }
     }
 
     private func handleSettingsChange() {
@@ -191,6 +205,7 @@ final class PresenceController: ObservableObject {
         if settings.agentCursorEnabled, let cursor = cursorSession.current { candidates.append(cursor) }
         if settings.agentGrokEnabled, let grok = grokSession.current { candidates.append(grok) }
         if settings.agentAntigravityEnabled, let antigravity = antigravitySession.current { candidates.append(antigravity) }
+        if settings.agentOpencodeEnabled, let opencode = opencodeSession.current { candidates.append(opencode) }
         let selected = candidates.max { $0.lastModified < $1.lastModified }
         if currentSession != selected { currentSession = selected }
         let agent = selected?.agent
@@ -241,17 +256,18 @@ final class PresenceController: ObservableObject {
             name: name,
             details: details,
             state: state,
-            timestamps: Timestamps(
-                start: Self.presenceStartMs(
-                    nowMs: nowMs,
-                    claude: claudeTodayMs,
-                    codex: codexTodayMs,
-                    cursor: cursorTodayMs,
-                    grok: grokTodayMs,
-                    antigravity: antigravityTodayMs
+                timestamps: Timestamps(
+                    start: Self.presenceStartMs(
+                        nowMs: nowMs,
+                        claude: claudeTodayMs,
+                        codex: codexTodayMs,
+                        cursor: cursorTodayMs,
+                        grok: grokTodayMs,
+                        antigravity: antigravityTodayMs,
+                        opencode: opencodeTodayMs
+                    ),
+                    end: nil
                 ),
-                end: nil
-            ),
             assets: assets,
             buttons: [Self.repoButton]
         )
@@ -265,6 +281,7 @@ final class PresenceController: ObservableObject {
         case .cursor: return "logo-cursor"
         case .grok: return "logo-grok"
         case .antigravity: return "logo-antigravity"
+        case .opencode: return "logo-opencode"
         }
     }
 
@@ -280,6 +297,7 @@ final class PresenceController: ObservableObject {
         case .cursor: return cursorTodayMs
         case .grok: return grokTodayMs
         case .antigravity: return antigravityTodayMs
+        case .opencode: return opencodeTodayMs
         }
     }
 
@@ -290,10 +308,11 @@ final class PresenceController: ObservableObject {
         case .cursor: return cursorSession.isLinked
         case .grok: return grokSession.isLinked
         case .antigravity: return antigravitySession.isLinked
+        case .opencode: return opencodeSession.isLinked
         }
     }
 
-    /// Discord elapsed is `now - start`. Backdate by the four daily totals so
+    /// Discord elapsed is `now - start`. Backdate by the daily totals so
     /// switching the winning agent does not jump the clock. Disabled agents
     /// publish `0` from `stop()`, so they drop out of the sum.
     static func presenceStartMs(
@@ -302,9 +321,11 @@ final class PresenceController: ObservableObject {
         codex: Int64,
         cursor: Int64,
         grok: Int64,
-        antigravity: Int64
+        antigravity: Int64,
+        opencode: Int64
     ) -> Int64 {
-        nowMs - (max(0, claude) + max(0, codex) + max(0, cursor) + max(0, grok) + max(0, antigravity))
+        nowMs - (max(0, claude) + max(0, codex) + max(0, cursor) + max(0, grok)
+            + max(0, antigravity) + max(0, opencode))
     }
 
     static func formatTokens(_ count: Int) -> String {

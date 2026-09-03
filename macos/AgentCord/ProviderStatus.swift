@@ -54,6 +54,8 @@ extension AgentKind {
             return .xaiFeed(URL(string: "https://status.x.ai/feed.xml")!)
         case .antigravity:
             return nil
+        case .opencode:
+            return nil
         }
     }
 
@@ -65,6 +67,7 @@ extension AgentKind {
         case .cursor: return URL(string: "https://status.cursor.com")!
         case .grok: return URL(string: "https://status.x.ai")!
         case .antigravity: return nil
+        case .opencode: return nil
         }
     }
 
@@ -78,6 +81,7 @@ extension AgentKind {
         case .cursor: return "Cursor"
         case .grok: return "xAI"
         case .antigravity: return "Google"
+        case .opencode: return "OpenCode"
         }
     }
 }

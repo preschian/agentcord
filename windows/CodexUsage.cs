@@ -23,6 +23,9 @@ public sealed class CodexUsage : IDisposable
 
     public bool IsAuthenticated { get; private set; }
 
+    /// <summary>Optional provider returning true if an active Codex session is in progress.</summary>
+    public Func<bool>? IsActiveProvider { get; set; }
+
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMinutes(5);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromMinutes(1);
     /// <summary>How long a disk-cached snapshot may still be shown after the last
@@ -85,7 +88,7 @@ public sealed class CodexUsage : IDisposable
         {
             if (DateTime.UtcNow - _lastAttempt < MinFetchInterval) return;
         }
-        _ = FetchAsync();
+        _ = FetchAsync(force: true);
     }
 
     public void Dispose()
@@ -94,9 +97,14 @@ public sealed class CodexUsage : IDisposable
         _timer?.Dispose();
     }
 
-    private async Task FetchAsync()
+    private async Task FetchAsync(bool force = false)
     {
         if (_disposed || Interlocked.Exchange(ref _fetching, 1) == 1) return;
+        if (!force && Current is not null && IsActiveProvider?.Invoke() == false)
+        {
+            Interlocked.Exchange(ref _fetching, 0);
+            return;
+        }
         lock (_lock) _lastAttempt = DateTime.UtcNow;
 
         try
@@ -119,18 +127,38 @@ public sealed class CodexUsage : IDisposable
                 return;
             }
 
-            using var process = new Process
+            var conhost = Path.Combine(Environment.SystemDirectory, "conhost.exe");
+            ProcessStartInfo psi;
+            if (File.Exists(conhost))
             {
-                StartInfo = new ProcessStartInfo(executable)
+                psi = new ProcessStartInfo(conhost)
                 {
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                },
-            };
-            process.StartInfo.ArgumentList.Add("app-server");
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                };
+                psi.ArgumentList.Add("--headless");
+                psi.ArgumentList.Add(executable);
+                psi.ArgumentList.Add("app-server");
+            }
+            else
+            {
+                psi = new ProcessStartInfo(executable)
+                {
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                };
+                psi.ArgumentList.Add("app-server");
+            }
+
+            using var process = new Process { StartInfo = psi };
             // Match macOS: point app-server at the same home CodexSession uses
             // so a custom CODEX_HOME is honored for credentials too.
             process.StartInfo.Environment["CODEX_HOME"] = CodexPaths.ResolveHome();

@@ -36,6 +36,9 @@ public sealed class ClaudeUsage : IDisposable
     /// <summary>Email of the signed-in Claude account, from the OAuth profile.</summary>
     public string? AccountEmail { get; private set; }
 
+    /// <summary>Optional provider returning true if an active Claude session is in progress.</summary>
+    public Func<bool>? IsActiveProvider { get; set; }
+
     /// <summary>How often to refresh while the app runs. The numbers move slowly
     /// and the endpoint rate-limits aggressively (HTTP 429), so poll sparingly.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(300);
@@ -116,7 +119,7 @@ public sealed class ClaudeUsage : IDisposable
         {
             if (DateTime.UtcNow - _lastAttempt < MinFetchInterval) return;
         }
-        _ = FetchAsync();
+        _ = FetchAsync(force: true);
     }
 
     public void Dispose()
@@ -127,8 +130,9 @@ public sealed class ClaudeUsage : IDisposable
 
     // --- Fetch
 
-    private async Task FetchAsync()
+    private async Task FetchAsync(bool force = false)
     {
+        if (!force && Current is not null && IsActiveProvider?.Invoke() == false) return;
         lock (_lock) _lastAttempt = DateTime.UtcNow;
 
         try

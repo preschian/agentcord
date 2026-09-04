@@ -37,6 +37,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let providerStatus = ProviderStatusHub()
     let sleepGuard = SleepGuard()
     lazy var controller = PresenceController(settings: settings)
+    /// Hot-corner usage panel (top-right). Built lazily so the environment
+    /// objects exist; enabled/disabled by `settings.usageDockEnabled`.
+    private lazy var usageDock: UsageDockController = {
+        // Built once: the environment objects are reference types, so the
+        // card stays live, and `onOpen` holds the delegate weakly.
+        let content = AnyView(
+            UsageDockView(onOpen: { [weak self] in self?.openDockPopover() })
+                .environmentObject(self.settings)
+                .environmentObject(self.usage)
+                .environmentObject(self.cursorUsage)
+                .environmentObject(self.codexUsage)
+                .environmentObject(self.grokUsage)
+                .environmentObject(self.antigravityUsage)
+        )
+        let dock = UsageDockController(content: content)
+        dock.onWillShow = { [weak self] in self?.refreshUsage() }
+        return dock
+    }()
+
+    /// The dock card was clicked: dismiss it and hand off to the main popover.
+    private func openDockPopover() {
+        usageDock.hide(animated: false)
+        guard !popover.isShown else { return }
+        openPopover()
+    }
 
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -78,6 +103,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         setupStatusItem()
         setupPopover()
         startRefreshTimer()
+
+        usageDock.setEnabled(settings.usageDockEnabled)
+        settings.$usageDockEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in self?.usageDock.setEnabled(enabled) }
+            .store(in: &cancellables)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -195,11 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         // Pull fresh usage numbers and provider status as the popover
         // opens so they're current.
-        usage.refresh()
-        cursorUsage.refresh()
-        codexUsage.refresh()
-        grokUsage.refresh()
-        antigravityUsage.refresh()
+        refreshUsage()
         providerStatus.refresh()
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -207,6 +234,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // window is key. Accessory apps don't key it automatically.
         popover.contentViewController?.view.window?.makeKey()
         startPopoverDismissMonitor()
+    }
+
+    /// Ask every usage poller for fresh numbers. Each one throttles itself,
+    /// so this is safe to call whenever a usage surface becomes visible.
+    private func refreshUsage() {
+        usage.refresh()
+        cursorUsage.refresh()
+        codexUsage.refresh()
+        grokUsage.refresh()
+        antigravityUsage.refresh()
     }
 
     /// Accessory apps don't always get NSPopover's built-in dismiss, so also
@@ -1307,25 +1344,14 @@ struct MenuContentView: View {
 
     /// Each agent's primary window, so the unified card stays one row per agent.
     private func unifiedUsageEntry(for agent: AgentKind) -> (label: String, window: UsageInfo.Window?) {
-        switch agent {
-        case .claude:
-            return (agent.displayName, usage.current?.fiveHour)
-        case .cursor:
-            let mapped = cursorUsage.current.map {
-                UsageInfo.Window(
-                    percent: $0.included.percent,
-                    severity: $0.included.severity,
-                    resetsAt: $0.included.resetsAt
-                )
-            }
-            return (agent.displayName, mapped)
-        case .codex:
-            return (agent.displayName, codexUsage.current?.primary)
-        case .grok:
-            return (agent.displayName, grokUsage.current?.weekly)
-        case .antigravity:
-            return ("Agy", antigravityUsage.current?.fiveHour)
-        }
+        UsageSummary.primaryWindow(
+            for: agent,
+            claude: usage.current,
+            cursor: cursorUsage.current,
+            codex: codexUsage.current,
+            grok: grokUsage.current,
+            antigravity: antigravityUsage.current
+        )
     }
 
     // MARK: Per-agent usage rows
@@ -1726,6 +1752,7 @@ struct MenuContentView: View {
                     toggleRow("Show tokens", $settings.showTokens, size: 12.5, divider: true)
                     toggleRow("Show status in menu bar", $settings.showMenuBarStatus, size: 12.5, divider: true)
                     toggleRow("Show usage in menu bar", $settings.showUsageInMenuBar, size: 12.5, divider: true)
+                    toggleRow("Usage dock (top-right corner)", $settings.usageDockEnabled, size: 12.5, divider: true)
                 }
                 .padding(.horizontal, 11).padding(.top, 3).padding(.bottom, 8)
             }
@@ -1787,7 +1814,8 @@ struct MenuContentView: View {
     private var displaySummary: String {
         let count = [
             settings.unifiedUsage, settings.showProject, settings.showModel,
-            settings.showTokens, settings.showMenuBarStatus, settings.showUsageInMenuBar
+            settings.showTokens, settings.showMenuBarStatus, settings.showUsageInMenuBar,
+            settings.usageDockEnabled
         ].filter { $0 }.count
         return "\(count) on"
     }
@@ -1827,8 +1855,9 @@ struct MenuContentView: View {
 
 // MARK: - Design primitives
 
-/// Fixed light palette pulled from the popover design spec.
-private enum Palette {
+/// Fixed light palette pulled from the popover design spec. Shared with the
+/// usage dock so both surfaces read as one product.
+enum Palette {
     static let text = Color(.sRGB, red: 0.114, green: 0.114, blue: 0.122)
     static let secondary = Color(.sRGB, red: 0.235, green: 0.235, blue: 0.263)
     static let blue = Color(.sRGB, red: 0.0, green: 0.478, blue: 1.0)

@@ -45,10 +45,10 @@ final class UsageDockController {
 
     /// Called right before the panel slides in, so usage can be refreshed.
     var onWillShow: (() -> Void)?
-    /// Called when the user asks for the full popover from the dock header.
-    var onOpenPopover: (() -> Void)?
 
-    private let makeContent: (UsageDockController) -> AnyView
+    /// The card content, built once by the AppDelegate (its environment
+    /// objects are reference types, so one instance stays live).
+    private let content: AnyView
 
     private var panel: NSPanel?
     private var host: SizingHostingController<AnyView>?
@@ -59,8 +59,8 @@ final class UsageDockController {
     private(set) var isShown = false
     private var screen: NSScreen?
 
-    init(makeContent: @escaping (UsageDockController) -> AnyView) {
-        self.makeContent = makeContent
+    init(content: AnyView) {
+        self.content = content
     }
 
     // MARK: Enable / disable
@@ -189,7 +189,7 @@ final class UsageDockController {
         // Same fixed light palette as the popover.
         panel.appearance = NSAppearance(named: .aqua)
 
-        let host = SizingHostingController(rootView: makeContent(self))
+        let host = SizingHostingController(rootView: content)
         host.fixedWidth = UsageDockLayout.width
         host.onContentSizeChange = { [weak self] size in
             self?.contentSizeChanged(size)
@@ -224,14 +224,14 @@ final class UsageDockController {
         self.screen = screen
         isShown = true
 
-        panel.layoutIfNeeded()
-        let size = NSSize(
-            width: UsageDockLayout.width,
-            height: max(panel.contentView?.fittingSize.height ?? 0, 60).rounded(.up)
-        )
-        let resting = restingFrame(on: screen, size: size)
+        let resting = restingFrame(on: screen, size: measuredSize())
         var offscreen = resting
         offscreen.origin.x = screen.frame.maxX
+        // A slide-out may still be in flight; start from the current frame
+        // so the panel reverses smoothly instead of jumping offscreen first.
+        if panel.isVisible {
+            offscreen.origin.x = max(panel.frame.origin.x, resting.origin.x)
+        }
         panel.setFrame(offscreen, display: false)
         panel.orderFrontRegardless()
 
@@ -244,13 +244,15 @@ final class UsageDockController {
             guard let self else { return }
             self.isAnimating = false
             // Content may have relaid out during the slide; settle to its size.
-            if let host = self.host {
-                self.contentSizeChanged(NSSize(
-                    width: UsageDockLayout.width,
-                    height: host.view.fittingSize.height.rounded(.up)
-                ))
-            }
+            self.contentSizeChanged(self.measuredSize())
         })
+    }
+
+    /// The card's current size at the fixed panel width.
+    private func measuredSize() -> NSSize {
+        host?.view.layoutSubtreeIfNeeded()
+        let height = max(host?.view.fittingSize.height ?? 0, 60).rounded(.up)
+        return NSSize(width: UsageDockLayout.width, height: height)
     }
 
     func hide(animated: Bool) {
@@ -277,11 +279,6 @@ final class UsageDockController {
         })
     }
 
-    /// Header action: dismiss the dock and hand off to the main popover.
-    func openPopover() {
-        hide(animated: false)
-        onOpenPopover?()
-    }
 }
 
 // MARK: - Usage summary
@@ -380,7 +377,6 @@ enum UsageSummary {
 
 struct UsageDockView: View {
     @EnvironmentObject private var settings: SettingsStore
-    @EnvironmentObject private var controller: PresenceController
     @EnvironmentObject private var usage: ClaudeUsage
     @EnvironmentObject private var cursorUsage: CursorUsage
     @EnvironmentObject private var codexUsage: CodexUsage
@@ -394,36 +390,34 @@ struct UsageDockView: View {
         return enabled.isEmpty ? [.claude] : enabled
     }
 
-    private func rows(for agent: AgentKind) -> [UsageSummary.Row] {
-        UsageSummary.rows(
-            for: agent,
-            claude: usage.current,
-            cursor: cursorUsage.current,
-            codex: codexUsage.current,
-            grok: grokUsage.current,
-            antigravity: antigravityUsage.current
-        )
+    private var sections: [(agent: AgentKind, rows: [UsageSummary.Row])] {
+        agents.compactMap { agent in
+            let rows = UsageSummary.rows(
+                for: agent,
+                claude: usage.current,
+                cursor: cursorUsage.current,
+                codex: codexUsage.current,
+                grok: grokUsage.current,
+                antigravity: antigravityUsage.current
+            )
+            return rows.isEmpty ? nil : (agent, rows)
+        }
     }
 
+    private static let cardShape = UnevenRoundedRectangle(
+        cornerRadii: .init(topLeading: UsageDockLayout.cornerRadius, bottomLeading: UsageDockLayout.cornerRadius),
+        style: .continuous
+    )
+
     var body: some View {
-        let sections = agents.map { ($0, rows(for: $0)) }.filter { !$0.1.isEmpty }
-        VStack(alignment: .leading, spacing: 10) {
-            if sections.isEmpty {
-                Text("No usage data yet")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Palette.secondary.opacity(0.45))
-                    .italic()
-                    .padding(.bottom, 2)
-            } else {
-                ForEach(Array(sections.enumerated()), id: \.element.0.id) { index, section in
-                    agentSection(section.0, rows: section.1, divider: index > 0)
-                }
-            }
+        // One clock for the whole card; the reset countdowns share it.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            card(now: context.date)
         }
         .padding(.horizontal, 13).padding(.vertical, 12)
         .frame(width: UsageDockLayout.width, alignment: .topLeading)
-        .background(LeftRoundedRect(radius: UsageDockLayout.cornerRadius).fill(Color(.sRGB, white: 0.965, opacity: 1)))
-        .overlay(LeftRoundedRect(radius: UsageDockLayout.cornerRadius).stroke(.black.opacity(0.1), lineWidth: 0.5))
+        .background(Self.cardShape.fill(Color(.sRGB, white: 0.965, opacity: 1)))
+        .overlay(Self.cardShape.stroke(.black.opacity(0.1), lineWidth: 0.5))
         .foregroundStyle(Palette.text)
         .fontDesign(.monospaced)
         .contentShape(Rectangle())
@@ -431,7 +425,24 @@ struct UsageDockView: View {
         .onTapGesture(perform: onOpen)
     }
 
-    private func agentSection(_ agent: AgentKind, rows: [UsageSummary.Row], divider: Bool) -> some View {
+    private func card(now: Date) -> some View {
+        let list = sections
+        return VStack(alignment: .leading, spacing: 10) {
+            if list.isEmpty {
+                Text("No usage data yet")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.secondary.opacity(0.45))
+                    .italic()
+                    .padding(.bottom, 2)
+            } else {
+                ForEach(list.indices, id: \.self) { index in
+                    agentSection(list[index].agent, rows: list[index].rows, divider: index > 0, now: now)
+                }
+            }
+        }
+    }
+
+    private func agentSection(_ agent: AgentKind, rows: [UsageSummary.Row], divider: Bool, now: Date) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text(agent.displayName)
@@ -445,7 +456,7 @@ struct UsageDockView: View {
                 }
             }
             ForEach(rows) { row in
-                usageRow(row)
+                usageRow(row, now: now)
             }
         }
         .padding(.top, divider ? 8 : 0)
@@ -454,7 +465,7 @@ struct UsageDockView: View {
         }
     }
 
-    private func usageRow(_ row: UsageSummary.Row) -> some View {
+    private func usageRow(_ row: UsageSummary.Row, now: Date) -> some View {
         HStack(spacing: 8) {
             Text(row.label)
                 .font(.system(size: 10.5))
@@ -470,15 +481,13 @@ struct UsageDockView: View {
                 }
             }
             .frame(height: 5)
-            // Countdown ticks while the dock is open.
-            TimelineView(.periodic(from: .now, by: 60)) { context in
-                Text(detail(row.window, now: context.date))
-                    .font(.system(size: 10.5))
-                    .monospacedDigit()
-                    .foregroundStyle(Palette.secondary.opacity(0.6))
-                    .lineLimit(1)
-                    .frame(width: 50, alignment: .trailing)
-            }
+            // Countdown shares the card's clock, so it ticks while the dock is open.
+            Text(detail(row.window, now: now))
+                .font(.system(size: 10.5))
+                .monospacedDigit()
+                .foregroundStyle(Palette.secondary.opacity(0.6))
+                .lineLimit(1)
+                .frame(width: 50, alignment: .trailing)
         }
     }
 
@@ -501,28 +510,4 @@ struct UsageDockView: View {
         }
     }
 
-}
-
-/// Card shape with rounded corners on the left only, so the panel reads as
-/// attached to the right screen edge.
-struct LeftRoundedRect: Shape {
-    var radius: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.minX + radius, y: rect.minY))
-        p.addArc(
-            center: CGPoint(x: rect.minX + radius, y: rect.minY + radius), radius: radius,
-            startAngle: .degrees(-90), endAngle: .degrees(-180), clockwise: true
-        )
-        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
-        p.addArc(
-            center: CGPoint(x: rect.minX + radius, y: rect.maxY - radius), radius: radius,
-            startAngle: .degrees(180), endAngle: .degrees(90), clockwise: true
-        )
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        p.closeSubpath()
-        return p
-    }
 }

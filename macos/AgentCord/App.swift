@@ -40,25 +40,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// Hot-corner usage panel (top-right). Built lazily so the environment
     /// objects exist; enabled/disabled by `settings.usageDockEnabled`.
     private lazy var usageDock: UsageDockController = {
-        let dock = UsageDockController { [unowned self] dock in
-            AnyView(
-                UsageDockView(onOpen: { dock.openPopover() })
-                    .environmentObject(self.settings)
-                    .environmentObject(self.controller)
-                    .environmentObject(self.usage)
-                    .environmentObject(self.cursorUsage)
-                    .environmentObject(self.codexUsage)
-                    .environmentObject(self.grokUsage)
-                    .environmentObject(self.antigravityUsage)
-            )
-        }
+        // Built once: the environment objects are reference types, so the
+        // card stays live, and `onOpen` holds the delegate weakly.
+        let content = AnyView(
+            UsageDockView(onOpen: { [weak self] in self?.openDockPopover() })
+                .environmentObject(self.settings)
+                .environmentObject(self.usage)
+                .environmentObject(self.cursorUsage)
+                .environmentObject(self.codexUsage)
+                .environmentObject(self.grokUsage)
+                .environmentObject(self.antigravityUsage)
+        )
+        let dock = UsageDockController(content: content)
         dock.onWillShow = { [weak self] in self?.refreshUsage() }
-        dock.onOpenPopover = { [weak self] in
-            guard let self, !self.popover.isShown else { return }
-            self.openPopover()
-        }
         return dock
     }()
+
+    /// The dock card was clicked: dismiss it and hand off to the main popover.
+    private func openDockPopover() {
+        usageDock.hide(animated: false)
+        guard !popover.isShown else { return }
+        openPopover()
+    }
 
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()

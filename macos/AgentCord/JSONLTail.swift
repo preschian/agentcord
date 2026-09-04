@@ -78,6 +78,9 @@ enum SessionDuration {
     static let lookbackMs: Int64 = 24 * 60 * 60 * 1000
     /// Presence idle timeout. Scans ignore Settings.idleWindowSeconds.
     static let idleWindowSeconds: TimeInterval = 60
+    /// An unmatched hook turn older than this is orphaned (its `end` never
+    /// fired), not live. Hook turns emit no heartbeat mid-turn.
+    static let maxOpenTurnMs: Int64 = 2 * 60 * 60 * 1000
 
     /// Local calendar-day start, used as the work-clock cutoff.
     static func localMidnightMs(now: Date = Date()) -> Int64 {

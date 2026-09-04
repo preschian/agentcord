@@ -400,6 +400,27 @@ public sealed class SessionActivityDetectionTests
     }
 
     [Fact]
+    public void Cursor_stale_unmatched_start_is_not_live()
+    {
+        using var dir = TempDir.Create();
+        var uptime = Path.Combine(dir.Root, "today-uptime.json");
+        var orphan = 1000L;
+        var freshStart = 1000L + SessionActivity.MaxOpenTurnMs - 60_000;
+        File.WriteAllText(uptime,
+            "{\"e\":\"start\",\"ms\":" + orphan + ",\"id\":\"old\",\"cwd\":\"D:\\\\Workspace\\\\agentcord\"}\n" +
+            "{\"e\":\"start\",\"ms\":" + freshStart + ",\"id\":\"new\",\"cwd\":\"D:\\\\Workspace\\\\other\"}\n");
+
+        var now = 1000L + SessionActivity.MaxOpenTurnMs;
+        var scanner = new CursorSession(dir.Root, uptime);
+        var scan = scanner.ScanAt(uptime, now);
+
+        // The orphaned start is ignored; the fresh one keeps the session live.
+        Assert.NotNull(scan.Session);
+        Assert.Equal("other", scan.Session!.ProjectName);
+        Assert.Equal(now - freshStart, scan.TodayMs);
+    }
+
+    [Fact]
     public void Cursor_ignores_other_day_uptime_files()
     {
         using var dir = TempDir.Create();

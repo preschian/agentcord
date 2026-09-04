@@ -1,6 +1,8 @@
 // Detects the currently active Cursor agent session from today's hook file
 // (`%TEMP%\AgentCord\yyyy-MM-dd-uptime.json`). Cursor is live only while a
-// turn is open (unmatched `start`). Today's clock is the sum of start/end diffs.
+// turn is open (unmatched `start`). Today's clock is the sum of start/end
+// diffs. An unmatched start older than SessionActivity.MaxOpenTurnMs is
+// orphaned (its `end` never fired) and ignored.
 
 using System.IO;
 using System.Text.Json;
@@ -113,6 +115,11 @@ public sealed class CursorSession : IDisposable
         {
             foreach (var start in starts)
             {
+                // No heartbeat exists between hooks, so a start left open far
+                // past MaxOpenTurnMs means its `end` never fired (Cursor
+                // crashed or was quit mid-turn). Ignore it instead of staying
+                // live until midnight.
+                if (nowMs - start > SessionActivity.MaxOpenTurnMs) continue;
                 live = true;
                 if (nowMs > start) total += nowMs - start;
             }

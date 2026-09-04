@@ -13,6 +13,9 @@ internal static class SessionActivity
     /// <summary>Presence idle timeout. Scans ignore Settings.IdleWindowSeconds.</summary>
     public const double IdleWindowSeconds = 60.0;
 
+    /// <summary>An unmatched hook turn older than this is orphaned (its end never fired), not live.</summary>
+    public const long MaxOpenTurnMs = 2 * 60 * 60 * 1000;
+
     /// <summary>File-retention bound for tree snapshots, not the clock cutoff.</summary>
     public const long LookbackMs = 24 * 60 * 60 * 1000;
 

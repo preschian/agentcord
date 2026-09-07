@@ -22,7 +22,10 @@ public sealed class AntigravityUsage : IDisposable
         || AntigravitySession.ReadGoogleAccountEmail() is not null
         || AntigravitySession.CheckOAuthCreds();
 
-    public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(300);
+    /// <summary>Optional provider returning true if an active Antigravity session is in progress.</summary>
+    public Func<bool>? IsActiveProvider { get; set; }
+
+    public TimeSpan PollInterval { get; init; } = TimeSpan.FromMinutes(30);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan MaxStaleness { get; init; } = TimeSpan.FromHours(24);
 
@@ -83,7 +86,7 @@ public sealed class AntigravityUsage : IDisposable
         }
         // agy /usage can take several seconds. Never run it on the tray click
         // path — Claude/Codex/Cursor/Grok already refresh off-thread.
-        _ = Task.Run(Fetch);
+        _ = Task.Run(() => Fetch(force: true));
     }
 
     public void Dispose()
@@ -92,7 +95,7 @@ public sealed class AntigravityUsage : IDisposable
         _transcriptTree.Dispose();
     }
 
-    public void Fetch()
+    public void Fetch(bool force = false)
     {
         if (Interlocked.Exchange(ref _fetching, 1) == 1) return;
         lock (_lock) _lastAttempt = DateTime.UtcNow;
@@ -110,8 +113,13 @@ public sealed class AntigravityUsage : IDisposable
 
             var planLabel = plan ?? "Google AI Pro";
 
-            // 1. First attempt: Query live official usage directly from agy CLI (when not in custom test dir)
-            if (!_isCustomDir)
+            // Only query the live CLI process when explicitly requested (e.g. tray menu click),
+            // on initial startup when no cached snapshot exists, or when an Antigravity turn
+            // is actively running / has recent activity. When completely idle, avoid running
+            // the CLI process in the background.
+            var shouldQueryCli = !_isCustomDir && (force || Current is null || IsActiveProvider?.Invoke() == true || HasRecentActivity());
+
+            if (shouldQueryCli)
             {
                 var officialInfo = QueryOfficialAgyUsage(planLabel);
                 if (officialInfo is not null)
@@ -181,6 +189,31 @@ public sealed class AntigravityUsage : IDisposable
         return "agy";
     }
 
+    /// <summary>True when an Antigravity turn is currently running or recent transcript activity occurred.</summary>
+    public bool HasRecentActivity(TimeSpan? window = null)
+    {
+        var lookback = window ?? TimeSpan.FromMinutes(15);
+        var presenceDir = Path.Combine(_baseDir, "presence");
+        if (Directory.Exists(presenceDir))
+        {
+            try
+            {
+                if (Directory.EnumerateFiles(presenceDir, "*.lock").Any())
+                    return true;
+            }
+            catch { }
+        }
+
+        try
+        {
+            var recentFiles = _transcriptTree.Snapshot(lookback);
+            if (recentFiles.Count > 0) return true;
+        }
+        catch { }
+
+        return false;
+    }
+
     private static AntigravityUsageInfo? QueryOfficialAgyUsage(string planLabel)
     {
         var agyExe = FindAgyExecutable();
@@ -188,17 +221,40 @@ public sealed class AntigravityUsage : IDisposable
 
         try
         {
-            var psi = new ProcessStartInfo(agyExe)
+            var conhost = Path.Combine(Environment.SystemDirectory, "conhost.exe");
+            ProcessStartInfo psi;
+            if (File.Exists(conhost))
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            psi.ArgumentList.Add("-p");
-            psi.ArgumentList.Add("/usage");
-            psi.ArgumentList.Add("--output-format");
-            psi.ArgumentList.Add("json");
+                psi = new ProcessStartInfo(conhost)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                };
+                psi.ArgumentList.Add("--headless");
+                psi.ArgumentList.Add(agyExe);
+                psi.ArgumentList.Add("-p");
+                psi.ArgumentList.Add("/usage");
+                psi.ArgumentList.Add("--output-format");
+                psi.ArgumentList.Add("json");
+            }
+            else
+            {
+                psi = new ProcessStartInfo(agyExe)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                };
+                psi.ArgumentList.Add("-p");
+                psi.ArgumentList.Add("/usage");
+                psi.ArgumentList.Add("--output-format");
+                psi.ArgumentList.Add("json");
+            }
 
             using var process = Process.Start(psi);
             if (process is null) return null;
@@ -206,7 +262,7 @@ public sealed class AntigravityUsage : IDisposable
             var output = process.StandardOutput.ReadToEnd().Trim();
             if (!process.WaitForExit(7000))
             {
-                process.Kill();
+                try { process.Kill(entireProcessTree: true); } catch { }
                 return null;
             }
 

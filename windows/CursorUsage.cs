@@ -29,6 +29,9 @@ public sealed class CursorUsage : IDisposable
 
     public bool IsAuthenticated { get; private set; }
 
+    /// <summary>Optional provider returning true if an active Cursor session is in progress.</summary>
+    public Func<bool>? IsActiveProvider { get; set; }
+
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(300);
     public TimeSpan MinFetchInterval { get; init; } = TimeSpan.FromSeconds(60);
     /// <summary>Keep a disk-cached snapshot for a day so relaunch / idle
@@ -82,7 +85,7 @@ public sealed class CursorUsage : IDisposable
         {
             if (DateTime.UtcNow - _lastAttempt < MinFetchInterval) return;
         }
-        _ = FetchAsync();
+        _ = FetchAsync(force: true);
     }
 
     public void Dispose()
@@ -91,8 +94,9 @@ public sealed class CursorUsage : IDisposable
         _http.Dispose();
     }
 
-    private async Task FetchAsync()
+    private async Task FetchAsync(bool force = false)
     {
+        if (!force && Current is not null && IsActiveProvider?.Invoke() == false) return;
         lock (_lock) _lastAttempt = DateTime.UtcNow;
 
         try

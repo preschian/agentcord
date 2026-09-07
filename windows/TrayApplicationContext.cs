@@ -24,6 +24,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ContextMenuStrip _menu = new();
     private readonly ToolStripMenuItem _presenceItem = new("Enable presence") { CheckOnClick = true };
     private readonly System.Windows.Forms.Timer _tooltipTimer = new() { Interval = 2000 };
+    private DateTime _lastClaudeActive = DateTime.MinValue;
+    private DateTime _lastCodexActive = DateTime.MinValue;
+    private DateTime _lastCursorActive = DateTime.MinValue;
+    private DateTime _lastAntigravityActive = DateTime.MinValue;
+    private DateTime _lastGrokActive = DateTime.MinValue;
 
     private PopoverWindow? _popover;
     private bool _shutdown;
@@ -33,6 +38,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         _settings = Settings.Load();
         CursorHooks.Ensure();
         _controller = new PresenceController(_settings);
+
+        _usage.IsActiveProvider = () => DateTime.UtcNow - _lastClaudeActive < TimeSpan.FromMinutes(15);
+        _codexUsage.IsActiveProvider = () => DateTime.UtcNow - _lastCodexActive < TimeSpan.FromMinutes(15);
+        _cursorUsage.IsActiveProvider = () => DateTime.UtcNow - _lastCursorActive < TimeSpan.FromMinutes(15);
+        _antigravityUsage.IsActiveProvider = () => DateTime.UtcNow - _lastAntigravityActive < TimeSpan.FromMinutes(15);
+        _grokUsage.IsActiveProvider = () => DateTime.UtcNow - _lastGrokActive < TimeSpan.FromMinutes(15);
+        _controller.Changed += RecordActiveSessions;
 
         BuildMenu();
 
@@ -106,10 +118,20 @@ public sealed class TrayApplicationContext : ApplicationContext
         _status.SetEnabled(_settings.AgentClaudeEnabled);
     }
 
+    private void RecordActiveSessions()
+    {
+        if (_controller.ClaudeSession is not null) _lastClaudeActive = DateTime.UtcNow;
+        if (_controller.CodexSession is not null) _lastCodexActive = DateTime.UtcNow;
+        if (_controller.CursorSession is not null) _lastCursorActive = DateTime.UtcNow;
+        if (_controller.AntigravitySession is not null) _lastAntigravityActive = DateTime.UtcNow;
+        if (_controller.GrokSession is not null) _lastGrokActive = DateTime.UtcNow;
+    }
+
     private void RefreshTooltip()
     {
         try
         {
+            RecordActiveSessions();
             // Mirrors the macOS menu bar line: session bits + compact usage.
             // NotifyIcon.Text is plain text (multi-line via \n) and capped at 63 chars.
             var text = TrayStatusText.Build(

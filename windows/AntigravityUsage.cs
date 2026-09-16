@@ -179,14 +179,36 @@ public sealed class AntigravityUsage : IDisposable
         var pathEnv = Environment.GetEnvironmentVariable("PATH");
         if (!string.IsNullOrEmpty(pathEnv))
         {
-            foreach (var p in pathEnv.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            var dirs = pathEnv.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            // Prefer a real .exe so we never execute a .cmd/.bat shim (extra
+            // console host = visible blink even when hidden).
+            foreach (var p in dirs)
             {
-                var candidate = Path.Combine(p, "agy.exe");
-                if (File.Exists(candidate)) return candidate;
+                try
+                {
+                    var candidate = Path.Combine(p, "agy.exe");
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch { }
+            }
+            foreach (var p in dirs)
+            {
+                try
+                {
+                    foreach (var shim in new[] { "agy.cmd", "agy.bat" })
+                    {
+                        var candidate = Path.Combine(p, shim);
+                        if (File.Exists(candidate)) return candidate;
+                    }
+                }
+                catch { }
             }
         }
 
-        return "agy";
+        // Nothing found: return null so callers fall back to the transcript
+        // calculation instead of spawning a bare "agy" that resolves through
+        // cmd and flashes a console window.
+        return null;
     }
 
     /// <summary>True when an Antigravity turn is currently running or recent transcript activity occurred.</summary>
@@ -221,24 +243,29 @@ public sealed class AntigravityUsage : IDisposable
 
         try
         {
-            var conhost = Path.Combine(Environment.SystemDirectory, "conhost.exe");
+            // Launch the CLI directly with CREATE_NO_WINDOW. Do NOT wrap it in
+            // conhost.exe --headless: conhost is the console window host
+            // itself, so spawning it is what briefly flashes a terminal even
+            // with CreateNoWindow set.
+            var args = new[] { "-p", "/usage", "--output-format", "json" };
             ProcessStartInfo psi;
-            if (File.Exists(conhost))
+            if (agyExe.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)
+                || agyExe.EndsWith(".bat", StringComparison.OrdinalIgnoreCase))
             {
-                psi = new ProcessStartInfo(conhost)
+                var cmdExe = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+                psi = new ProcessStartInfo(string.IsNullOrEmpty(Environment.SystemDirectory) ? "cmd.exe" : cmdExe)
                 {
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden,
+                    ErrorDialog = false,
                 };
-                psi.ArgumentList.Add("--headless");
-                psi.ArgumentList.Add(agyExe);
-                psi.ArgumentList.Add("-p");
-                psi.ArgumentList.Add("/usage");
-                psi.ArgumentList.Add("--output-format");
-                psi.ArgumentList.Add("json");
+                psi.ArgumentList.Add("/d");
+                psi.ArgumentList.Add("/s");
+                psi.ArgumentList.Add("/c");
+                psi.ArgumentList.Add($"\"{agyExe}\" -p \"/usage\" --output-format json");
             }
             else
             {
@@ -249,22 +276,25 @@ public sealed class AntigravityUsage : IDisposable
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden,
+                    ErrorDialog = false,
                 };
-                psi.ArgumentList.Add("-p");
-                psi.ArgumentList.Add("/usage");
-                psi.ArgumentList.Add("--output-format");
-                psi.ArgumentList.Add("json");
+                foreach (var a in args) psi.ArgumentList.Add(a);
             }
 
             using var process = Process.Start(psi);
             if (process is null) return null;
 
-            var output = process.StandardOutput.ReadToEnd().Trim();
+            // Drain both streams concurrently so a chatty stderr can't block
+            // the child and stretch the (hidden) process lifetime.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(7000))
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
                 return null;
             }
+            var output = stdoutTask.GetAwaiter().GetResult().Trim();
+            _ = stderrTask.GetAwaiter().GetResult();
 
             if (process.ExitCode == 0 && output.Length > 0)
             {

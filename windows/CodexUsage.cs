@@ -127,36 +127,21 @@ public sealed class CodexUsage : IDisposable
                 return;
             }
 
-            var conhost = Path.Combine(Environment.SystemDirectory, "conhost.exe");
-            ProcessStartInfo psi;
-            if (File.Exists(conhost))
+            // Launch app-server directly with CREATE_NO_WINDOW. Do NOT wrap it
+            // in conhost.exe --headless: conhost is the console window host
+            // itself, so spawning it is what briefly flashes a terminal even
+            // with CreateNoWindow set.
+            var psi = new ProcessStartInfo(executable)
             {
-                psi = new ProcessStartInfo(conhost)
-                {
-                    RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden,
-                };
-                psi.ArgumentList.Add("--headless");
-                psi.ArgumentList.Add(executable);
-                psi.ArgumentList.Add("app-server");
-            }
-            else
-            {
-                psi = new ProcessStartInfo(executable)
-                {
-                    RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden,
-                };
-                psi.ArgumentList.Add("app-server");
-            }
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                ErrorDialog = false,
+            };
+            psi.ArgumentList.Add("app-server");
 
             using var process = new Process { StartInfo = psi };
             // Match macOS: point app-server at the same home CodexSession uses
@@ -167,6 +152,17 @@ public sealed class CodexUsage : IDisposable
                 HandleFailure();
                 return;
             }
+
+            // Drain stderr in the background so a chatty app-server can't
+            // block on a full error pipe and stretch the process lifetime.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (await process.StandardError.ReadLineAsync().ConfigureAwait(false) is not null) { }
+                }
+                catch { }
+            });
 
             await process.StandardInput.WriteLineAsync(
                 """{"method":"initialize","id":0,"params":{"clientInfo":{"name":"agentcord","title":"AgentCord","version":"0.4.0"}}}""");

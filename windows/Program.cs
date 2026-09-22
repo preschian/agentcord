@@ -14,10 +14,10 @@ internal static class Program
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => LogCrash("ThreadException", e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-        {
-            if (e.ExceptionObject is Exception ex)
-                LogCrash("UnhandledException", ex);
-        };
+            LogCrash(
+                "UnhandledException",
+                e.ExceptionObject as Exception
+                    ?? new Exception(e.ExceptionObject?.ToString() ?? "non-Exception"));
 
         // A second instance would fight over the Discord pipe and the tray
         // icon; quietly defer to the one already running.

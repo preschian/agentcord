@@ -17,15 +17,16 @@ internal static class SessionActivity
     public const long LookbackMs = 24 * 60 * 60 * 1000;
 
     /// <summary>Tests pin the scan clock so "earlier today" stays on one local
-    /// day. Null in the app. ponytail: process-wide, per-scan arg if tests overlap.</summary>
+    /// day. Null in the app.</summary>
     internal static DateTimeOffset? Clock;
 
     public static DateTimeOffset Now() => Clock ?? DateTimeOffset.UtcNow;
 
     internal static IDisposable Pin(DateTimeOffset now)
     {
+        var previous = Clock;
         Clock = now;
-        return new Unpin();
+        return new Unpin(previous);
     }
 
     /// <summary>Local calendar-day start, used as the work-clock cutoff.</summary>
@@ -37,9 +38,9 @@ internal static class SessionActivity
         return new DateTimeOffset(local.Date, local.Offset).ToUnixTimeMilliseconds();
     }
 
-    private sealed class Unpin : IDisposable
+    private sealed class Unpin(DateTimeOffset? previous) : IDisposable
     {
-        public void Dispose() => Clock = null;
+        public void Dispose() => Clock = previous;
     }
 
     /// <summary>Add <c>now - last</c> only while the session is live, so idle clocks freeze.</summary>

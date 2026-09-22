@@ -45,21 +45,19 @@ public sealed class SessionActivityDetectionTests
         var project = Path.Combine(dir.Root, "C-Users-test-agentcord");
         Directory.CreateDirectory(project);
         var transcript = Path.Combine(project, "session.jsonl");
-        using (SessionActivity.Pin(new DateTimeOffset(DateTime.Today.AddHours(15))))
-        {
-            var now = SessionActivity.Now();
-            File.WriteAllText(transcript,
-                "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + now.AddMinutes(-10).ToString("o") +
-                "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n" +
-                "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + now.AddMinutes(-5).ToString("o") +
-                "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n");
-            File.SetLastWriteTimeUtc(transcript, now.AddMinutes(-5).UtcDateTime);
+        using var clock = SessionActivity.Pin(new DateTimeOffset(DateTime.Today.AddHours(15)));
+        var now = SessionActivity.Now();
+        File.WriteAllText(transcript,
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + now.AddMinutes(-10).ToString("o") +
+            "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n" +
+            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + now.AddMinutes(-5).ToString("o") +
+            "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n");
+        File.SetLastWriteTimeUtc(transcript, now.AddMinutes(-5).UtcDateTime);
 
-            var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 1 };
-            var scan = scanner.Scan();
-            Assert.Null(scan.Session);
-            Assert.InRange(scan.TodayMs, 5 * 60_000L - 8_000, 5 * 60_000L + 8_000);
-        }
+        var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 1 };
+        var scan = scanner.Scan();
+        Assert.Null(scan.Session);
+        Assert.InRange(scan.TodayMs, 5 * 60_000L - 8_000, 5 * 60_000L + 8_000);
     }
 
     [Fact]

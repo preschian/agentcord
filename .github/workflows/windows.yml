@@ -1,6 +1,11 @@
 name: Windows CI
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows.yml"
   pull_request:
     paths:
       - "windows/**"

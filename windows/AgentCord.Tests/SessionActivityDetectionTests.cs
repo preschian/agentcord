@@ -45,19 +45,21 @@ public sealed class SessionActivityDetectionTests
         var project = Path.Combine(dir.Root, "C-Users-test-agentcord");
         Directory.CreateDirectory(project);
         var transcript = Path.Combine(project, "session.jsonl");
-        var start = DateTimeOffset.Now.AddMinutes(-10);
-        var end = DateTimeOffset.Now.AddMinutes(-5);
-        File.WriteAllText(transcript,
-            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + start.ToString("o") +
-            "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n" +
-            "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + end.ToString("o") +
-            "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n");
-        File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow.AddMinutes(-5));
+        using (SessionActivity.Pin(new DateTimeOffset(DateTime.Today.AddHours(15))))
+        {
+            var now = SessionActivity.Now();
+            File.WriteAllText(transcript,
+                "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + now.AddMinutes(-10).ToString("o") +
+                "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n" +
+                "{\"cwd\":\"D:\\\\Workspace\\\\agentcord\",\"timestamp\":\"" + now.AddMinutes(-5).ToString("o") +
+                "\",\"message\":{\"model\":\"claude-opus-4-5\"}}\n");
+            File.SetLastWriteTimeUtc(transcript, now.AddMinutes(-5).UtcDateTime);
 
-        var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 1 };
-        var scan = scanner.Scan();
-        Assert.Null(scan.Session);
-        Assert.InRange(scan.TodayMs, 5 * 60_000L - 8_000, 5 * 60_000L + 8_000);
+            var scanner = new ClaudeSession(dir.Root) { ActiveWindowSeconds = 1 };
+            var scan = scanner.Scan();
+            Assert.Null(scan.Session);
+            Assert.InRange(scan.TodayMs, 5 * 60_000L - 8_000, 5 * 60_000L + 8_000);
+        }
     }
 
     [Fact]
@@ -227,7 +229,8 @@ public sealed class SessionActivityDetectionTests
         using var dir = TempDir.Create();
         var project = Path.Combine(dir.Root, "C-Users-test-agentcord");
         Directory.CreateDirectory(project);
-        var now = DateTimeOffset.UtcNow;
+        using var clock = SessionActivity.Pin(new DateTimeOffset(DateTime.Today.AddHours(15)));
+        var now = SessionActivity.Now();
 
         File.WriteAllText(Path.Combine(project, "morning.jsonl"),
             ClaudeBurst(now.AddHours(-6), now.AddHours(-5)));
@@ -240,7 +243,7 @@ public sealed class SessionActivityDetectionTests
         var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        var elapsed = SessionActivity.Now().ToUnixTimeMilliseconds() - info!.StartEpochMs;
         Assert.InRange(elapsed, 2 * 3600_000L - 30_000, 2 * 3600_000L + 30_000);
     }
 
@@ -314,7 +317,8 @@ public sealed class SessionActivityDetectionTests
         using var dir = TempDir.Create();
         var day = Path.Combine(dir.Root, "2026", "08", "01");
         Directory.CreateDirectory(day);
-        var now = DateTimeOffset.UtcNow;
+        using var clock = SessionActivity.Pin(new DateTimeOffset(DateTime.Today.AddHours(15)));
+        var now = SessionActivity.Now();
         var morningStart = now.AddHours(-5);
         var morningEnd = now.AddHours(-4);
         var eveningStart = now.AddMinutes(-20);
@@ -329,7 +333,7 @@ public sealed class SessionActivityDetectionTests
         var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        var elapsed = SessionActivity.Now().ToUnixTimeMilliseconds() - info!.StartEpochMs;
         Assert.InRange(elapsed, 3600_000L + 18 * 60_000L, 3600_000L + 22 * 60_000L);
     }
 
@@ -488,7 +492,8 @@ public sealed class SessionActivityDetectionTests
         using var dir = TempDir.Create();
         var cwd = @"D:\Workspace\agentcord";
         var encoded = Uri.EscapeDataString(cwd);
-        var now = DateTimeOffset.UtcNow;
+        using var clock = SessionActivity.Pin(new DateTimeOffset(DateTime.Today.AddHours(15)));
+        var now = SessionActivity.Now();
 
         WriteGrokSession(dir.Root, encoded, "morning", cwd,
             created: now.AddHours(-6),
@@ -510,7 +515,7 @@ public sealed class SessionActivityDetectionTests
         var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        var elapsed = SessionActivity.Now().ToUnixTimeMilliseconds() - info!.StartEpochMs;
         // 1h morning + 1h evening, idle gap between them excluded. Allow slack
         // for the live tail (last event ~8s ago through now).
         Assert.InRange(elapsed, 2 * 3600_000L - 30_000, 2 * 3600_000L + 30_000);
@@ -522,7 +527,8 @@ public sealed class SessionActivityDetectionTests
         using var dir = TempDir.Create();
         var cwd = @"D:\Workspace\agentcord";
         var encoded = Uri.EscapeDataString(cwd);
-        var now = DateTimeOffset.UtcNow;
+        using var clock = SessionActivity.Pin(new DateTimeOffset(DateTime.Today.AddHours(15)));
+        var now = SessionActivity.Now();
 
         WriteGrokSession(dir.Root, encoded, "gapped", cwd,
             created: now.AddHours(-4),
@@ -540,7 +546,7 @@ public sealed class SessionActivityDetectionTests
         var info = scanner.Scan().Session;
 
         Assert.NotNull(info);
-        var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - info!.StartEpochMs;
+        var elapsed = SessionActivity.Now().ToUnixTimeMilliseconds() - info!.StartEpochMs;
         // Two 1h-apart morning stamps (1h) plus a 10m evening burst, not 4h wall clock.
         Assert.InRange(elapsed, 3600_000L + 9 * 60_000L, 3600_000L + 12 * 60_000L);
     }

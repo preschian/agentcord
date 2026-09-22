@@ -46,7 +46,7 @@ public sealed class ClaudeSession : IDisposable
         // sum of working gaps. Activity (idle + LastModifiedMs) prefers parsed
         // event timestamps over filesystem mtime so a stale mtime cannot hide
         // a live session.
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         var cutoffMs = SessionActivity.LocalMidnightMs();
         var dayStartMs = cutoffMs;
 

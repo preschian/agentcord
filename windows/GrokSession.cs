@@ -103,7 +103,7 @@ public sealed class GrokSession
             }
         }
 
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         var (activeMs, lastMs) = RollingActive(nowMs);
         var isLive = best is not null;
         var todayMs = SessionActivity.WithLiveTail(activeMs, lastMs, nowMs, isLive);
@@ -164,7 +164,7 @@ public sealed class GrokSession
                 if (string.IsNullOrEmpty(sid) || string.IsNullOrEmpty(cwd)) continue;
                 if (IntProp(item, "pid") is not int pid) continue;
                 var opened = ParseIsoMs(JsonProp.String(item, "opened_at"))
-                    ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    ?? SessionActivity.Now().ToUnixTimeMilliseconds();
                 list.Add(new LiveEntry(sid, cwd, pid, opened));
             }
             return list;
@@ -313,7 +313,7 @@ public sealed class GrokSession
             && Path.GetDirectoryName(summaryPath) is { } sessionDir
             && IsOpenTurn(sessionDir))
         {
-            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            return SessionActivity.Now().ToUnixTimeMilliseconds();
         }
         return best;
     }
@@ -417,7 +417,7 @@ public sealed class GrokSession
         if (!_hasBuiltSummaryIndex) RebuildSummaryIndex();
 
         (SessionInfo Info, long ActivityMs)? best = null;
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         foreach (var path in _summaryBySessionId.Values)
         {
             var summary = ReadSummary(path);

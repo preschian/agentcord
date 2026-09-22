@@ -32,7 +32,7 @@ public sealed class CursorSession
         return Path.Combine(dir, $"{DateTime.Today:yyyy-MM-dd}-uptime.json");
     }
 
-    public AgentScan Scan() => ScanAt(_uptimeFile, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    public AgentScan Scan() => ScanAt(_uptimeFile, SessionActivity.Now().ToUnixTimeMilliseconds());
 
     internal AgentScan ScanAt(string path, long nowMs)
     {

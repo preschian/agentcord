@@ -122,7 +122,7 @@ public sealed class AntigravitySession : IDisposable
         if (transcriptFiles.Count == 0 && presenceLocks.Count == 0 && _historyByConvId.Count == 0)
             return default;
 
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         var cutoffMs = SessionActivity.LocalMidnightMs();
         long totalActiveMs = 0;
         long? newestLast = null;

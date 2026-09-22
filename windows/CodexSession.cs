@@ -36,7 +36,7 @@ public sealed class CodexSession : IDisposable
         // selection. Every transcript must be inspected because an active
         // session can have a stale mtime; the per-file cache keeps re-scans of
         // unchanged files cheap.
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         var cutoffMs = SessionActivity.LocalMidnightMs();
         SessionInfo? best = null;
         long total = 0;

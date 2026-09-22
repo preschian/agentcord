@@ -281,11 +281,11 @@ public sealed class CursorUsage : IDisposable
             return null;
 
         int? totalPercent = null;
-        if (NumberProp(plan, "totalPercentUsed") is double p)
+        if (JsonProp.Number(plan, "totalPercentUsed") is double p)
             totalPercent = ClampPercent(p);
-        else if (NumberProp(plan, "limit") is double limit && limit > 0)
+        else if (JsonProp.Number(plan, "limit") is double limit && limit > 0)
         {
-            var used = NumberProp(plan, "includedSpend") ?? NumberProp(plan, "totalSpend");
+            var used = JsonProp.Number(plan, "includedSpend") ?? JsonProp.Number(plan, "totalSpend");
             if (used is double u)
                 totalPercent = ClampPercent(u / limit * 100.0);
         }
@@ -294,14 +294,14 @@ public sealed class CursorUsage : IDisposable
         var resetsAt = ParseEpochMillis(FlexibleString(root, "billingCycleEnd"));
 
         UsageWindow? auto = null;
-        if (NumberProp(plan, "autoPercentUsed") is double autoPct && autoPct > 0)
+        if (JsonProp.Number(plan, "autoPercentUsed") is double autoPct && autoPct > 0)
         {
             var pct = ClampPercent(autoPct);
             if (pct != totalPercent) auto = MakeWindow(pct, resetsAt);
         }
 
         UsageWindow? api = null;
-        if (NumberProp(plan, "apiPercentUsed") is double apiPct && apiPct > 0)
+        if (JsonProp.Number(plan, "apiPercentUsed") is double apiPct && apiPct > 0)
         {
             var pct = ClampPercent(apiPct);
             if (pct != totalPercent) api = MakeWindow(pct, resetsAt);
@@ -309,9 +309,9 @@ public sealed class CursorUsage : IDisposable
 
         UsageWindow? onDemand = null;
         if (root.TryGetProperty("spendLimitUsage", out var spend) && spend.ValueKind == JsonValueKind.Object
-            && NumberProp(spend, "individualLimit") is double lim && lim > 0)
+            && JsonProp.Number(spend, "individualLimit") is double lim && lim > 0)
         {
-            var remaining = NumberProp(spend, "individualRemaining") ?? lim;
+            var remaining = JsonProp.Number(spend, "individualRemaining") ?? lim;
             var used = Math.Max(0, lim - remaining);
             onDemand = MakeWindow(ClampPercent(used / lim * 100.0), resetsAt);
         }
@@ -340,8 +340,8 @@ public sealed class CursorUsage : IDisposable
                 continue;
             }
             if (prop.Value.ValueKind != JsonValueKind.Object) continue;
-            if (NumberProp(prop.Value, "maxRequestUsage") is not double max || max <= 0) continue;
-            var used = (int)(NumberProp(prop.Value, "numRequests") ?? 0);
+            if (JsonProp.Number(prop.Value, "maxRequestUsage") is not double max || max <= 0) continue;
+            var used = (int)(JsonProp.Number(prop.Value, "numRequests") ?? 0);
             if (bestKey is null || max > bestMax)
             {
                 bestKey = prop.Name;
@@ -368,11 +368,6 @@ public sealed class CursorUsage : IDisposable
 
     private static int ClampPercent(double value) =>
         Math.Min(100, Math.Max(0, (int)Math.Round(value)));
-
-    private static double? NumberProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number
-            ? v.GetDouble()
-            : null;
 
     private static string? FlexibleString(JsonElement obj, string name)
     {

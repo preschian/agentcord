@@ -15,6 +15,14 @@ public static class Format
         return h > 0 ? $"{h}h {m:00}m" : $"{m}m";
     }
 
+    /// <summary>Compact token count: "1.2M" / "3.4K" / "12".</summary>
+    public static string Tokens(long count) => count switch
+    {
+        >= 1_000_000 => $"{count / 1_000_000.0:F1}M",
+        >= 1_000 => $"{count / 1_000.0:F1}K",
+        _ => count.ToString(),
+    };
+
     /// <summary>Ticking clock: "1:02:03" / "2:03".</summary>
     public static string Clock(long ms)
     {

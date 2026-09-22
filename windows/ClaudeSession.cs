@@ -46,7 +46,7 @@ public sealed class ClaudeSession : IDisposable
         // sum of working gaps. Activity (idle + LastModifiedMs) prefers parsed
         // event timestamps over filesystem mtime so a stale mtime cannot hide
         // a live session.
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         var cutoffMs = SessionActivity.LocalMidnightMs();
         var dayStartMs = cutoffMs;
 
@@ -188,14 +188,11 @@ public sealed class ClaudeSession : IDisposable
                 }
                 if (isToday && message.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
                 {
-                    agg.TokensToday += IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
+                    agg.TokensToday += JsonProp.Long(usage, "input_tokens") + JsonProp.Long(usage, "output_tokens");
                 }
             }
         }
     }
-
-    private static long IntProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : 0;
 
     private SessionInfo MakeSessionInfo(
         string newestPath, long activityMs, DayAggregate active, long totalTokensToday,

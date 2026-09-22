@@ -2,6 +2,7 @@ name: GPUI CI
 
 on:
   push:
+    branches: [main]
     paths:
       - "gpui/**"
       - ".github/workflows/gpui.yml"

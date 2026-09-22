@@ -347,8 +347,8 @@ public sealed class CodexUsage : IDisposable
                 || account.ValueKind != JsonValueKind.Object)
                 return true;
 
-            email = StringProp(account, "email");
-            var type = StringProp(account, "type");
+            email = JsonProp.String(account, "email");
+            var type = JsonProp.String(account, "type");
             authenticated = type is "chatgpt" or "personalAccessToken";
             return true;
         }
@@ -395,8 +395,8 @@ public sealed class CodexUsage : IDisposable
                         continue;
 
                     var snapshot = item.Value;
-                    var rawName = StringProp(snapshot, "limitName")
-                        ?? StringProp(snapshot, "limitId")
+                    var rawName = JsonProp.String(snapshot, "limitName")
+                        ?? JsonProp.String(snapshot, "limitId")
                         ?? item.Name;
                     var label = DisplayName(rawName);
                     var reached = snapshot.GetPropertyOrNull("rateLimitReachedType") is not null;
@@ -430,7 +430,7 @@ public sealed class CodexUsage : IDisposable
                 PrimaryLabel = WindowLabel(primary, "Primary limit"),
                 Secondary = secondary,
                 SecondaryLabel = secondary is null ? null : WindowLabel(secondaryElement, "Secondary limit"),
-                PlanType = StringProp(limits, "planType"),
+                PlanType = JsonProp.String(limits, "planType"),
                 AdditionalWindows = additional,
             };
             return true;
@@ -443,9 +443,9 @@ public sealed class CodexUsage : IDisposable
 
     private static UsageWindow ParseWindow(JsonElement window, bool reached)
     {
-        var percent = NumberProp(window, "usedPercent") ?? 0;
+        var percent = JsonProp.Number(window, "usedPercent") ?? 0;
         var rounded = Math.Clamp((int)Math.Round(percent), 0, 100);
-        var resetSeconds = NumberProp(window, "resetsAt");
+        var resetSeconds = JsonProp.Number(window, "resetsAt");
         return new UsageWindow
         {
             Percent = rounded,
@@ -458,7 +458,7 @@ public sealed class CodexUsage : IDisposable
 
     private static string WindowLabel(JsonElement window, string fallback)
     {
-        var minutes = NumberProp(window, "windowDurationMins");
+        var minutes = JsonProp.Number(window, "windowDurationMins");
         if (minutes is null || minutes <= 0) return fallback;
         if (minutes <= 6 * 60) return "5-hour session";
         if (minutes <= 8 * 24 * 60) return "Weekly limit";
@@ -471,18 +471,6 @@ public sealed class CodexUsage : IDisposable
         value.Replace('_', ' ').Replace('-', ' ')
             .Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Select(word => char.ToUpperInvariant(word[0]) + word[1..]));
-
-    private static string? StringProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static double? NumberProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value)
-        && value.ValueKind == JsonValueKind.Number
-        && value.TryGetDouble(out var number)
-            ? number
-            : null;
 
     private static string? FindExecutable()
     {

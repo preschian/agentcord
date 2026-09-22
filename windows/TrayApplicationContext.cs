@@ -187,7 +187,6 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         if (_shutdown) return;
         _shutdown = true;
-        Program.LogCrash("ShutdownOnce", null);
         _tooltipTimer.Stop();
         _popover?.CloseForExit();
         _controller.Shutdown();

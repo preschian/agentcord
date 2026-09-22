@@ -1332,7 +1332,7 @@ public partial class PopoverWindow : Window
             {
                 if (settings.ShowModel && session.Model is not null) bits.Add(session.Model);
                 if (settings.ShowTokens && session.TotalTokens > 0)
-                    bits.Add($"{PresenceController.FormatTokens(session.TotalTokens)} tokens");
+                    bits.Add($"{Format.Tokens(session.TotalTokens)} tokens");
             }
             _metaText.Text = bits.Count > 0 ? string.Join("  ·  ", bits)
                 : session is null ? "Waiting for a session" : "Model & tokens hidden";

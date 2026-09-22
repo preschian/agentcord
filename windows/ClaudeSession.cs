@@ -188,14 +188,11 @@ public sealed class ClaudeSession : IDisposable
                 }
                 if (isToday && message.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
                 {
-                    agg.TokensToday += IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
+                    agg.TokensToday += JsonProp.Long(usage, "input_tokens") + JsonProp.Long(usage, "output_tokens");
                 }
             }
         }
     }
-
-    private static long IntProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : 0;
 
     private SessionInfo MakeSessionInfo(
         string newestPath, long activityMs, DayAggregate active, long totalTokensToday,

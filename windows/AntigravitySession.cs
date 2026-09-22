@@ -10,7 +10,7 @@ namespace AgentCord;
 
 public sealed class AntigravitySession : IDisposable
 {
-    public double ActiveWindowSeconds { get; set; } = 60;
+    public double ActiveWindowSeconds { get; set; } = SessionActivity.IdleWindowSeconds;
 
     public string? AccountEmail { get; private set; }
     public string? PlanType { get; private set; }
@@ -215,9 +215,9 @@ public sealed class AntigravitySession : IDisposable
                     var root = doc.RootElement;
                     if (root.ValueKind != JsonValueKind.Object) continue;
 
-                    var convId = StringProp(root, "conversationId");
-                    var workspace = StringProp(root, "workspace");
-                    var ts = IntProp(root, "timestamp");
+                    var convId = JsonProp.String(root, "conversationId");
+                    var workspace = JsonProp.String(root, "workspace");
+                    var ts = JsonProp.Long(root, "timestamp");
 
                     if (!string.IsNullOrEmpty(convId))
                         _historyByConvId[convId] = (workspace ?? "", ts);
@@ -423,9 +423,9 @@ public sealed class AntigravitySession : IDisposable
                     {
                         if (state.Cwd is null)
                         {
-                            var dir = StringProp(args, "DirectoryPath")
-                                ?? StringProp(args, "SearchPath")
-                                ?? StringProp(args, "Cwd");
+                            var dir = JsonProp.String(args, "DirectoryPath")
+                                ?? JsonProp.String(args, "SearchPath")
+                                ?? JsonProp.String(args, "Cwd");
                             if (!string.IsNullOrWhiteSpace(dir))
                                 state.Cwd = dir;
                         }
@@ -435,24 +435,12 @@ public sealed class AntigravitySession : IDisposable
 
             if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
             {
-                var total = IntProp(usage, "total_tokens");
-                if (total == 0) total = IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
+                var total = JsonProp.Long(usage, "total_tokens");
+                if (total == 0) total = JsonProp.Long(usage, "input_tokens") + JsonProp.Long(usage, "output_tokens");
                 if (total > 0) state.TotalTokens += total;
             }
         }
     }
-
-    private static string? StringProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static long IntProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value)
-        && value.ValueKind == JsonValueKind.Number
-        && value.TryGetInt64(out var number)
-            ? number
-            : 0;
 
     /// <summary>Turns raw model IDs like "gemini-3.7-flash" or "Gemini 3.7 Flash (High)" into clean display names.</summary>
     public static string PrettyModel(string raw)

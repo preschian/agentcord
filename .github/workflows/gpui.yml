@@ -1,10 +1,6 @@
 name: GPUI CI
 
 on:
-  push:
-    paths:
-      - "gpui/**"
-      - ".github/workflows/gpui.yml"
   pull_request:
     paths:
       - "gpui/**"

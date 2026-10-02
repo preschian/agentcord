@@ -1,10 +1,11 @@
 # AgentCord — Electron preview
 
-Desktop prototype built with **Electron + Vue 3 + Vite**, initially scoped to **Codex / OpenAI subscription usage**. It lives alongside the existing Windows and macOS implementations; it does not replace either app.
+Desktop prototype built with **Electron + Vue 3 + Vite**, scoped to **Codex / OpenAI and Claude subscription usage**. It lives alongside the existing Windows and macOS implementations; it does not replace either app.
 
 ## Implemented
 
 - Real usage from Codex's official `app-server` JSONL interface.
+- **Claude** 5-hour, weekly, and per-model weekly limits from the same OAuth endpoints Claude Code uses (`/api/oauth/usage` and `/api/oauth/profile`), ported from `windows/ClaudeUsage.cs`. The access token is read from `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) on each poll; it is never refreshed, cached, logged, or sent to the renderer. Same 60-second cooldown, 5-minute visible polling, and 24-hour account-bound cache (`claude-usage-cache.json`) as Codex. macOS keychain credentials are not read yet.
 - Primary / secondary subscription limits (usually 5-hour and weekly), plus additional per-model limits when returned by Codex.
 - Windows-style **330px light popover**: frameless rounded shell, Noto Sans Mono text, compact main screen, Codex detail screen, and Settings screen.
 - Thin blue/orange/red usage bars with Windows-style values (`46% · 6d 22h`); hover for remaining percentage and the local reset date.
@@ -20,7 +21,7 @@ Desktop prototype built with **Electron + Vue 3 + Vite**, initially scoped to **
 - Existing Windows branding reused from `../windows/assets/agentcord.ico` for the executable, tray, app window, and header. The build copies the original multi-size ICO and extracts its embedded PNG frames into ignored `out/assets/`; no duplicate source artwork is committed. Windows loads the ICO directly for native app/tray icons so the OS can select the appropriate size rather than upscale a 16px PNG. The tray icon is reloaded on display-scale changes; other platforms retain PNG representations.
 - Settings shows polling/cache behavior and an expandable Codex installation section. Unsupported native-app controls (Discord presence, sessions, other agents) are deliberately omitted.
 
-**Not implemented:** Discord Rich Presence, activity/session tracking, other providers, OpenAI API-key usage/cost billing, login UI, auto-update, and signed release installers. This is ChatGPT/Codex subscription usage, not the OpenAI API billing dashboard.
+**Not implemented:** Discord Rich Presence, activity/session tracking, providers other than Codex and Claude, OpenAI API-key usage/cost billing, login UI, auto-update, and signed release installers. This is ChatGPT/Codex subscription usage, not the OpenAI API billing dashboard.
 
 ## Requirements
 

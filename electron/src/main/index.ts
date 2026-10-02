@@ -10,6 +10,7 @@ import {
 } from 'electron'
 import { join } from 'node:path'
 import { CodexUsageService } from './codex-usage'
+import { ClaudeUsageService } from './claude-usage'
 import { runSmokeTest } from './smoke'
 import { iconFilename, type IconRole } from './icon-path'
 
@@ -17,6 +18,7 @@ const POPOVER_WIDTH = 330
 let window: BrowserWindow | null = null
 let tray: Tray | null = null
 let service: CodexUsageService | null = null
+let claude: ClaudeUsageService | null = null
 let quitting = false
 let anchored = true
 let lastDeactivated = 0
@@ -32,6 +34,7 @@ else {
   app.on('before-quit', () => {
     quitting = true
     service?.stop()
+    claude?.stop()
   })
   app.on('window-all-closed', () => {
     if (quitting) app.quit()
@@ -55,7 +58,7 @@ else {
 }
 async function showWindow(): Promise<void> {
   // Check identity before revealing potentially cached account data.
-  await service?.tick()
+  await Promise.all([service?.tick(), claude?.tick()])
   window?.show()
   window?.focus()
   if (
@@ -162,6 +165,13 @@ async function start(): Promise<void> {
       )
     },
   })
+  claude = new ClaudeUsageService({
+    cachePath: join(app.getPath('userData'), 'claude-usage-cache.json'),
+    visible: () => !!window?.isVisible() && !window.isMinimized(),
+    changed: (state) => {
+      if (!window?.isDestroyed()) window?.webContents.send('claude:changed', state)
+    },
+  })
   const authorize = (event: Electron.IpcMainInvokeEvent) => {
     if (
       !window ||
@@ -178,6 +188,14 @@ async function start(): Promise<void> {
   ipcMain.handle('usage:refresh', (event) => {
     authorize(event)
     return service!.refresh()
+  })
+  ipcMain.handle('claude:get', (event) => {
+    authorize(event)
+    return claude!.state
+  })
+  ipcMain.handle('claude:refresh', (event) => {
+    authorize(event)
+    return claude!.refresh()
   })
   ipcMain.handle('window:resize', (event, height: unknown) => {
     authorize(event)
@@ -222,6 +240,12 @@ async function start(): Promise<void> {
             void service?.refresh()
           },
         },
+        {
+          label: 'Refresh Claude usage',
+          click: () => {
+            void claude?.refresh()
+          },
+        },
         { type: 'separator' },
         { label: 'Quit', click: () => app.quit() },
       ]),
@@ -245,10 +269,11 @@ async function start(): Promise<void> {
     await window.loadURL(rendererUrl)
   } else await window.loadFile(join(__dirname, '../renderer/index.html'))
   window.show()
-  await service.start()
+  await Promise.all([service.start(), claude.start()])
   if (smoke) {
     await runSmokeTest(window, service.state)
     service.stop()
+    claude.stop()
     app.exit(0)
   }
 }

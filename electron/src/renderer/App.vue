@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { UsageState } from '../shared/types'
+import type { ClaudeUsageState, UsageState } from '../shared/types'
 import Icon from './components/Icon.vue'
 import UsageCard from './components/UsageCard.vue'
 import { ago, maskEmail } from './format'
 
 const logoUrl = `${import.meta.env.BASE_URL}agentcord.png`
-const page = ref<'main' | 'codex' | 'settings'>('main')
+const page = ref<'main' | 'codex' | 'claude' | 'settings'>('main')
 const popover = ref<HTMLElement | null>(null)
 const emailRevealed = ref(false)
 const installationExpanded = ref(false)
@@ -19,17 +19,31 @@ const state = ref<UsageState>({
   codexHome: '',
   executable: null,
 })
+const claudeState = ref<ClaudeUsageState>({
+  status: 'loading',
+  snapshot: null,
+  refreshing: false,
+  message: null,
+  nextRefreshAt: 0,
+})
 const now = ref(Date.now())
 const uiError = ref<string | null>(null)
 const bridgeAvailable = ref(false)
 let unsubscribe: (() => void) | undefined
+let unsubscribeClaude: (() => void) | undefined
 let unsubscribeWindowShown: (() => void) | undefined
 let timer: ReturnType<typeof setInterval> | undefined
 let observer: ResizeObserver | undefined
 let lastHeight = 0
-const snapshot = computed(() => state.value.snapshot)
+const isClaude = computed(() => page.value === 'claude')
+const providerName = computed(() => (isClaude.value ? 'Claude' : 'Codex'))
+// Detail screens read from whichever provider is open; Codex is the default.
+const active = computed<ClaudeUsageState>(() =>
+  isClaude.value ? claudeState.value : state.value,
+)
+const snapshot = computed(() => active.value.snapshot)
 const cooldown = computed(() =>
-  Math.max(0, Math.ceil((state.value.nextRefreshAt - now.value) / 1000)),
+  Math.max(0, Math.ceil((active.value.nextRefreshAt - now.value) / 1000)),
 )
 const statusText = computed(
   () =>
@@ -45,7 +59,7 @@ const statusText = computed(
 const updated = computed(() =>
   snapshot.value
     ? `Updated ${ago(snapshot.value.fetchedAt, now.value)}`
-    : 'Waiting for Codex usage…',
+    : `Waiting for ${providerName.value} usage…`,
 )
 const accountLabel = computed(() => {
   const email = snapshot.value?.email
@@ -53,20 +67,22 @@ const accountLabel = computed(() => {
     ? emailRevealed.value
       ? email
       : maskEmail(email)
-    : 'OpenAI / ChatGPT'
+    : isClaude.value
+      ? 'Anthropic / Claude'
+      : 'OpenAI / ChatGPT'
 })
 const plan = computed(() => {
   const value = snapshot.value?.plan?.replace(/[_-]/g, ' ')
   return value ? value[0].toUpperCase() + value.slice(1) : null
 })
 const refreshLabel = computed(() =>
-  state.value.refreshing
+  active.value.refreshing
     ? 'Refreshing…'
     : cooldown.value
       ? `Refresh in ${cooldown.value}s`
       : 'Refresh usage',
 )
-const notice = computed(() => uiError.value ?? state.value.message)
+const notice = computed(() => uiError.value ?? active.value.message)
 function navigate(target: typeof page.value) {
   emailRevealed.value = false
   page.value = target
@@ -79,7 +95,8 @@ function applyState(value: UsageState) {
 async function refresh() {
   uiError.value = null
   try {
-    applyState(await window.agentcord.refreshUsage())
+    if (isClaude.value) claudeState.value = await window.agentcord.refreshClaudeUsage()
+    else applyState(await window.agentcord.refreshUsage())
   } catch {
     uiError.value =
       'The desktop connection was lost. Restart AgentCord and try again.'
@@ -141,8 +158,17 @@ onMounted(async () => {
     events++
     applyState(value)
   })
+  let claudeEvents = 0
+  unsubscribeClaude = window.agentcord.onClaudeUsage((value) => {
+    claudeEvents++
+    claudeState.value = value
+  })
   try {
-    const initial = await window.agentcord.getUsage()
+    const [initial, claudeInitial] = await Promise.all([
+      window.agentcord.getUsage(),
+      window.agentcord.getClaudeUsage(),
+    ])
+    if (!claudeEvents) claudeState.value = claudeInitial
     if (!events) applyState(initial)
   } catch {
     uiError.value = 'Could not read usage from the desktop application.'
@@ -150,6 +176,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   unsubscribe?.()
+  unsubscribeClaude?.()
   unsubscribeWindowShown?.()
   if (timer) clearInterval(timer)
   observer?.disconnect()
@@ -192,6 +219,30 @@ onUnmounted(() => {
             }}</span>
             <Icon name="arrow" :size="11" class="chevron" />
           </button>
+          <button class="agent-row" data-open-claude @click="navigate('claude')">
+            <span class="agent-title"
+              ><strong>Claude</strong
+              ><small>{{
+                claudeState.snapshot
+                  ? claudeState.status === 'cached'
+                    ? 'Cached usage'
+                    : 'Connected'
+                  : claudeState.status === 'loading'
+                    ? 'Connecting…'
+                    : 'Not connected'
+              }}</small></span
+            >
+            <span
+              class="agent-trailing"
+              :class="{ connect: !claudeState.snapshot }"
+              >{{
+                claudeState.snapshot
+                  ? `${Math.round(claudeState.snapshot.windows[0]?.usedPercent ?? 0)}% used`
+                  : 'Connect'
+              }}</span
+            >
+            <Icon name="arrow" :size="11" class="chevron" />
+          </button>
         </section>
         <button
           class="navigation-row soft-card"
@@ -219,9 +270,9 @@ onUnmounted(() => {
           >
             <Icon name="arrow" :size="13" />
           </button>
-          <h1>{{ page === 'codex' ? 'Codex' : 'Settings' }}</h1>
+          <h1>{{ page === 'settings' ? 'Settings' : providerName }}</h1>
         </header>
-        <template v-if="page === 'codex'">
+        <template v-if="page !== 'settings'">
           <section class="card detail-card">
             <div class="account-row">
               <button
@@ -232,7 +283,7 @@ onUnmounted(() => {
                     ? emailRevealed
                       ? 'Hide email'
                       : 'Show email'
-                    : 'OpenAI account'
+                    : `${providerName} account`
                 "
                 :title="
                   snapshot?.email
@@ -255,10 +306,10 @@ onUnmounted(() => {
             <div class="usage-summary">
               <div>
                 <Icon name="clock" :size="13" /><span>Subscription usage</span
-                ><small :class="state.status">{{
-                  state.status === 'ready'
+                ><small :class="active.status">{{
+                  active.status === 'ready'
                     ? 'live'
-                    : state.status === 'cached'
+                    : active.status === 'cached'
                       ? 'cached'
                       : '—'
                 }}</small>
@@ -276,12 +327,12 @@ onUnmounted(() => {
             <p
               v-else
               class="empty-usage"
-              :aria-busy="state.refreshing || state.status === 'loading'"
+              :aria-busy="active.refreshing || active.status === 'loading'"
             >
               {{
-                state.refreshing || state.status === 'loading'
-                  ? 'Waiting for Codex usage…'
-                  : state.status === 'api-key'
+                active.refreshing || active.status === 'loading'
+                  ? `Waiting for ${providerName} usage…`
+                  : active.status === 'api-key'
                     ? 'ChatGPT subscription required'
                     : 'No usage available'
               }}
@@ -302,16 +353,17 @@ onUnmounted(() => {
             <div v-if="notice" class="notice" role="status">{{ notice }}</div>
             <div
               v-if="
-                !snapshot && !state.refreshing && state.status !== 'loading'
+                !snapshot && !active.refreshing && active.status !== 'loading'
               "
               class="login-help"
             >
-              <p>Sign in to Codex with your ChatGPT account, then refresh.</p>
-              <code>codex login</code>
+              <p v-if="isClaude">Sign in to Claude Code, then refresh.</p>
+              <p v-else>Sign in to Codex with your ChatGPT account, then refresh.</p>
+              <code>{{ isClaude ? 'claude /login' : 'codex login' }}</code>
             </div>
             <button
               class="refresh-row"
-              :disabled="state.refreshing || cooldown > 0 || !bridgeAvailable"
+              :disabled="active.refreshing || cooldown > 0 || !bridgeAvailable"
               @click="refresh"
             >
               <Icon
@@ -368,11 +420,11 @@ onUnmounted(() => {
           <section class="soft-card about-card">
             <h2>Electron preview</h2>
             <p>
-              Codex / ChatGPT subscription limits only. Discord presence,
+              Codex / ChatGPT and Claude subscription limits only. Discord presence,
               session tracking, and API billing are not included.
             </p>
             <p>
-              Credentials stay with Codex. Cached results are marked; account
+              Credentials stay with Codex and Claude Code. Cached results are marked; account
               changes clear old usage.
             </p>
           </section>

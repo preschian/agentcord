@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentCordAPI, UsageState } from '../shared/types'
+import type { AgentCordAPI, ClaudeUsageState, UsageState } from '../shared/types'
 
 const api: AgentCordAPI = {
   getUsage: () => ipcRenderer.invoke('usage:get'),
@@ -9,6 +9,14 @@ const api: AgentCordAPI = {
       callback(state)
     ipcRenderer.on('usage:changed', listener)
     return () => ipcRenderer.removeListener('usage:changed', listener)
+  },
+  getClaudeUsage: () => ipcRenderer.invoke('claude:get'),
+  refreshClaudeUsage: () => ipcRenderer.invoke('claude:refresh'),
+  onClaudeUsage: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: ClaudeUsageState) =>
+      callback(state)
+    ipcRenderer.on('claude:changed', listener)
+    return () => ipcRenderer.removeListener('claude:changed', listener)
   },
   onWindowShown: (callback) => {
     const listener = () => callback()

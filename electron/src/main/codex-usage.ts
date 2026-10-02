@@ -34,7 +34,7 @@ export async function readIdentity(home: string): Promise<Identity> {
   } catch { /* Missing or invalid auth is signed out. */ }
   return { kind: 'signed-out', key: null }
 }
-function validSnapshot(value: unknown, now: number): value is UsageSnapshot {
+export function validSnapshot(value: unknown, now: number): value is UsageSnapshot {
   const data = object(value)
   return !!data && typeof data.fetchedAt === 'number' && Number.isFinite(data.fetchedAt)
     && data.fetchedAt <= now && now - data.fetchedAt <= MAX_CACHE_AGE

@@ -24,10 +24,14 @@ export interface UsageState {
   codexHome: string
   executable: string | null
 }
+export type ClaudeUsageState = Omit<UsageState, 'codexHome' | 'executable'>
 export interface AgentCordAPI {
   getUsage(): Promise<UsageState>
   refreshUsage(): Promise<UsageState>
   onUsage(callback: (state: UsageState) => void): () => void
+  getClaudeUsage(): Promise<ClaudeUsageState>
+  refreshClaudeUsage(): Promise<ClaudeUsageState>
+  onClaudeUsage(callback: (state: ClaudeUsageState) => void): () => void
   onWindowShown(callback: () => void): () => void
   resizeWindow(height: number): Promise<void>
   hideWindow(): Promise<void>

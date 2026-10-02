@@ -1,0 +1,388 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { UsageState } from '../shared/types'
+import Icon from './components/Icon.vue'
+import UsageCard from './components/UsageCard.vue'
+import { ago, maskEmail } from './format'
+
+const logoUrl = `${import.meta.env.BASE_URL}agentcord.png`
+const page = ref<'main' | 'codex' | 'settings'>('main')
+const popover = ref<HTMLElement | null>(null)
+const emailRevealed = ref(false)
+const installationExpanded = ref(false)
+const state = ref<UsageState>({
+  status: 'loading',
+  snapshot: null,
+  refreshing: false,
+  message: null,
+  nextRefreshAt: 0,
+  codexHome: '',
+  executable: null,
+})
+const now = ref(Date.now())
+const uiError = ref<string | null>(null)
+const bridgeAvailable = ref(false)
+let unsubscribe: (() => void) | undefined
+let unsubscribeWindowShown: (() => void) | undefined
+let timer: ReturnType<typeof setInterval> | undefined
+let observer: ResizeObserver | undefined
+let lastHeight = 0
+const snapshot = computed(() => state.value.snapshot)
+const cooldown = computed(() =>
+  Math.max(0, Math.ceil((state.value.nextRefreshAt - now.value) / 1000)),
+)
+const statusText = computed(
+  () =>
+    ({
+      loading: 'Connecting',
+      ready: 'Connected',
+      cached: 'Cached',
+      'signed-out': 'Signed out',
+      unavailable: 'Unavailable',
+      'api-key': 'API key',
+    })[state.value.status],
+)
+const updated = computed(() =>
+  snapshot.value
+    ? `Updated ${ago(snapshot.value.fetchedAt, now.value)}`
+    : 'Waiting for Codex usage…',
+)
+const accountLabel = computed(() => {
+  const email = snapshot.value?.email
+  return email
+    ? emailRevealed.value
+      ? email
+      : maskEmail(email)
+    : 'OpenAI / ChatGPT'
+})
+const plan = computed(() => {
+  const value = snapshot.value?.plan?.replace(/[_-]/g, ' ')
+  return value ? value[0].toUpperCase() + value.slice(1) : null
+})
+const refreshLabel = computed(() =>
+  state.value.refreshing
+    ? 'Refreshing…'
+    : cooldown.value
+      ? `Refresh in ${cooldown.value}s`
+      : 'Refresh usage',
+)
+const notice = computed(() => uiError.value ?? state.value.message)
+function navigate(target: typeof page.value) {
+  emailRevealed.value = false
+  page.value = target
+}
+function applyState(value: UsageState) {
+  if (value.snapshot?.email !== snapshot.value?.email)
+    emailRevealed.value = false
+  state.value = value
+}
+async function refresh() {
+  uiError.value = null
+  try {
+    applyState(await window.agentcord.refreshUsage())
+  } catch {
+    uiError.value =
+      'The desktop connection was lost. Restart AgentCord and try again.'
+  }
+}
+async function hide() {
+  try {
+    await window.agentcord.hideWindow()
+  } catch {
+    uiError.value = 'The window could not be hidden.'
+  }
+}
+async function quit() {
+  try {
+    await window.agentcord.quit()
+  } catch {
+    uiError.value = 'The application could not be closed.'
+  }
+}
+function onKeyDown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  if (page.value !== 'main') navigate('main')
+  else void hide()
+}
+function resize() {
+  if (!popover.value || !bridgeAvailable.value) return
+  const height = Math.ceil(popover.value.getBoundingClientRect().height + 20)
+  if (height === lastHeight) return
+  lastHeight = height
+  void window.agentcord.resizeWindow(height).catch(() => {
+    lastHeight = 0
+  })
+}
+watch(page, async () => {
+  await nextTick()
+  resize()
+})
+onMounted(async () => {
+  timer = setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+  document.addEventListener('keydown', onKeyDown)
+  if (!window.agentcord) {
+    uiError.value =
+      'Open this app through Electron (npm run dev), not a standalone browser.'
+    return
+  }
+  bridgeAvailable.value = true
+  // Reset only on a native reopen, not browser visibility/occlusion changes
+  // caused by resizing or loading fonts while navigating between screens.
+  unsubscribeWindowShown = window.agentcord.onWindowShown(() =>
+    navigate('main'),
+  )
+  observer = new ResizeObserver(resize)
+  if (popover.value) observer.observe(popover.value)
+  let events = 0
+  unsubscribe = window.agentcord.onUsage((value) => {
+    events++
+    applyState(value)
+  })
+  try {
+    const initial = await window.agentcord.getUsage()
+    if (!events) applyState(initial)
+  } catch {
+    uiError.value = 'Could not read usage from the desktop application.'
+  }
+})
+onUnmounted(() => {
+  unsubscribe?.()
+  unsubscribeWindowShown?.()
+  if (timer) clearInterval(timer)
+  observer?.disconnect()
+  document.removeEventListener('keydown', onKeyDown)
+})
+</script>
+
+<template>
+  <div class="window-frame">
+    <main ref="popover" class="popover" :data-screen="page">
+      <template v-if="page === 'main'">
+        <header class="main-header drag-region">
+          <img class="brand-mark" :src="logoUrl" alt="" draggable="false" />
+          <h1>agentcord</h1>
+          <span
+            class="status-pill"
+            :class="state.status"
+            title="Codex usage connection, not Discord presence"
+            ><i></i>{{ statusText }}</span
+          >
+        </header>
+        <section class="card agent-list">
+          <button class="agent-row" data-open-codex @click="navigate('codex')">
+            <span class="agent-title"
+              ><strong>Codex</strong
+              ><small>{{
+                snapshot
+                  ? state.status === 'cached'
+                    ? 'Cached usage'
+                    : 'Connected'
+                  : state.status === 'loading'
+                    ? 'Connecting…'
+                    : 'Not connected'
+              }}</small></span
+            >
+            <span class="agent-trailing" :class="{ connect: !snapshot }">{{
+              snapshot
+                ? `${Math.round(snapshot.windows[0]?.usedPercent ?? 0)}% used`
+                : 'Connect'
+            }}</span>
+            <Icon name="arrow" :size="11" class="chevron" />
+          </button>
+        </section>
+        <button
+          class="navigation-row soft-card"
+          data-open-settings
+          @click="navigate('settings')"
+        >
+          <Icon name="settings" :size="14" /><span>Settings</span
+          ><small>Usage only</small
+          ><Icon name="arrow" :size="11" class="chevron" />
+        </button>
+        <div v-if="uiError" class="notice" role="status">{{ uiError }}</div>
+        <div class="divider"></div>
+        <button class="quit-row" @click="quit">
+          <span>Quit agentcord</span><small>Alt+F4</small>
+        </button>
+      </template>
+
+      <template v-else>
+        <header class="screen-header drag-region">
+          <button
+            class="back-button"
+            aria-label="Back to main screen"
+            data-back
+            @click="navigate('main')"
+          >
+            <Icon name="arrow" :size="13" />
+          </button>
+          <h1>{{ page === 'codex' ? 'Codex' : 'Settings' }}</h1>
+        </header>
+        <template v-if="page === 'codex'">
+          <section class="card detail-card">
+            <div class="account-row">
+              <button
+                class="account-button"
+                :disabled="!snapshot?.email"
+                :aria-label="
+                  snapshot?.email
+                    ? emailRevealed
+                      ? 'Hide email'
+                      : 'Show email'
+                    : 'OpenAI account'
+                "
+                :title="
+                  snapshot?.email
+                    ? emailRevealed
+                      ? 'Hide email'
+                      : 'Show email'
+                    : undefined
+                "
+                @click="emailRevealed = !emailRevealed"
+              >
+                <span>{{ accountLabel }}</span
+                ><Icon
+                  v-if="snapshot?.email"
+                  :name="emailRevealed ? 'eye-off' : 'eye'"
+                  :size="12"
+                />
+              </button>
+              <span v-if="plan" class="plan-chip">{{ plan }}</span>
+            </div>
+            <div class="usage-summary">
+              <div>
+                <Icon name="clock" :size="13" /><span>Subscription usage</span
+                ><small :class="state.status">{{
+                  state.status === 'ready'
+                    ? 'live'
+                    : state.status === 'cached'
+                      ? 'cached'
+                      : '—'
+                }}</small>
+              </div>
+              <p>{{ updated }}</p>
+            </div>
+            <div v-if="snapshot" class="usage-rows">
+              <UsageCard
+                v-for="usageWindow in snapshot.windows"
+                :key="usageWindow.id"
+                :window="usageWindow"
+                :now="now"
+              />
+            </div>
+            <p
+              v-else
+              class="empty-usage"
+              :aria-busy="state.refreshing || state.status === 'loading'"
+            >
+              {{
+                state.refreshing || state.status === 'loading'
+                  ? 'Waiting for Codex usage…'
+                  : state.status === 'api-key'
+                    ? 'ChatGPT subscription required'
+                    : 'No usage available'
+              }}
+            </p>
+            <div
+              v-if="
+                snapshot?.credits?.hasCredits || snapshot?.credits?.unlimited
+              "
+              class="credit-row"
+            >
+              <span>Additional credits</span
+              ><strong>{{
+                snapshot.credits.unlimited
+                  ? 'Unlimited'
+                  : (snapshot.credits.balance ?? '—')
+              }}</strong>
+            </div>
+            <div v-if="notice" class="notice" role="status">{{ notice }}</div>
+            <div
+              v-if="
+                !snapshot && !state.refreshing && state.status !== 'loading'
+              "
+              class="login-help"
+            >
+              <p>Sign in to Codex with your ChatGPT account, then refresh.</p>
+              <code>codex login</code>
+            </div>
+            <button
+              class="refresh-row"
+              :disabled="state.refreshing || cooldown > 0 || !bridgeAvailable"
+              @click="refresh"
+            >
+              <Icon
+                name="refresh"
+                :size="12"
+                :class="{ spinning: state.refreshing }"
+              /><span>{{ refreshLabel }}</span>
+            </button>
+          </section>
+        </template>
+
+        <template v-else>
+          <section class="settings-section">
+            <div class="setting-row">
+              <span>Auto-refresh</span><small>5m · while visible</small>
+            </div>
+            <div class="setting-row">
+              <span>Refresh cooldown</span><small>1m</small>
+            </div>
+            <div class="setting-row">
+              <span>Usage cache</span><small>Up to 24h</small>
+            </div>
+          </section>
+          <section class="soft-card provider-settings">
+            <h2>AGENTS</h2>
+            <div class="setting-row">
+              <span class="provider-name"><i></i>Codex</span
+              ><small>Usage only</small>
+            </div>
+          </section>
+          <section class="soft-card installation-card">
+            <button
+              class="navigation-row"
+              :aria-expanded="installationExpanded"
+              @click="installationExpanded = !installationExpanded"
+            >
+              <span>Codex installation</span
+              ><Icon
+                name="arrow"
+                :size="11"
+                class="chevron"
+                :class="{ expanded: installationExpanded }"
+              />
+            </button>
+            <dl v-if="installationExpanded">
+              <dt>Home</dt>
+              <dd>{{ state.codexHome || 'Initializing…' }}</dd>
+              <dt>Executable</dt>
+              <dd>{{ state.executable || 'Not found / not checked yet' }}</dd>
+              <dt>Configuration</dt>
+              <dd>Set CODEX_HOME or CODEX_BINARY before starting the app.</dd>
+            </dl>
+          </section>
+          <section class="soft-card about-card">
+            <h2>Electron preview</h2>
+            <p>
+              Codex / ChatGPT subscription limits only. Discord presence,
+              session tracking, and API billing are not included.
+            </p>
+            <p>
+              Credentials stay with Codex. Cached results are marked; account
+              changes clear old usage.
+            </p>
+          </section>
+          <button class="navigation-row soft-card" @click="hide">
+            <Icon name="hide" :size="14" /><span>Hide to tray</span
+            ><small>Esc</small>
+          </button>
+          <p class="version">agentcord 0.1.0 · Electron + Vue</p>
+        </template>
+      </template>
+    </main>
+  </div>
+</template>

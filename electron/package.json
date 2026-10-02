@@ -1,0 +1,74 @@
+{
+  "name": "agentcord-electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentCord desktop prototype — Codex / OpenAI subscription usage",
+  "author": "AgentCord contributors",
+  "license": "MIT",
+  "type": "module",
+  "main": "out/main/index.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "assets": "node scripts/prepare-assets.mjs",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "build": "npm run assets && npm run typecheck && vite build --config vite.electron.config.ts --mode main && vite build --config vite.electron.config.ts --mode preload && vite build",
+    "start": "electron .",
+    "smoke": "npm run build && electron . --smoke-test",
+    "dist": "npm run build && electron-builder --dir",
+    "dist:win": "npm run build && electron-builder --win portable"
+  },
+  "dependencies": {
+    "@fontsource-variable/material-symbols-rounded": "5.3.8",
+    "@fontsource-variable/noto-sans-mono": "5.3.0",
+    "vue": "3.5.43"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "@vitejs/plugin-vue": "6.0.9",
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vue-tsc": "3.3.11"
+  },
+  "build": {
+    "appId": "com.agentcord.electron",
+    "productName": "AgentCord Electron",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "node_modules/@fontsource-variable/noto-sans-mono/LICENSE",
+        "to": "licenses/NotoSansMono-OFL.txt"
+      },
+      {
+        "from": "node_modules/@fontsource-variable/material-symbols-rounded/LICENSE",
+        "to": "licenses/MaterialSymbolsRounded-OFL.txt"
+      }
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "../windows/assets/agentcord.ico",
+      "artifactName": "agentcord-electron-${version}.${ext}"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Development"
+    }
+  }
+}

@@ -393,6 +393,10 @@ onUnmounted(() => {
               <span class="provider-name"><i></i>Codex</span
               ><small>Usage only</small>
             </div>
+            <div class="setting-row">
+              <span class="provider-name"><i></i>Claude</span
+              ><small>Usage only</small>
+            </div>
           </section>
           <section class="soft-card installation-card">
             <button
@@ -400,7 +404,7 @@ onUnmounted(() => {
               :aria-expanded="installationExpanded"
               @click="installationExpanded = !installationExpanded"
             >
-              <span>Codex installation</span
+              <span>Installation</span
               ><Icon
                 name="arrow"
                 :size="11"
@@ -409,12 +413,17 @@ onUnmounted(() => {
               />
             </button>
             <dl v-if="installationExpanded">
-              <dt>Home</dt>
+              <dt>Codex home</dt>
               <dd>{{ state.codexHome || 'Initializing…' }}</dd>
-              <dt>Executable</dt>
+              <dt>Codex executable</dt>
               <dd>{{ state.executable || 'Not found / not checked yet' }}</dd>
+              <dt>Claude sign-in</dt>
+              <dd>Read from Claude Code's ~/.claude/.credentials.json.</dd>
               <dt>Configuration</dt>
-              <dd>Set CODEX_HOME or CODEX_BINARY before starting the app.</dd>
+              <dd>
+                Set CODEX_HOME, CODEX_BINARY or CLAUDE_CONFIG_DIR before
+                starting the app.
+              </dd>
             </dl>
           </section>
           <section class="soft-card about-card">

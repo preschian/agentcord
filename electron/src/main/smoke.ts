@@ -157,7 +157,7 @@ export async function runSmokeTest(
   screenshots.push(await capture('-settings'))
   await evaluate(`document.querySelector('[aria-expanded]').click()`)
   await pause()
-  assert.equal(await evaluate(`document.querySelectorAll('dd').length`), 3)
+  assert.equal(await evaluate(`document.querySelectorAll('dd').length`), 4)
   await evaluate(`document.querySelector('[data-back]').click()`)
   await pause()
   assert.equal(window.getBounds().height, mainHeight)

@@ -154,6 +154,15 @@ export async function runSmokeTest(
     window.getBounds().height > mainHeight,
     'Settings must grow the popover',
   )
+  // Smoke runs unpackaged, so the OS login item is unsupported and untouched.
+  assert.deepEqual(await evaluate(`window.agentcord.getLaunchAtLogin()`), {
+    supported: false,
+    enabled: false,
+  })
+  assert.equal(
+    await evaluate(`document.querySelector('[data-launch-at-login]') === null`),
+    true,
+  )
   screenshots.push(await capture('-settings'))
   await evaluate(`document.querySelector('[aria-expanded]').click()`)
   await pause()

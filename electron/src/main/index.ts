@@ -12,9 +12,27 @@ import { join } from 'node:path'
 import { CodexUsageService } from './codex-usage'
 import { ClaudeUsageService } from './claude-usage'
 import { runSmokeTest } from './smoke'
+import {
+  getLaunchAtLogin,
+  setLaunchAtLogin,
+  startedAtLogin,
+  type LoginItemHost,
+} from './login-item'
 import { iconFilename, type IconRole } from './icon-path'
 
 const POPOVER_WIDTH = 330
+const loginItemHost: LoginItemHost = {
+  get platform() {
+    return process.platform
+  },
+  get isPackaged() {
+    return app.isPackaged
+  },
+  env: process.env,
+  execPath: process.execPath,
+  getLoginItemSettings: (options) => app.getLoginItemSettings(options),
+  setLoginItemSettings: (settings) => app.setLoginItemSettings(settings),
+}
 let window: BrowserWindow | null = null
 let tray: Tray | null = null
 let service: CodexUsageService | null = null
@@ -209,6 +227,15 @@ async function start(): Promise<void> {
     }
     resizePopover(height)
   })
+  ipcMain.handle('login-item:get', (event) => {
+    authorize(event)
+    return getLaunchAtLogin(loginItemHost)
+  })
+  ipcMain.handle('login-item:set', (event, enabled: unknown) => {
+    authorize(event)
+    if (typeof enabled !== 'boolean') throw new Error('Invalid login setting')
+    return setLaunchAtLogin(loginItemHost, enabled)
+  })
   ipcMain.handle('window:hide', (event) => {
     authorize(event)
     window?.hide()
@@ -268,7 +295,8 @@ async function start(): Promise<void> {
       throw new Error('Invalid development URL')
     await window.loadURL(rendererUrl)
   } else await window.loadFile(join(__dirname, '../renderer/index.html'))
-  window.show()
+  // A login launch stays in the tray; the popover opens when the user asks.
+  if (smoke || !startedAtLogin(loginItemHost, process.argv)) window.show()
   await Promise.all([service.start(), claude.start()])
   if (smoke) {
     await runSmokeTest(window, service.state)

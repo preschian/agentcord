@@ -23,6 +23,13 @@ const api: AgentCordAPI = {
     ipcRenderer.on('claude:changed', listener)
     return () => ipcRenderer.removeListener('claude:changed', listener)
   },
+  getClaudeActive: () => ipcRenderer.invoke('claude-desktop:get'),
+  onClaudeActive: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, active: boolean) =>
+      callback(active)
+    ipcRenderer.on('claude-desktop:changed', listener)
+    return () => ipcRenderer.removeListener('claude-desktop:changed', listener)
+  },
   getPresence: () => ipcRenderer.invoke('presence:get'),
   setPresenceEnabled: (enabled) => ipcRenderer.invoke('presence:set', enabled),
   onPresence: (callback) => {

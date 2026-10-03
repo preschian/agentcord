@@ -11,6 +11,7 @@ import {
 import { join } from 'node:path'
 import { CodexUsageService } from './codex-usage'
 import { ClaudeUsageService } from './claude-usage'
+import { ClaudeDesktopService } from './claude-desktop'
 import { PresenceService } from './presence'
 import { runSmokeTest } from './smoke'
 import {
@@ -38,6 +39,7 @@ let window: BrowserWindow | null = null
 let tray: Tray | null = null
 let service: CodexUsageService | null = null
 let claude: ClaudeUsageService | null = null
+let claudeDesktop: ClaudeDesktopService | null = null
 let presence: PresenceService | null = null
 let quitting = false
 let anchored = true
@@ -55,6 +57,7 @@ else {
     quitting = true
     service?.stop()
     claude?.stop()
+    claudeDesktop?.stop()
     presence?.stop()
   })
   app.on('window-all-closed', () => {
@@ -79,7 +82,7 @@ else {
 }
 async function showWindow(): Promise<void> {
   // Check identity before revealing potentially cached account data.
-  await Promise.all([service?.tick(), claude?.tick()])
+  await Promise.all([service?.tick(), claude?.tick(), claudeDesktop?.tick()])
   window?.show()
   window?.focus()
   if (
@@ -202,6 +205,17 @@ async function start(): Promise<void> {
       presence?.update({ claude: state })
     },
   })
+  claudeDesktop = new ClaudeDesktopService({
+    // Only scan while the popover is open or Discord presence would show it.
+    needed: () =>
+      !!presence?.state.enabled ||
+      (!!window?.isVisible() && !window.isMinimized()),
+    changed: (active) => {
+      if (!window?.isDestroyed())
+        window?.webContents.send('claude-desktop:changed', active)
+      presence?.update({ claudeActive: active })
+    },
+  })
   const authorize = (event: Electron.IpcMainInvokeEvent) => {
     if (
       !window ||
@@ -227,14 +241,20 @@ async function start(): Promise<void> {
     authorize(event)
     return claude!.refresh()
   })
+  ipcMain.handle('claude-desktop:get', (event) => {
+    authorize(event)
+    return claudeDesktop!.active
+  })
   ipcMain.handle('presence:get', (event) => {
     authorize(event)
     return presence!.state
   })
-  ipcMain.handle('presence:set', (event, enabled: unknown) => {
+  ipcMain.handle('presence:set', async (event, enabled: unknown) => {
     authorize(event)
     if (typeof enabled !== 'boolean') throw new Error('Invalid presence setting')
-    return presence!.setEnabled(enabled)
+    const state = await presence!.setEnabled(enabled)
+    void claudeDesktop?.tick()
+    return state
   })
   ipcMain.handle('window:resize', (event, height: unknown) => {
     authorize(event)
@@ -319,10 +339,12 @@ async function start(): Promise<void> {
   // A login launch stays in the tray; the popover opens when the user asks.
   if (smoke || !startedAtLogin(loginItemHost, process.argv)) window.show()
   await Promise.all([service.start(), claude.start(), presence.start()])
+  await claudeDesktop.start() // After presence, so a saved opt-in is seen.
   if (smoke) {
     await runSmokeTest(window, service.state)
     service.stop()
     claude.stop()
+    claudeDesktop.stop()
     presence.stop()
     app.exit(0)
   }

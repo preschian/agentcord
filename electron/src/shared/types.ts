@@ -41,6 +41,8 @@ export interface AgentCordAPI {
   getClaudeUsage(): Promise<ClaudeUsageState>
   refreshClaudeUsage(): Promise<ClaudeUsageState>
   onClaudeUsage(callback: (state: ClaudeUsageState) => void): () => void
+  getClaudeActive(): Promise<boolean>
+  onClaudeActive(callback: (active: boolean) => void): () => void
   getPresence(): Promise<PresenceState>
   setPresenceEnabled(enabled: boolean): Promise<PresenceState>
   onPresence(callback: (state: PresenceState) => void): () => void

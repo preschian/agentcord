@@ -41,6 +41,17 @@ test('cached, signed-out or empty usage is not advertised', () => {
   assert.equal(buildActivity(codex('cached', 40), claude('ready', 7))!.state, 'Claude 7% used')
 })
 
+test('Claude Desktop being active changes the headline and needs no usage', () => {
+  const both = buildActivity(codex('ready', 46), claude('ready', 13), true)!
+  assert.equal(both.details, 'Using Claude Desktop')
+  assert.equal(both.state, 'Claude 13% used · Codex 46% used')
+  const bare = buildActivity(null, null, true)!
+  assert.equal(bare.details, 'Using Claude Desktop')
+  assert.equal(bare.state, undefined)
+  assert.equal(buildActivity(null, null, false), null)
+  assert.equal(buildActivity(null, claude('ready', 5))!.details, 'Subscription usage')
+})
+
 class FakeIpc {
   state: DiscordConnection = 'disconnected'
   calls: string[] = []
@@ -98,6 +109,17 @@ test('enabling persists, connects, and reports connection status', async () => {
     t.service.update({ claude: claude('ready', 20) })
     assert.equal(t.ipc.activity?.state, 'Claude 20% used')
     assert.deepEqual(t.states.map((s) => s.status), ['waiting', 'connected'])
+  } finally { await t.cleanup() }
+})
+
+test('presence follows Claude Desktop activity while enabled', async () => {
+  const t = await setup()
+  try {
+    await t.service.setEnabled(true)
+    t.service.update({ claudeActive: true })
+    assert.equal(t.ipc.activity?.details, 'Using Claude Desktop')
+    t.service.update({ claudeActive: false })
+    assert.equal(t.ipc.activity, null)
   } finally { await t.cleanup() }
 })
 

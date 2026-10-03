@@ -15,6 +15,7 @@ Desktop prototype built with **Electron + Vue 3 + Vite**, scoped to **Codex / Op
 - Account-bound local cache, valid for at most 24 hours. Cached/offline results are labelled explicitly; logout or an account change clears old data.
 - System tray: open, refresh, and quit. Closing the window hides it; use **Quit agentcord** or the tray's **Quit** to exit.
 - Content-sized screens, initially anchored above the system tray; drag the header to detach. **Esc** goes back from detail/settings, or hides the main screen. **Alt+F4** quits the app.
+- **Launch at login** toggle in Settings (off by default), backed by Electron's login item API on macOS and Windows packaged builds. The state is read from the OS each time, nothing is stored by the app, and a login launch starts hidden in the tray. Linux and unpackaged dev runs show it as unavailable.
 - English throughout, including errors, tray actions, tooltips, and countdowns.
 - All UI icons use Google's **Material Symbols Rounded**, bundled locally through Fontsource (no Lucide or custom SVG paths). App/header/tray branding remains the original AgentCord logo. Packaged builds include the symbol font license in `resources/licenses/MaterialSymbolsRounded-OFL.txt`.
 - Noto Sans Mono variable font, bundled locally through Fontsource. No Google Fonts requests at runtime; the font works offline. Packaged builds include its SIL Open Font License in `resources/licenses/NotoSansMono-OFL.txt`.

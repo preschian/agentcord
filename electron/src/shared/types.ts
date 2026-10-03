@@ -25,6 +25,10 @@ export interface UsageState {
   executable: string | null
 }
 export type ClaudeUsageState = Omit<UsageState, 'codexHome' | 'executable'>
+export interface LaunchAtLoginState {
+  supported: boolean
+  enabled: boolean
+}
 export interface AgentCordAPI {
   getUsage(): Promise<UsageState>
   refreshUsage(): Promise<UsageState>
@@ -34,6 +38,8 @@ export interface AgentCordAPI {
   onClaudeUsage(callback: (state: ClaudeUsageState) => void): () => void
   onWindowShown(callback: () => void): () => void
   resizeWindow(height: number): Promise<void>
+  getLaunchAtLogin(): Promise<LaunchAtLoginState>
+  setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginState>
   hideWindow(): Promise<void>
   quit(): Promise<void>
 }

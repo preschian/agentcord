@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { connect, type Socket } from 'node:net'
-import { join } from 'node:path'
+import { posix } from 'node:path'
 
 // A hand-written Discord RPC IPC client; no third-party dependencies. Only the
 // Rich Presence subset is implemented: socket discovery, handshake,
@@ -90,8 +90,8 @@ export function ipcPaths(
   const directories = [
     runtime,
     // Flatpak and Snap builds of Discord keep the socket in a sandbox subdirectory.
-    runtime && join(runtime, 'app/com.discordapp.Discord'),
-    runtime && join(runtime, 'snap.discord'),
+    runtime && posix.join(runtime, 'app/com.discordapp.Discord'),
+    runtime && posix.join(runtime, 'snap.discord'),
     env.TMPDIR,
     env.TMP,
     env.TEMP,
@@ -100,7 +100,7 @@ export function ipcPaths(
   const unique = [...new Set(directories)]
   const paths: string[] = []
   for (let i = 0; i < SOCKET_COUNT; i++)
-    for (const directory of unique) paths.push(join(directory, `discord-ipc-${i}`))
+    for (const directory of unique) paths.push(posix.join(directory, `discord-ipc-${i}`))
   return paths
 }
 

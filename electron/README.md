@@ -19,9 +19,10 @@ Desktop prototype built with **Electron + Vue 3 + Vite**, scoped to **Codex / Op
 - All UI icons use Google's **Material Symbols Rounded**, bundled locally through Fontsource (no Lucide or custom SVG paths). App/header/tray branding remains the original AgentCord logo. Packaged builds include the symbol font license in `resources/licenses/MaterialSymbolsRounded-OFL.txt`.
 - Noto Sans Mono variable font, bundled locally through Fontsource. No Google Fonts requests at runtime; the font works offline. Packaged builds include its SIL Open Font License in `resources/licenses/NotoSansMono-OFL.txt`.
 - Existing Windows branding reused from `../windows/assets/agentcord.ico` for the executable, tray, app window, and header. The build copies the original multi-size ICO and extracts its embedded PNG frames into ignored `out/assets/`; no duplicate source artwork is committed. Windows loads the ICO directly for native app/tray icons so the OS can select the appropriate size rather than upscale a 16px PNG. The tray icon is reloaded on display-scale changes; other platforms retain PNG representations.
-- Settings shows polling/cache behavior and an expandable installation section (Codex home/executable, Claude sign-in location). Unsupported native-app controls (Discord presence, sessions, other agents) are deliberately omitted.
+- **Discord Rich Presence**, off by default and toggled in Settings. It shows your Claude and Codex used percentages (for example `Claude 13% used · Codex 46% used`) on your Discord profile. The IPC client is hand-written on `node:net` with no external library: socket/pipe discovery, handshake, `SET_ACTIVITY`, ping/pong and clearing. If Discord is not running it fails silently and keeps retrying with exponential backoff (2s up to 30s), then connects on its own once Discord starts. The presence is cleared when you turn it off or quit. Only provider names and percentages are shared: never email, plan, account ID or credits, and cached or signed-out usage is not advertised. Requires the Discord desktop client (not the browser).
+- Settings shows polling/cache behavior and an expandable installation section (Codex home/executable, Claude sign-in location). Unsupported native-app controls (sessions, other agents) are deliberately omitted.
 
-**Not implemented:** Discord Rich Presence, activity/session tracking, providers other than Codex and Claude, OpenAI API-key usage/cost billing, login UI, auto-update, and signed release installers. This is ChatGPT/Codex subscription usage, not the OpenAI API billing dashboard.
+**Not implemented:** activity/session tracking, providers other than Codex and Claude, OpenAI API-key usage/cost billing, login UI, auto-update, and signed release installers. This is ChatGPT/Codex subscription usage, not the OpenAI API billing dashboard.
 
 ## Requirements
 
@@ -113,7 +114,8 @@ TypeScript 6.0.3 is intentional: the latest TypeScript 7.0.2 no longer exposes `
 ## Architecture & privacy
 
 ```text
-src/main/          Electron lifecycle, tray, Codex discovery, JSONL RPC, usage/cache service
+src/main/          Electron lifecycle, tray, Codex discovery, JSONL RPC, usage/cache service,
+                   Discord IPC client and presence service
 src/preload/       Narrow contextBridge API, no filesystem or generic IPC exposure
 src/renderer/      Vue popover, Windows-style usage rows/formatting, Settings
 src/shared/        Typed display-only state and bridge contract
@@ -124,5 +126,7 @@ scripts/dev.mjs    Vite watch/HMR + Electron lifecycle
 The main process starts a short-lived `codex app-server`, completes `initialize` / `initialized`, then calls `account/read` and `account/rateLimits/read`. Requests have a 15-second overall timeout; the process tree is terminated after the probe. Credentials and refresh behavior remain owned by Codex. No transcript/history trees are scanned.
 
 The main process reads only identity fields from local `auth.json` to detect account changes (and API-key mode); it does not use or refresh access/refresh tokens. The usage cache contains account binding, plan, limits, credits and fetch timestamp, **not tokens or email**, and lives under Electron's `app.getPath('userData')/codex-usage-cache.json`. Cached email is deliberately omitted, so an offline relaunch may show a generic account label until the next successful refresh.
+
+Discord Rich Presence is opt-in and stored as `presenceEnabled` in `settings.json` under Electron's `userData` directory. The presence service only reacts to usage changes the app already fetches, so it adds no polling beyond the reconnect timer, which runs only while the toggle is on and Discord is not connected. The Discord application ID is the same public one the Windows and macOS apps use.
 
 The renderer has Node integration disabled, context isolation and sandboxing enabled, a CSP, denied navigation/popups/permissions, and no arbitrary path/command IPC. All account display data reaches Vue through a typed, sender-validated bridge.

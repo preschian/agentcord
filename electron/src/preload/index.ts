@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AgentCordAPI, ClaudeUsageState, UsageState } from '../shared/types'
+import type {
+  AgentCordAPI,
+  ClaudeUsageState,
+  PresenceState,
+  UsageState,
+} from '../shared/types'
 
 const api: AgentCordAPI = {
   getUsage: () => ipcRenderer.invoke('usage:get'),
@@ -17,6 +22,14 @@ const api: AgentCordAPI = {
       callback(state)
     ipcRenderer.on('claude:changed', listener)
     return () => ipcRenderer.removeListener('claude:changed', listener)
+  },
+  getPresence: () => ipcRenderer.invoke('presence:get'),
+  setPresenceEnabled: (enabled) => ipcRenderer.invoke('presence:set', enabled),
+  onPresence: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: PresenceState) =>
+      callback(state)
+    ipcRenderer.on('presence:changed', listener)
+    return () => ipcRenderer.removeListener('presence:changed', listener)
   },
   onWindowShown: (callback) => {
     const listener = () => callback()

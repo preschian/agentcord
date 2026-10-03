@@ -11,6 +11,7 @@ import {
 import { join } from 'node:path'
 import { CodexUsageService } from './codex-usage'
 import { ClaudeUsageService } from './claude-usage'
+import { PresenceService } from './presence'
 import { runSmokeTest } from './smoke'
 import { iconFilename, type IconRole } from './icon-path'
 
@@ -19,6 +20,7 @@ let window: BrowserWindow | null = null
 let tray: Tray | null = null
 let service: CodexUsageService | null = null
 let claude: ClaudeUsageService | null = null
+let presence: PresenceService | null = null
 let quitting = false
 let anchored = true
 let lastDeactivated = 0
@@ -35,6 +37,7 @@ else {
     quitting = true
     service?.stop()
     claude?.stop()
+    presence?.stop()
   })
   app.on('window-all-closed', () => {
     if (quitting) app.quit()
@@ -154,12 +157,20 @@ async function start(): Promise<void> {
       window?.hide()
     }
   })
+  presence = new PresenceService({
+    settingsPath: join(app.getPath('userData'), 'settings.json'),
+    changed: (state) => {
+      if (!window?.isDestroyed())
+        window?.webContents.send('presence:changed', state)
+    },
+  })
   service = new CodexUsageService({
     cachePath: join(app.getPath('userData'), 'codex-usage-cache.json'),
     visible: () => !!window?.isVisible() && !window.isMinimized(),
     changed: (state) => {
       if (!window?.isDestroyed())
         window?.webContents.send('usage:changed', state)
+      presence?.update({ codex: state })
       tray?.setToolTip(
         `AgentCord · ${state.snapshot ? `${Math.round(state.snapshot.windows[0]?.usedPercent ?? 0)}% Codex used` : 'Codex usage'}`,
       )
@@ -170,6 +181,7 @@ async function start(): Promise<void> {
     visible: () => !!window?.isVisible() && !window.isMinimized(),
     changed: (state) => {
       if (!window?.isDestroyed()) window?.webContents.send('claude:changed', state)
+      presence?.update({ claude: state })
     },
   })
   const authorize = (event: Electron.IpcMainInvokeEvent) => {
@@ -196,6 +208,15 @@ async function start(): Promise<void> {
   ipcMain.handle('claude:refresh', (event) => {
     authorize(event)
     return claude!.refresh()
+  })
+  ipcMain.handle('presence:get', (event) => {
+    authorize(event)
+    return presence!.state
+  })
+  ipcMain.handle('presence:set', (event, enabled: unknown) => {
+    authorize(event)
+    if (typeof enabled !== 'boolean') throw new Error('Invalid presence setting')
+    return presence!.setEnabled(enabled)
   })
   ipcMain.handle('window:resize', (event, height: unknown) => {
     authorize(event)
@@ -269,11 +290,12 @@ async function start(): Promise<void> {
     await window.loadURL(rendererUrl)
   } else await window.loadFile(join(__dirname, '../renderer/index.html'))
   window.show()
-  await Promise.all([service.start(), claude.start()])
+  await Promise.all([service.start(), claude.start(), presence.start()])
   if (smoke) {
     await runSmokeTest(window, service.state)
     service.stop()
     claude.stop()
+    presence.stop()
     app.exit(0)
   }
 }

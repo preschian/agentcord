@@ -430,6 +430,44 @@ h1 {
   border-radius: 50%;
   background: #10a37f;
 }
+.switch-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.switch {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+  background: #78788033;
+  transition: background 0.15s;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #0003;
+  transition: transform 0.15s;
+}
+.switch[aria-checked='true'] {
+  background: #34c759;
+}
+.switch[aria-checked='true']::after {
+  transform: translateX(12px);
+}
+.setting-hint {
+  color: var(--mid);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 2px 0 5px;
+}
 .installation-card {
   margin-bottom: 7px;
 }

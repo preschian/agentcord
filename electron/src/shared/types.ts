@@ -25,6 +25,11 @@ export interface UsageState {
   executable: string | null
 }
 export type ClaudeUsageState = Omit<UsageState, 'codexHome' | 'executable'>
+export interface PresenceState {
+  enabled: boolean
+  // 'waiting' means enabled but Discord is not running or not connected yet.
+  status: 'off' | 'waiting' | 'connected'
+}
 export interface AgentCordAPI {
   getUsage(): Promise<UsageState>
   refreshUsage(): Promise<UsageState>
@@ -32,6 +37,9 @@ export interface AgentCordAPI {
   getClaudeUsage(): Promise<ClaudeUsageState>
   refreshClaudeUsage(): Promise<ClaudeUsageState>
   onClaudeUsage(callback: (state: ClaudeUsageState) => void): () => void
+  getPresence(): Promise<PresenceState>
+  setPresenceEnabled(enabled: boolean): Promise<PresenceState>
+  onPresence(callback: (state: PresenceState) => void): () => void
   onWindowShown(callback: () => void): () => void
   resizeWindow(height: number): Promise<void>
   hideWindow(): Promise<void>

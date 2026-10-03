@@ -164,6 +164,12 @@ export async function runSmokeTest(
     true,
   )
   screenshots.push(await capture('-settings'))
+  // Rich Presence is opt-in; the smoke test must never touch a real Discord.
+  const presence = await evaluate(`({
+    checked: document.querySelector('[data-presence-switch]')?.getAttribute('aria-checked'),
+    status: document.querySelector('[data-presence-status]')?.textContent
+  })`)
+  assert.deepEqual(presence, { checked: 'false', status: 'Off' })
   await evaluate(`document.querySelector('[aria-expanded]').click()`)
   await pause()
   assert.equal(await evaluate(`document.querySelectorAll('dd').length`), 4)
@@ -224,6 +230,12 @@ export async function runSmokeTest(
   assert.equal(
     await evaluate(
       `window.agentcord.resizeWindow(-1).then(() => false, () => true)`,
+    ),
+    true,
+  )
+  assert.equal(
+    await evaluate(
+      `window.agentcord.setPresenceEnabled('yes').then(() => false, () => true)`,
     ),
     true,
   )

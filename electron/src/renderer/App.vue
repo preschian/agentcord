@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   ClaudeUsageState,
+  PresenceState,
   LaunchAtLoginState,
   UsageState,
 } from '../shared/types'
@@ -30,6 +31,15 @@ const claudeState = ref<ClaudeUsageState>({
   message: null,
   nextRefreshAt: 0,
 })
+const presence = ref<PresenceState>({ enabled: false, status: 'off' })
+const presenceText = computed(
+  () =>
+    ({
+      off: 'Off',
+      waiting: 'Waiting for Discord',
+      connected: 'Connected',
+    })[presence.value.status],
+)
 const launchAtLogin = ref<LaunchAtLoginState>({ supported: false, enabled: false })
 const launchBusy = ref(false)
 const now = ref(Date.now())
@@ -37,6 +47,7 @@ const uiError = ref<string | null>(null)
 const bridgeAvailable = ref(false)
 let unsubscribe: (() => void) | undefined
 let unsubscribeClaude: (() => void) | undefined
+let unsubscribePresence: (() => void) | undefined
 let unsubscribeWindowShown: (() => void) | undefined
 let timer: ReturnType<typeof setInterval> | undefined
 let observer: ResizeObserver | undefined
@@ -106,6 +117,16 @@ async function refresh() {
   } catch {
     uiError.value =
       'The desktop connection was lost. Restart AgentCord and try again.'
+  }
+}
+async function togglePresence() {
+  uiError.value = null
+  try {
+    presence.value = await window.agentcord.setPresenceEnabled(
+      !presence.value.enabled,
+    )
+  } catch {
+    uiError.value = 'Discord Rich Presence could not be changed.'
   }
 }
 async function toggleLaunchAtLogin() {
@@ -183,15 +204,23 @@ onMounted(async () => {
     claudeEvents++
     claudeState.value = value
   })
+  let presenceEvents = 0
+  unsubscribePresence = window.agentcord.onPresence((value) => {
+    presenceEvents++
+    presence.value = value
+  })
   try {
-    const [initial, claudeInitial, loginInitial] = await Promise.all([
-      window.agentcord.getUsage(),
-      window.agentcord.getClaudeUsage(),
-      window.agentcord.getLaunchAtLogin(),
-    ])
+    const [initial, claudeInitial, presenceInitial, loginInitial] =
+      await Promise.all([
+        window.agentcord.getUsage(),
+        window.agentcord.getClaudeUsage(),
+        window.agentcord.getPresence(),
+        window.agentcord.getLaunchAtLogin(),
+      ])
     launchAtLogin.value = loginInitial
     if (!claudeEvents) claudeState.value = claudeInitial
     if (!events) applyState(initial)
+    if (!presenceEvents) presence.value = presenceInitial
   } catch {
     uiError.value = 'Could not read usage from the desktop application.'
   }
@@ -199,6 +228,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unsubscribe?.()
   unsubscribeClaude?.()
+  unsubscribePresence?.()
   unsubscribeWindowShown?.()
   if (timer) clearInterval(timer)
   observer?.disconnect()
@@ -424,6 +454,28 @@ onUnmounted(() => {
             </div>
           </section>
           <section class="soft-card provider-settings">
+            <h2>DISCORD</h2>
+            <div class="setting-row">
+              <span class="provider-name">Rich Presence</span>
+              <span class="switch-group"
+                ><small data-presence-status>{{ presenceText }}</small
+                ><button
+                  class="switch"
+                  role="switch"
+                  data-presence-switch
+                  aria-label="Discord Rich Presence"
+                  :aria-checked="presence.enabled"
+                  :disabled="!bridgeAvailable"
+                  @click="togglePresence"
+                ></button
+              ></span>
+            </div>
+            <p class="setting-hint">
+              Shares your usage percentages on your Discord profile while the
+              Discord app is running. Off by default.
+            </p>
+          </section>
+          <section class="soft-card provider-settings">
             <h2>AGENTS</h2>
             <div class="setting-row">
               <span class="provider-name"><i></i>Codex</span
@@ -465,8 +517,8 @@ onUnmounted(() => {
           <section class="soft-card about-card">
             <h2>Electron preview</h2>
             <p>
-              Codex / ChatGPT and Claude subscription limits only. Discord presence,
-              session tracking, and API billing are not included.
+              Codex / ChatGPT and Claude subscription limits only. Session
+              tracking and API billing are not included.
             </p>
             <p>
               Credentials stay with Codex and Claude Code. Cached results are marked; account

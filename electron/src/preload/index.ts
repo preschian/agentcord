@@ -37,6 +37,8 @@ const api: AgentCordAPI = {
     return () => ipcRenderer.removeListener('window:shown', listener)
   },
   resizeWindow: (height) => ipcRenderer.invoke('window:resize', height),
+  getLaunchAtLogin: () => ipcRenderer.invoke('login-item:get'),
+  setLaunchAtLogin: (enabled) => ipcRenderer.invoke('login-item:set', enabled),
   hideWindow: () => ipcRenderer.invoke('window:hide'),
   quit: () => ipcRenderer.invoke('app:quit'),
 }

@@ -30,6 +30,10 @@ export interface PresenceState {
   // 'waiting' means enabled but Discord is not running or not connected yet.
   status: 'off' | 'waiting' | 'connected'
 }
+export interface LaunchAtLoginState {
+  supported: boolean
+  enabled: boolean
+}
 export interface AgentCordAPI {
   getUsage(): Promise<UsageState>
   refreshUsage(): Promise<UsageState>
@@ -42,6 +46,8 @@ export interface AgentCordAPI {
   onPresence(callback: (state: PresenceState) => void): () => void
   onWindowShown(callback: () => void): () => void
   resizeWindow(height: number): Promise<void>
+  getLaunchAtLogin(): Promise<LaunchAtLoginState>
+  setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginState>
   hideWindow(): Promise<void>
   quit(): Promise<void>
 }

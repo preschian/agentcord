@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   ClaudeUsageState,
   PresenceState,
+  LaunchAtLoginState,
   UsageState,
 } from '../shared/types'
 import Icon from './components/Icon.vue'
@@ -39,6 +40,8 @@ const presenceText = computed(
       connected: 'Connected',
     })[presence.value.status],
 )
+const launchAtLogin = ref<LaunchAtLoginState>({ supported: false, enabled: false })
+const launchBusy = ref(false)
 const now = ref(Date.now())
 const uiError = ref<string | null>(null)
 const bridgeAvailable = ref(false)
@@ -126,6 +129,20 @@ async function togglePresence() {
     uiError.value = 'Discord Rich Presence could not be changed.'
   }
 }
+async function toggleLaunchAtLogin() {
+  if (launchBusy.value || !launchAtLogin.value.supported) return
+  launchBusy.value = true
+  uiError.value = null
+  try {
+    launchAtLogin.value = await window.agentcord.setLaunchAtLogin(
+      !launchAtLogin.value.enabled,
+    )
+  } catch {
+    uiError.value = 'Launch at login could not be changed.'
+  } finally {
+    launchBusy.value = false
+  }
+}
 async function hide() {
   try {
     await window.agentcord.hideWindow()
@@ -193,11 +210,14 @@ onMounted(async () => {
     presence.value = value
   })
   try {
-    const [initial, claudeInitial, presenceInitial] = await Promise.all([
-      window.agentcord.getUsage(),
-      window.agentcord.getClaudeUsage(),
-      window.agentcord.getPresence(),
-    ])
+    const [initial, claudeInitial, presenceInitial, loginInitial] =
+      await Promise.all([
+        window.agentcord.getUsage(),
+        window.agentcord.getClaudeUsage(),
+        window.agentcord.getPresence(),
+        window.agentcord.getLaunchAtLogin(),
+      ])
+    launchAtLogin.value = loginInitial
     if (!claudeEvents) claudeState.value = claudeInitial
     if (!events) applyState(initial)
     if (!presenceEvents) presence.value = presenceInitial
@@ -409,6 +429,20 @@ onUnmounted(() => {
 
         <template v-else>
           <section class="settings-section">
+            <div class="setting-row">
+              <span id="launch-at-login-label">Launch at login</span>
+              <small v-if="!launchAtLogin.supported">Packaged app only</small>
+              <button
+                v-else
+                class="switch"
+                role="switch"
+                data-launch-at-login
+                aria-labelledby="launch-at-login-label"
+                :aria-checked="launchAtLogin.enabled"
+                :disabled="launchBusy"
+                @click="toggleLaunchAtLogin"
+              ></button>
+            </div>
             <div class="setting-row">
               <span>Auto-refresh</span><small>5m · while visible</small>
             </div>

@@ -31,6 +31,7 @@ const claudeState = ref<ClaudeUsageState>({
   message: null,
   nextRefreshAt: 0,
 })
+const claudeActive = ref(false)
 const presence = ref<PresenceState>({ enabled: false, status: 'off' })
 const presenceText = computed(
   () =>
@@ -47,6 +48,7 @@ const uiError = ref<string | null>(null)
 const bridgeAvailable = ref(false)
 let unsubscribe: (() => void) | undefined
 let unsubscribeClaude: (() => void) | undefined
+let unsubscribeClaudeActive: (() => void) | undefined
 let unsubscribePresence: (() => void) | undefined
 let unsubscribeWindowShown: (() => void) | undefined
 let timer: ReturnType<typeof setInterval> | undefined
@@ -204,21 +206,28 @@ onMounted(async () => {
     claudeEvents++
     claudeState.value = value
   })
+  let activeEvents = 0
+  unsubscribeClaudeActive = window.agentcord.onClaudeActive((value) => {
+    activeEvents++
+    claudeActive.value = value
+  })
   let presenceEvents = 0
   unsubscribePresence = window.agentcord.onPresence((value) => {
     presenceEvents++
     presence.value = value
   })
   try {
-    const [initial, claudeInitial, presenceInitial, loginInitial] =
+    const [initial, claudeInitial, activeInitial, presenceInitial, loginInitial] =
       await Promise.all([
         window.agentcord.getUsage(),
         window.agentcord.getClaudeUsage(),
+        window.agentcord.getClaudeActive(),
         window.agentcord.getPresence(),
         window.agentcord.getLaunchAtLogin(),
       ])
     launchAtLogin.value = loginInitial
     if (!claudeEvents) claudeState.value = claudeInitial
+    if (!activeEvents) claudeActive.value = activeInitial
     if (!events) applyState(initial)
     if (!presenceEvents) presence.value = presenceInitial
   } catch {
@@ -228,6 +237,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unsubscribe?.()
   unsubscribeClaude?.()
+  unsubscribeClaudeActive?.()
   unsubscribePresence?.()
   unsubscribeWindowShown?.()
   if (timer) clearInterval(timer)
@@ -275,13 +285,13 @@ onUnmounted(() => {
             <span class="agent-title"
               ><strong>Claude</strong
               ><small>{{
-                claudeState.snapshot
+                (claudeState.snapshot
                   ? claudeState.status === 'cached'
                     ? 'Cached usage'
                     : 'Connected'
                   : claudeState.status === 'loading'
                     ? 'Connecting…'
-                    : 'Not connected'
+                    : 'Not connected') + (claudeActive ? ' · Desktop active' : '')
               }}</small></span
             >
             <span

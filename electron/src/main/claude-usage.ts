@@ -13,7 +13,9 @@ import { MAX_CACHE_AGE, MIN_REFRESH_INTERVAL, POLL_INTERVAL, validSnapshot } fro
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 const CACHE_VERSION = 1
-export interface Credentials { accessToken: string; key: string }
+// Claude Desktop authenticates Claude Code itself, so this file only renews when the `claude` CLI runs.
+const EXPIRED = 'Claude Code sign-in has expired. Run claude to renew it, then refresh.'
+export interface Credentials { accessToken: string; key: string; expiresAt?: number }
 type Fetcher = (url: string, token: string) => Promise<unknown>
 interface Options {
   cachePath: string
@@ -31,7 +33,8 @@ export async function readCredentials(): Promise<Credentials | null> {
     const accessToken = text(oauth?.accessToken)
     if (!accessToken) return null
     // The refresh token is stable across access-token rotation; only its hash is kept.
-    return { accessToken, key: createHash('sha256').update(text(oauth?.refreshToken) ?? accessToken).digest('hex') }
+    const expiresAt = typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : undefined
+    return { accessToken, expiresAt, key: createHash('sha256').update(text(oauth?.refreshToken) ?? accessToken).digest('hex') }
   } catch { return null }
 }
 async function fetchJson(url: string, token: string): Promise<unknown> {
@@ -39,7 +42,7 @@ async function fetchJson(url: string, token: string): Promise<unknown> {
     headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20', 'anthropic-version': '2023-06-01' },
     signal: AbortSignal.timeout(15_000),
   })
-  if (!response.ok) throw new Error(response.status === 429
+  if (!response.ok) throw new Error(response.status === 401 ? EXPIRED : response.status === 429
     ? 'Claude is rate-limiting usage requests. Try again in a few minutes.'
     : `Claude usage request failed (HTTP ${response.status}).`)
   return response.json()
@@ -145,6 +148,8 @@ export class ClaudeUsageService {
         this.state.message = 'Run claude and sign in with /login, then refresh to see your Claude usage.'
         return this.state
       }
+      // An expired token only earns a 401; keep the cached numbers instead.
+      if (credentials.expiresAt !== undefined && this.now() >= credentials.expiresAt) throw new Error(EXPIRED)
       const get = this.options.fetchJson ?? fetchJson
       // Plan and email change rarely: refresh at most daily, or when the token rotates.
       if (!this.profile || this.profile.token !== credentials.accessToken || this.now() - this.profile.at >= MAX_CACHE_AGE) {

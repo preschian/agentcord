@@ -51,3 +51,27 @@ test('fetch caches without email; account switch and logout drop old data', asyn
   assert.equal(service.state.snapshot, null)
   await assert.rejects(readFile(cachePath))
 })
+test('expired token keeps the cache without hitting the network', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'agentcord-claude-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  let now = 1_800_000_000_000
+  let calls = 0
+  let credentials = { accessToken: 't', key: 'a', expiresAt: now + 60_000 }
+  const service = new ClaudeUsageService({
+    cachePath: join(dir, 'claude.json'), visible: () => true, changed: () => {}, now: () => now, credentials: async () => credentials,
+    fetchJson: async url => { calls++; return url.endsWith('/profile') ? {} : usage },
+  })
+  t.after(() => service.stop())
+  await service.refresh()
+  assert.equal(service.state.status, 'ready')
+  now += 120_000
+  calls = 0
+  await service.refresh()
+  assert.equal(calls, 0)
+  assert.equal(service.state.status, 'cached')
+  assert.match(service.state.message ?? '', /expired/)
+  now += 120_000
+  credentials = { ...credentials, accessToken: 't2', expiresAt: now + 60_000 } // claude CLI renewed it
+  await service.refresh()
+  assert.equal(service.state.status, 'ready')
+})

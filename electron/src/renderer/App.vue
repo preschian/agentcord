@@ -4,6 +4,7 @@ import type {
   ClaudeUsageState,
   PresenceState,
   LaunchAtLoginState,
+  MuseUsageState,
   UsageState,
 } from '../shared/types'
 import Icon from './components/Icon.vue'
@@ -11,7 +12,7 @@ import UsageCard from './components/UsageCard.vue'
 import { ago, maskEmail } from './format'
 
 const logoUrl = `${import.meta.env.BASE_URL}agentcord.png`
-const page = ref<'main' | 'codex' | 'claude' | 'settings'>('main')
+const page = ref<'main' | 'codex' | 'claude' | 'muse' | 'settings'>('main')
 const popover = ref<HTMLElement | null>(null)
 const emailRevealed = ref(false)
 const installationExpanded = ref(false)
@@ -25,6 +26,13 @@ const state = ref<UsageState>({
   executable: null,
 })
 const claudeState = ref<ClaudeUsageState>({
+  status: 'loading',
+  snapshot: null,
+  refreshing: false,
+  message: null,
+  nextRefreshAt: 0,
+})
+const museState = ref<MuseUsageState>({
   status: 'loading',
   snapshot: null,
   refreshing: false,
@@ -49,16 +57,20 @@ const bridgeAvailable = ref(false)
 let unsubscribe: (() => void) | undefined
 let unsubscribeClaude: (() => void) | undefined
 let unsubscribeClaudeActive: (() => void) | undefined
+let unsubscribeMuse: (() => void) | undefined
 let unsubscribePresence: (() => void) | undefined
 let unsubscribeWindowShown: (() => void) | undefined
 let timer: ReturnType<typeof setInterval> | undefined
 let observer: ResizeObserver | undefined
 let lastHeight = 0
 const isClaude = computed(() => page.value === 'claude')
-const providerName = computed(() => (isClaude.value ? 'Claude' : 'Codex'))
+const isMuse = computed(() => page.value === 'muse')
+const providerName = computed(() =>
+  isClaude.value ? 'Claude' : isMuse.value ? 'Muse Code' : 'Codex',
+)
 // Detail screens read from whichever provider is open; Codex is the default.
 const active = computed<ClaudeUsageState>(() =>
-  isClaude.value ? claudeState.value : state.value,
+  isClaude.value ? claudeState.value : isMuse.value ? museState.value : state.value,
 )
 const snapshot = computed(() => active.value.snapshot)
 const cooldown = computed(() =>
@@ -88,7 +100,9 @@ const accountLabel = computed(() => {
       : maskEmail(email)
     : isClaude.value
       ? 'Anthropic / Claude'
-      : 'OpenAI / ChatGPT'
+      : isMuse.value
+        ? 'Meta / Muse Code'
+        : 'OpenAI / ChatGPT'
 })
 const plan = computed(() => {
   const value = snapshot.value?.plan?.replace(/[_-]/g, ' ')
@@ -115,6 +129,7 @@ async function refresh() {
   uiError.value = null
   try {
     if (isClaude.value) claudeState.value = await window.agentcord.refreshClaudeUsage()
+    else if (isMuse.value) museState.value = await window.agentcord.refreshMuseUsage()
     else applyState(await window.agentcord.refreshUsage())
   } catch {
     uiError.value =
@@ -206,6 +221,11 @@ onMounted(async () => {
     claudeEvents++
     claudeState.value = value
   })
+  let museEvents = 0
+  unsubscribeMuse = window.agentcord.onMuseUsage((value) => {
+    museEvents++
+    museState.value = value
+  })
   let activeEvents = 0
   unsubscribeClaudeActive = window.agentcord.onClaudeActive((value) => {
     activeEvents++
@@ -217,16 +237,18 @@ onMounted(async () => {
     presence.value = value
   })
   try {
-    const [initial, claudeInitial, activeInitial, presenceInitial, loginInitial] =
+    const [initial, claudeInitial, museInitial, activeInitial, presenceInitial, loginInitial] =
       await Promise.all([
         window.agentcord.getUsage(),
         window.agentcord.getClaudeUsage(),
+        window.agentcord.getMuseUsage(),
         window.agentcord.getClaudeActive(),
         window.agentcord.getPresence(),
         window.agentcord.getLaunchAtLogin(),
       ])
     launchAtLogin.value = loginInitial
     if (!claudeEvents) claudeState.value = claudeInitial
+    if (!museEvents) museState.value = museInitial
     if (!activeEvents) claudeActive.value = activeInitial
     if (!events) applyState(initial)
     if (!presenceEvents) presence.value = presenceInitial
@@ -238,6 +260,7 @@ onUnmounted(() => {
   unsubscribe?.()
   unsubscribeClaude?.()
   unsubscribeClaudeActive?.()
+  unsubscribeMuse?.()
   unsubscribePresence?.()
   unsubscribeWindowShown?.()
   if (timer) clearInterval(timer)
@@ -300,6 +323,30 @@ onUnmounted(() => {
               >{{
                 claudeState.snapshot
                   ? `${Math.round(claudeState.snapshot.windows[0]?.usedPercent ?? 0)}% used`
+                  : 'Connect'
+              }}</span
+            >
+            <Icon name="arrow" :size="11" class="chevron" />
+          </button>
+          <button class="agent-row" data-open-muse @click="navigate('muse')">
+            <span class="agent-title"
+              ><strong>Muse Code</strong
+              ><small>{{
+                museState.snapshot
+                  ? museState.status === 'cached'
+                    ? 'Cached usage'
+                    : 'Connected'
+                  : museState.status === 'loading'
+                    ? 'Connecting…'
+                    : 'Not connected'
+              }}</small></span
+            >
+            <span
+              class="agent-trailing"
+              :class="{ connect: !museState.snapshot }"
+              >{{
+                museState.snapshot
+                  ? `${Math.round(museState.snapshot.windows[0]?.usedPercent ?? 0)}% used`
                   : 'Connect'
               }}</span
             >
@@ -420,8 +467,9 @@ onUnmounted(() => {
               class="login-help"
             >
               <p v-if="isClaude">Sign in to Claude Code, then refresh.</p>
+              <p v-else-if="isMuse">Sign in to Muse Code, then refresh.</p>
               <p v-else>Sign in to Codex with your ChatGPT account, then refresh.</p>
-              <code>{{ isClaude ? 'claude /login' : 'codex login' }}</code>
+              <code>{{ isClaude ? 'claude /login' : isMuse ? 'muse login' : 'codex login' }}</code>
             </div>
             <button
               class="refresh-row"
@@ -495,6 +543,10 @@ onUnmounted(() => {
               <span class="provider-name"><i></i>Claude</span
               ><small>Usage only</small>
             </div>
+            <div class="setting-row">
+              <span class="provider-name"><i></i>Muse Code</span
+              ><small>Usage only</small>
+            </div>
           </section>
           <section class="soft-card installation-card">
             <button
@@ -517,6 +569,8 @@ onUnmounted(() => {
               <dd>{{ state.executable || 'Not found / not checked yet' }}</dd>
               <dt>Claude sign-in</dt>
               <dd>Read from Claude Code's ~/.claude/.credentials.json.</dd>
+              <dt>Muse Code sign-in</dt>
+              <dd>Read from Muse Code's ~/.config/muse/auth.json.</dd>
               <dt>Configuration</dt>
               <dd>
                 Set CODEX_HOME, CODEX_BINARY or CLAUDE_CONFIG_DIR before
@@ -527,11 +581,11 @@ onUnmounted(() => {
           <section class="soft-card about-card">
             <h2>Electron preview</h2>
             <p>
-              Codex / ChatGPT and Claude subscription limits only. Session
+              Codex / ChatGPT, Claude and Muse Code subscription limits only. Session
               tracking and API billing are not included.
             </p>
             <p>
-              Credentials stay with Codex and Claude Code. Cached results are marked; account
+              Credentials stay with Codex, Claude Code and Muse Code. Cached results are marked; account
               changes clear old usage.
             </p>
           </section>

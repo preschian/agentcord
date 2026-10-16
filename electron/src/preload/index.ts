@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AgentCordAPI,
   ClaudeUsageState,
+  MuseUsageState,
   PresenceState,
   UsageState,
 } from '../shared/types'
@@ -22,6 +23,14 @@ const api: AgentCordAPI = {
       callback(state)
     ipcRenderer.on('claude:changed', listener)
     return () => ipcRenderer.removeListener('claude:changed', listener)
+  },
+  getMuseUsage: () => ipcRenderer.invoke('muse:get'),
+  refreshMuseUsage: () => ipcRenderer.invoke('muse:refresh'),
+  onMuseUsage: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: MuseUsageState) =>
+      callback(state)
+    ipcRenderer.on('muse:changed', listener)
+    return () => ipcRenderer.removeListener('muse:changed', listener)
   },
   getClaudeActive: () => ipcRenderer.invoke('claude-desktop:get'),
   onClaudeActive: (callback) => {

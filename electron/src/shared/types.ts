@@ -26,7 +26,7 @@ export interface UsageState {
 }
 export type ProviderUsageState = Omit<UsageState, 'codexHome' | 'executable'>
 export type ClaudeUsageState = ProviderUsageState
-export type TokenProvider = 'claude' | 'cursor' | 'grok'
+export type TokenProvider = 'claude' | 'cursor' | 'grok' | 'muse'
 export interface PresenceState {
   enabled: boolean
   // 'waiting' means enabled but Discord is not running or not connected yet.

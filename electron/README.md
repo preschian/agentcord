@@ -1,6 +1,6 @@
 # AgentCord — Electron preview
 
-Desktop prototype built with **Electron + Vue 3 + Vite**, scoped to **Codex / OpenAI, Claude, Cursor and Grok subscription usage**. It lives alongside the existing Windows and macOS implementations; it does not replace either app.
+Desktop prototype built with **Electron + Vue 3 + Vite**, scoped to **Codex / OpenAI, Claude, Cursor, Grok and Muse Code subscription usage**. It lives alongside the existing Windows and macOS implementations; it does not replace either app.
 
 ## Implemented
 
@@ -8,7 +8,8 @@ Desktop prototype built with **Electron + Vue 3 + Vite**, scoped to **Codex / Op
 - **Claude** 5-hour, weekly, and per-model weekly limits from the same OAuth endpoints Claude Code uses (`/api/oauth/usage` and `/api/oauth/profile`), ported from `windows/ClaudeUsage.cs`. The access token is read from `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) on each poll; it is never refreshed, cached, logged, or sent to the renderer. Same 60-second cooldown, 5-minute visible polling, and 24-hour account-bound cache (`claude-usage-cache.json`) as Codex. macOS keychain credentials are not read yet.
 - **Cursor** included usage (plus Auto, API and on-demand when reported, or legacy monthly request buckets) from the endpoints the Cursor app calls, ported from `windows/CursorUsage.cs`. The token is read from the IDE's `state.vscdb` (via `node:sqlite`) or the Cursor CLI's `auth.json`, whichever expires last. Email and plan come from the IDE cache, falling back to Cursor's profile endpoints.
 - **Grok** weekly SuperGrok credits (and on-demand spend) from the Grok CLI `/usage` endpoint, ported from `windows/GrokUsage.cs`. The token is read from `~/.grok/auth.json` (or `$GROK_HOME`). Unlike the Windows app, the refresh token is never used: xAI rotates it, and spending it outside the CLI makes the CLI delete its login. An expired token is renewed by running `grok models`, the same way Claude uses `claude auth status`.
-- Claude, Cursor and Grok share one poller (`token-usage.ts`) with the same cooldown, visible-only polling and account-bound cache.
+- **Muse Code** (Meta) 5-hour and weekly windows from `POST https://api.meta.ai/muse-code/key`, the endpoint the Muse CLI itself calls, using the device-code token in `~/.config/muse/auth.json`. The inference key and payment info in that response are ignored. Meta leaves the quota out while the 5-hour window is idle; the row then shows the plan and "Idle" instead of 0%.
+- Claude, Cursor, Grok and Muse Code share one poller (`token-usage.ts`) with the same cooldown, visible-only polling and account-bound cache.
 - Primary / secondary subscription limits (usually 5-hour and weekly), plus additional per-model limits when returned by Codex.
 - Windows-style **330px light popover**: frameless rounded shell, Noto Sans Mono text, compact main screen, Codex detail screen, and Settings screen.
 - Thin blue/orange/red usage bars with Windows-style values (`46% · 6d 22h`); hover for remaining percentage and the local reset date.
@@ -27,7 +28,7 @@ Desktop prototype built with **Electron + Vue 3 + Vite**, scoped to **Codex / Op
 - **Claude Desktop detection** on macOS and Windows: the main process checks whether the Claude Desktop app is running (`pgrep` on macOS, PowerShell `Get-Process` on Windows; the Claude Code CLI is not matched) and shows "Desktop active" on the Claude row. With Discord Rich Presence on, the headline becomes "Using Claude Desktop". It scans every 30 seconds, and only while the popover is open or presence is enabled; hidden and idle means no scanning. Only a yes/no leaves the detector. Linux has no Claude Desktop build. The Windows install-path match is untested on a real machine.
 - Settings shows polling/cache behavior and an expandable installation section (Codex home/executable, Claude sign-in location). Unsupported native-app controls (sessions, other agents) are deliberately omitted.
 
-**Not implemented:** activity/session tracking, providers other than Codex, Claude, Cursor and Grok, OpenAI API-key usage/cost billing, login UI, auto-update, and signed release installers. This is ChatGPT/Codex subscription usage, not the OpenAI API billing dashboard.
+**Not implemented:** activity/session tracking, providers other than Codex, Claude, Cursor, Grok and Muse Code, OpenAI API-key usage/cost billing, login UI, auto-update, and signed release installers. This is ChatGPT/Codex subscription usage, not the OpenAI API billing dashboard.
 
 ## Requirements
 

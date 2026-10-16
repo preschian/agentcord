@@ -34,6 +34,12 @@ const providers: Record<
     help: 'Sign in to the Grok CLI, then refresh.',
     command: 'grok login',
   },
+  muse: {
+    name: 'Muse Code',
+    account: 'Meta / Muse Code',
+    help: 'Sign in to Muse Code, then refresh.',
+    command: 'muse login',
+  },
 }
 const providerNames = Object.keys(providers) as TokenProvider[]
 const page = ref<'main' | 'codex' | TokenProvider | 'settings'>('main')
@@ -60,6 +66,7 @@ const providerStates = ref<Record<TokenProvider, ProviderUsageState>>({
   claude: loading(),
   cursor: loading(),
   grok: loading(),
+  muse: loading(),
 })
 const claudeActive = ref(false)
 const presence = ref<PresenceState>({ enabled: false, status: 'off' })
@@ -97,7 +104,9 @@ const active = computed<ProviderUsageState>(() =>
 )
 function rowStatus(value: ProviderUsageState) {
   return value.snapshot
-    ? value.status === 'cached'
+    ? !value.snapshot.windows.length
+      ? (value.snapshot.plan ?? 'Connected') // Signed in, no active window (Muse Code)
+      : value.status === 'cached'
       ? 'Cached usage'
       : 'Connected'
     : value.status === 'loading'
@@ -340,7 +349,9 @@ onUnmounted(() => {
               :class="{ connect: !providerStates[name].snapshot }"
               >{{
                 providerStates[name].snapshot
-                  ? `${Math.round(providerStates[name].snapshot.windows[0]?.usedPercent ?? 0)}% used`
+                  ? providerStates[name].snapshot.windows.length
+                    ? `${Math.round(providerStates[name].snapshot.windows[0].usedPercent)}% used`
+                    : 'Idle'
                   : 'Connect'
               }}</span
             >
@@ -419,7 +430,7 @@ onUnmounted(() => {
               </div>
               <p>{{ updated }}</p>
             </div>
-            <div v-if="snapshot" class="usage-rows">
+            <div v-if="snapshot?.windows.length" class="usage-rows">
               <UsageCard
                 v-for="usageWindow in snapshot.windows"
                 :key="usageWindow.id"
@@ -437,7 +448,9 @@ onUnmounted(() => {
                   ? `Waiting for ${providerName} usage…`
                   : active.status === 'api-key'
                     ? 'ChatGPT subscription required'
-                    : 'No usage available'
+                    : snapshot
+                      ? 'Idle · no active usage window'
+                      : 'No usage available'
               }}
             </p>
             <div
@@ -566,6 +579,8 @@ onUnmounted(() => {
               <dd>Read from Cursor's state.vscdb or the Cursor CLI auth.json.</dd>
               <dt>Grok sign-in</dt>
               <dd>Read from the Grok CLI's ~/.grok/auth.json.</dd>
+              <dt>Muse Code sign-in</dt>
+              <dd>Read from Muse Code's ~/.config/muse/auth.json.</dd>
               <dt>Configuration</dt>
               <dd>
                 Set CODEX_HOME, CODEX_BINARY, CLAUDE_CONFIG_DIR or GROK_HOME
@@ -576,8 +591,8 @@ onUnmounted(() => {
           <section class="soft-card about-card">
             <h2>Electron preview</h2>
             <p>
-              Codex / ChatGPT, Claude, Cursor and Grok subscription limits
-              only. Session tracking and API billing are not included.
+              Codex / ChatGPT, Claude, Cursor, Grok and Muse Code subscription
+              limits only. Session tracking and API billing are not included.
             </p>
             <p>
               Credentials stay with each agent's own app or CLI. Cached results

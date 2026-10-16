@@ -13,6 +13,7 @@ import { CodexUsageService } from './codex-usage'
 import { ClaudeUsageService } from './claude-usage'
 import { createCursorUsage } from './cursor-usage'
 import { createGrokUsage } from './grok-usage'
+import { createMuseUsage } from './muse-usage'
 import type { TokenUsageService } from './token-usage'
 import type { ProviderUsageState, TokenProvider } from '../shared/types'
 import { ClaudeDesktopService } from './claude-desktop'
@@ -218,6 +219,7 @@ async function start(): Promise<void> {
     claude: new ClaudeUsageService(providerOptions('claude')),
     cursor: createCursorUsage(providerOptions('cursor')),
     grok: createGrokUsage(providerOptions('grok')),
+    muse: createMuseUsage(providerOptions('muse')),
   }
   const provider = (name: unknown) => {
     if (typeof name !== 'string' || !Object.hasOwn(providers!, name))

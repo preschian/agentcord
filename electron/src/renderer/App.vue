@@ -50,7 +50,6 @@ const agentName = (agent: Agent) =>
 const page = ref<'main' | 'codex' | TokenProvider | 'settings'>('main')
 const popover = ref<HTMLElement | null>(null)
 const emailRevealed = ref(false)
-const installationExpanded = ref(false)
 const state = ref<UsageState>({
   status: 'loading',
   snapshot: null,
@@ -590,15 +589,6 @@ onUnmounted(() => {
                 @click="toggleLaunchAtLogin"
               ></button>
             </div>
-            <div class="setting-row">
-              <span>Auto-refresh</span><small>5m · while visible</small>
-            </div>
-            <div class="setting-row">
-              <span>Refresh cooldown</span><small>1m</small>
-            </div>
-            <div class="setting-row">
-              <span>Usage cache</span><small>Up to 24h</small>
-            </div>
           </section>
           <section class="soft-card provider-settings">
             <h2>DISCORD</h2>
@@ -617,10 +607,6 @@ onUnmounted(() => {
                 ></button
               ></span>
             </div>
-            <p class="setting-hint">
-              Shares your usage percentages on your Discord profile while the
-              Discord app is running. Off by default.
-            </p>
           </section>
           <section class="soft-card provider-settings">
             <h2>AGENTS</h2>
@@ -652,56 +638,6 @@ onUnmounted(() => {
               ></button>
             </div>
           </section>
-          <section class="soft-card installation-card">
-            <button
-              class="navigation-row"
-              :aria-expanded="installationExpanded"
-              @click="installationExpanded = !installationExpanded"
-            >
-              <span>Installation</span
-              ><Icon
-                name="arrow"
-                :size="11"
-                class="chevron"
-                :class="{ expanded: installationExpanded }"
-              />
-            </button>
-            <dl v-if="installationExpanded">
-              <dt>Codex home</dt>
-              <dd>{{ state.codexHome || 'Initializing…' }}</dd>
-              <dt>Codex executable</dt>
-              <dd>{{ state.executable || 'Not found / not checked yet' }}</dd>
-              <dt>Claude sign-in</dt>
-              <dd>Read from Claude Code's ~/.claude/.credentials.json.</dd>
-              <dt>Cursor sign-in</dt>
-              <dd>Read from Cursor's state.vscdb or the Cursor CLI auth.json.</dd>
-              <dt>Grok sign-in</dt>
-              <dd>Read from the Grok CLI's ~/.grok/auth.json.</dd>
-              <dt>Muse Code sign-in</dt>
-              <dd>Read from Muse Code's ~/.config/muse/auth.json.</dd>
-              <dt>Configuration</dt>
-              <dd>
-                Set CODEX_HOME, CODEX_BINARY, CLAUDE_CONFIG_DIR or GROK_HOME
-                before starting the app.
-              </dd>
-            </dl>
-          </section>
-          <section class="soft-card about-card">
-            <h2>Electron preview</h2>
-            <p>
-              Codex / ChatGPT, Claude, Cursor, Grok and Muse Code subscription
-              limits only. Session tracking and API billing are not included.
-            </p>
-            <p>
-              Credentials stay with each agent's own app or CLI. Cached results
-              are marked; account changes clear old usage.
-            </p>
-          </section>
-          <button class="navigation-row soft-card" @click="hide">
-            <Icon name="hide" :size="14" /><span>Hide to tray</span
-            ><small>Esc</small>
-          </button>
-          <p class="version">agentcord 0.1.0 · Electron + Vue</p>
         </template>
       </template>
     </main>

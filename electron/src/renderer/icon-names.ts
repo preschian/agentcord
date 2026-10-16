@@ -6,7 +6,6 @@ export const materialSymbols = {
   'eye-off': 'visibility_off',
   clock: 'schedule',
   refresh: 'refresh',
-  hide: 'dock_to_right',
 } as const
 
 export type IconName = keyof typeof materialSymbols

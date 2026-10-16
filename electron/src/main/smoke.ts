@@ -151,8 +151,8 @@ export async function runSmokeTest(
     'Settings',
   )
   assert.ok(
-    window.getBounds().height > mainHeight,
-    'Settings must grow the popover',
+    window.getBounds().height !== mainHeight,
+    'Settings must resize the popover to its content',
   )
   // Smoke runs unpackaged, so the OS login item is unsupported and untouched.
   assert.deepEqual(await evaluate(`window.agentcord.getLaunchAtLogin()`), {
@@ -186,9 +186,6 @@ export async function runSmokeTest(
   await evaluate(`${grokSwitch}.click()`)
   await pause()
   assert.equal(await evaluate(`${grokSwitch}.getAttribute('aria-checked')`), 'true')
-  await evaluate(`document.querySelector('[aria-expanded]').click()`)
-  await pause()
-  assert.equal(await evaluate(`document.querySelectorAll('dd').length`), 7)
   await evaluate(`document.querySelector('[data-back]').click()`)
   await pause()
   assert.equal(window.getBounds().height, mainHeight)

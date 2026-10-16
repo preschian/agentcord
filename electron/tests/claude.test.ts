@@ -56,9 +56,12 @@ test('expired token keeps the cache without hitting the network', async t => {
   t.after(() => rm(dir, { recursive: true, force: true }))
   let now = 1_800_000_000_000
   let calls = 0
+  let renewals = 0
+  let renew = async () => {}
   let credentials = { accessToken: 't', key: 'a', expiresAt: now + 60_000 }
   const service = new ClaudeUsageService({
     cachePath: join(dir, 'claude.json'), visible: () => true, changed: () => {}, now: () => now, credentials: async () => credentials,
+    renew: async () => { renewals++; await renew() },
     fetchJson: async url => { calls++; return url.endsWith('/profile') ? {} : usage },
   })
   t.after(() => service.stop())
@@ -67,11 +70,16 @@ test('expired token keeps the cache without hitting the network', async t => {
   now += 120_000
   calls = 0
   await service.refresh()
+  assert.equal(renewals, 1) // renewal failed, so the cached numbers stay
   assert.equal(calls, 0)
   assert.equal(service.state.status, 'cached')
   assert.match(service.state.message ?? '', /expired/)
   now += 120_000
-  credentials = { ...credentials, accessToken: 't2', expiresAt: now + 60_000 } // claude CLI renewed it
+  renew = async () => { credentials = { ...credentials, accessToken: 't2', expiresAt: now + 3_600_000 } } // claude CLI renewed it
   await service.refresh()
+  assert.equal(renewals, 2)
   assert.equal(service.state.status, 'ready')
+  now += 120_000
+  await service.refresh() // valid token: no renewal
+  assert.equal(renewals, 2)
 })

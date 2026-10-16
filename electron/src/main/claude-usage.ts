@@ -1,4 +1,6 @@
+import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { readFile, mkdir, writeFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -8,13 +10,14 @@ import { MAX_CACHE_AGE, MIN_REFRESH_INTERVAL, POLL_INTERVAL, validSnapshot } fro
 
 // Undocumented OAuth endpoints that Claude Code itself calls; ported from
 // windows/ClaudeUsage.cs. We reuse Claude Code's access token (read-only, never
-// refreshed, cached or sent to the renderer) from ~/.claude/.credentials.json.
+// cached or sent to the renderer) from ~/.claude/.credentials.json. When it expires we let
+// the claude CLI renew it (`claude auth status`), so the rotating refresh token stays its own.
 // ponytail: macOS keeps the token in the keychain, not read here; add when macOS is validated.
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 const CACHE_VERSION = 1
 // Claude Desktop authenticates Claude Code itself, so this file only renews when the `claude` CLI runs.
-const EXPIRED = 'Claude Code sign-in has expired. Run claude to renew it, then refresh.'
+const EXPIRED = 'Claude Code sign-in has expired and could not be renewed. Run claude to sign in again, then refresh.'
 export interface Credentials { accessToken: string; key: string; expiresAt?: number }
 type Fetcher = (url: string, token: string) => Promise<unknown>
 interface Options {
@@ -23,6 +26,7 @@ interface Options {
   changed: (state: ClaudeUsageState) => void
   credentials?: () => Promise<Credentials | null>
   fetchJson?: Fetcher
+  renew?: () => Promise<void>
   now?: () => number
 }
 
@@ -36,6 +40,14 @@ export async function readCredentials(): Promise<Credentials | null> {
     const expiresAt = typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : undefined
     return { accessToken, expiresAt, key: createHash('sha256').update(text(oauth?.refreshToken) ?? accessToken).digest('hex') }
   } catch { return null }
+}
+// `claude auth status` refreshes an expired token and writes it back; it starts no session or model call.
+export function renewCredentials(): Promise<void> {
+  const local = join(homedir(), '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude')
+  const exe = existsSync(local) ? local : 'claude'
+  // shell on Windows so an npm `claude.cmd` on PATH resolves too; args are constant.
+  return new Promise(resolve => execFile(exe, ['auth', 'status', '--json'],
+    { timeout: 30_000, windowsHide: true, shell: exe === 'claude' && process.platform === 'win32' }, () => resolve()))
 }
 async function fetchJson(url: string, token: string): Promise<unknown> {
   const response = await fetch(url, {
@@ -102,6 +114,7 @@ export class ClaudeUsageService {
     this.now = options.now ?? Date.now
   }
   private emit(): void { if (!this.stopped) this.options.changed({ ...this.state }) }
+  private expired(c: Credentials) { return c.expiresAt !== undefined && this.now() >= c.expiresAt }
   private credentials() { return (this.options.credentials ?? readCredentials)() }
   async start(): Promise<void> {
     const credentials = await this.credentials()
@@ -140,7 +153,11 @@ export class ClaudeUsageService {
     this.state.message = null
     this.emit()
     try {
-      const credentials = await this.credentials()
+      let credentials = await this.credentials()
+      if (credentials && this.expired(credentials)) {
+        await (this.options.renew ?? renewCredentials)()
+        credentials = await this.credentials()
+      }
       // Logout or account switch: never keep showing another account's numbers.
       if ((credentials?.key ?? null) !== this.key) { this.key = credentials?.key ?? null; await this.invalidate() }
       if (!credentials) {
@@ -149,7 +166,7 @@ export class ClaudeUsageService {
         return this.state
       }
       // An expired token only earns a 401; keep the cached numbers instead.
-      if (credentials.expiresAt !== undefined && this.now() >= credentials.expiresAt) throw new Error(EXPIRED)
+      if (this.expired(credentials)) throw new Error(EXPIRED)
       const get = this.options.fetchJson ?? fetchJson
       // Plan and email change rarely: refresh at most daily, or when the token rotates.
       if (!this.profile || this.profile.token !== credentials.accessToken || this.now() - this.profile.at >= MAX_CACHE_AGE) {

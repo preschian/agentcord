@@ -189,6 +189,15 @@ export async function runSmokeTest(
   await evaluate(`document.querySelector('[data-back]').click()`)
   await pause()
   assert.equal(window.getBounds().height, mainHeight)
+  // The unified usage card opens its own screen, like the Windows app.
+  await evaluate(`document.querySelector('[data-unified-usage]').click()`)
+  await pause()
+  assert.equal(
+    await evaluate(`document.querySelector('h1').textContent`),
+    'Unified usage',
+  )
+  await evaluate(`document.querySelector('[data-back]').click()`)
+  await pause()
   window.webContents.send('usage:changed', {
     ...state,
     status: 'signed-out',

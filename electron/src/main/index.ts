@@ -27,6 +27,7 @@ import { PresenceService } from './presence'
 import { isAgent, readSettings, updateSettings } from './settings'
 import { runSmokeTest } from './smoke'
 import {
+  applyLaunchAtLoginDefault,
   getLaunchAtLogin,
   setLaunchAtLogin,
   startedAtLogin,
@@ -162,6 +163,10 @@ async function start(): Promise<void> {
   nativeTheme.themeSource = 'light'
   const settingsPath = join(app.getPath('userData'), 'settings.json')
   settings = await readSettings(settingsPath)
+  if (applyLaunchAtLoginDefault(loginItemHost, settings.launchAtLoginDefaulted))
+    await updateSettings(settingsPath, (value) => {
+      value.launchAtLoginDefaulted = true
+    }).catch(() => {})
   Menu.setApplicationMenu(null)
   const area = screen.getDisplayNearestPoint(
     screen.getCursorScreenPoint(),

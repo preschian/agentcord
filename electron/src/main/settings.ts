@@ -22,6 +22,7 @@ export async function readSettings(path: string): Promise<AppSettings> {
       AGENTS.map((agent) => [agent, agents?.[agent] !== false]),
     ) as Record<Agent, boolean>,
     unifiedUsage: raw?.unifiedUsage !== false,
+    launchAtLoginDefaulted: raw?.launchAtLoginDefaulted === true,
   }
 }
 

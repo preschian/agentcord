@@ -47,7 +47,9 @@ const providerNames = Object.keys(providers) as TokenProvider[]
 const agentNames: Agent[] = ['codex', ...providerNames]
 const agentName = (agent: Agent) =>
   agent === 'codex' ? 'Codex' : providers[agent].name
-const page = ref<'main' | 'codex' | TokenProvider | 'settings'>('main')
+const page = ref<'main' | 'codex' | TokenProvider | 'settings' | 'usage'>(
+  'main',
+)
 const popover = ref<HTMLElement | null>(null)
 const emailRevealed = ref(false)
 const state = ref<UsageState>({
@@ -120,6 +122,13 @@ const tokenPage = computed(() =>
 )
 const meta = computed(() => (tokenPage.value ? providers[tokenPage.value] : null))
 const providerName = computed(() => meta.value?.name ?? 'Codex')
+const screenTitle = computed(() =>
+  page.value === 'settings'
+    ? 'Settings'
+    : page.value === 'usage'
+      ? 'Unified usage'
+      : providerName.value,
+)
 // Detail screens read from whichever provider is open; Codex is the default.
 const active = computed<ProviderUsageState>(() =>
   tokenPage.value ? providerStates.value[tokenPage.value] : state.value,
@@ -368,21 +377,28 @@ onUnmounted(() => {
             ><i></i>{{ statusText }}</span
           >
         </header>
-        <section
+        <button
           v-if="settings.unifiedUsage && enabledAgents.length > 1"
           class="card unified-usage"
           data-unified-usage
+          @click="navigate('usage')"
         >
-          <UsageCard
+          <span
             v-for="row in unifiedRows"
             :key="row.agent"
-            :window="row.window"
-            :now="now"
-          />
+            class="compact-row"
+            :class="row.window.severity"
+            ><span>{{ row.window.label }}</span
+            ><span class="progress"
+              ><span
+                :style="{ width: `${Math.max(1.5, row.window.usedPercent)}%` }"
+              ></span></span
+            ><strong>{{ Math.round(row.window.usedPercent) }}%</strong></span
+          >
           <p v-if="!unifiedRows.length" class="empty-usage">
             No connected agents
           </p>
-        </section>
+        </button>
         <section class="card agent-list">
           <button
             v-if="settings.agents.codex"
@@ -462,9 +478,20 @@ onUnmounted(() => {
           >
             <Icon name="arrow" :size="13" />
           </button>
-          <h1>{{ page === 'settings' ? 'Settings' : providerName }}</h1>
+          <h1>{{ screenTitle }}</h1>
         </header>
-        <template v-if="page !== 'settings'">
+        <section v-if="page === 'usage'" class="card unified-detail">
+          <UsageCard
+            v-for="row in unifiedRows"
+            :key="row.agent"
+            :window="row.window"
+            :now="now"
+          />
+          <p v-if="!unifiedRows.length" class="empty-usage">
+            No connected agents
+          </p>
+        </section>
+        <template v-else-if="page !== 'settings'">
           <section class="card detail-card">
             <div class="account-row">
               <button

@@ -17,6 +17,7 @@ test('missing or malformed settings fall back to defaults', async () => {
       presenceEnabled: false,
       agents: { codex: true, claude: true, cursor: true, grok: true, muse: true },
       unifiedUsage: true,
+      launchAtLoginDefaulted: false,
     }
     assert.deepEqual(await readSettings(t.path), defaults)
     await writeFile(t.path, '{not json')

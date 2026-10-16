@@ -137,10 +137,47 @@ h1 {
   padding: 10px 11px;
 }
 .unified-usage {
+  display: block;
+  width: 100%;
   margin-bottom: 11px;
+  text-align: left;
 }
-.unified-usage .usage-row:last-child,
-.unified-usage .empty-usage {
+/* Main-screen row: name, bar and percent on one line, like Windows. */
+.compact-row {
+  --accent: #007aff;
+  display: grid;
+  grid-template-columns: 82px 1fr 4ch; /* Fixed percent column keeps bars aligned. */
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.compact-row + .compact-row {
+  margin-top: 7px;
+}
+.compact-row.warning {
+  --accent: #ff9500;
+}
+.compact-row.critical {
+  --accent: #ff3b30;
+}
+.compact-row .progress {
+  display: block;
+  margin: 0;
+}
+.compact-row .progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.compact-row strong {
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.unified-detail .usage-row:last-child,
+.unified-usage .empty-usage,
+.unified-detail .empty-usage {
   margin: 0;
 }
 .agent-row {

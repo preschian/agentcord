@@ -28,13 +28,15 @@ export type ProviderUsageState = Omit<UsageState, 'codexHome' | 'executable'>
 export type ClaudeUsageState = ProviderUsageState
 export type TokenProvider = 'claude' | 'cursor' | 'grok' | 'muse'
 export type Agent = 'codex' | TokenProvider
-/** Persisted in settings.json. The renderer sees everything but presence, which has its own state. */
+/** Persisted in settings.json. The renderer only sees the agent and display options. */
 export interface AppSettings {
   presenceEnabled: boolean
   agents: Record<Agent, boolean>
   unifiedUsage: boolean
+  /** Launch at login was switched on once by default; never again after. */
+  launchAtLoginDefaulted: boolean
 }
-export type UiSettings = Omit<AppSettings, 'presenceEnabled'>
+export type UiSettings = Pick<AppSettings, 'agents' | 'unifiedUsage'>
 export interface PresenceState {
   enabled: boolean
   // 'waiting' means enabled but Discord is not running or not connected yet.

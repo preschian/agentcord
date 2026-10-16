@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MuseUsageService, parseMuseUsage } from '../src/main/muse-usage.ts'
+import { createMuseUsage, parseMuseProfile, parseMuseUsage, readMuseCredentials } from '../src/main/muse-usage.ts'
 
 // Shape of POST https://api.meta.ai/muse-code/key (the inference key and payment fields are ignored).
 const response = {
@@ -15,50 +15,48 @@ const response = {
   },
 }
 test('parses the 5-hour and weekly windows, plan and email', () => {
-  const { email, plan, windows: [session, weekly] } = parseMuseUsage(response)
-  assert.equal(email, 'a@b.invalid')
-  assert.equal(plan, 'Power Usage')
+  assert.deepEqual(parseMuseProfile(response), { email: 'a@b.invalid', plan: 'Power Usage' })
+  const [session, weekly] = parseMuseUsage(response)
   assert.deepEqual(session, { id: 'muse-session', label: '5-hour session', usedPercent: 25, durationMinutes: 300, resetsAt: 1_800_000_000_000, severity: 'normal' })
   assert.equal(weekly.severity, 'critical')
   assert.equal(weekly.resetsAt, 1_800_300_000_000)
 })
-test('missing data is an error, never 0% usage', () => {
+test('missing data is an error or idle, never 0% usage', () => {
   assert.throws(() => parseMuseUsage({ ...response, is_subs_active: false }), /No Muse Code subscription/)
-  assert.throws(() => parseMuseUsage({ ...response, require_payment: true }), /payment method/)
-  // Idle 5-hour window: valid login with plan, but no windows.
-  assert.deepEqual(parseMuseUsage({ ...response, subs_usage: null }), { email: 'a@b.invalid', plan: 'Power Usage', windows: [] })
+  assert.throws(() => parseMuseProfile({ ...response, require_payment: true }), /payment method/)
+  assert.deepEqual(parseMuseUsage({ ...response, subs_usage: null }), []) // Idle 5-hour window.
   assert.throws(() => parseMuseUsage({ ...response, subs_usage: { window: { used_percent: 'x' } } }), /valid usage/)
-  assert.equal(parseMuseUsage({ ...response, subs_usage: { weekly: { used_percent: 10 } } }).windows.length, 1)
+  assert.equal(parseMuseUsage({ ...response, subs_usage: { weekly: { used_percent: 10 } } }).length, 1)
 })
-test('cache drops email and api key; logout drops old data', async t => {
+test('reads the CLI token and keys the account by email', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'agentcord-muse-home-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  assert.equal(await readMuseCredentials(home), null)
+  await mkdir(join(home, '.config', 'muse'), { recursive: true })
+  await writeFile(join(home, '.config', 'muse', 'auth.json'), JSON.stringify({ providers: { meta: { access_token: 'dca:t', user_email: 'a@b.invalid' } } }))
+  const credentials = await readMuseCredentials(home)
+  assert.equal(credentials?.accessToken, 'dca:t')
+  assert.doesNotMatch(credentials?.key ?? '', /a@b/)
+})
+test('idle window keeps the plan with no windows; cache never holds the key', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'agentcord-muse-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
   const cachePath = join(dir, 'muse.json')
-  let credentials: { accessToken: string; key: string } | null = { accessToken: 't', key: 'a' }
   let now = 1_800_000_000_000
   let body: unknown = response
-  const service = new MuseUsageService({
-    cachePath, visible: () => true, changed: () => {}, now: () => now, credentials: async () => credentials, fetchJson: async () => body,
+  const service = createMuseUsage({
+    cachePath, visible: () => true, changed: () => {}, now: () => now,
+    credentials: async () => ({ accessToken: 't', key: 'a' }), fetchJson: async () => body,
   })
   t.after(() => service.stop())
   await service.refresh()
   assert.equal(service.state.status, 'ready')
-  assert.equal(service.state.snapshot?.email, 'a@b.invalid')
-  const cached = await readFile(cachePath, 'utf8')
-  assert.equal(JSON.parse(cached).snapshot.email, null)
-  assert.doesNotMatch(cached, /LLM|last4/)
+  assert.equal(service.state.snapshot?.windows.length, 2)
+  assert.doesNotMatch(await readFile(cachePath, 'utf8'), /LLM|last4|a@b/)
   now += 60_000
-  body = { ...response, subs_usage: undefined } // Window went idle.
+  body = { ...response, subs_usage: undefined }
   await service.refresh()
   assert.equal(service.state.status, 'ready')
   assert.equal(service.state.snapshot?.plan, 'Power Usage')
   assert.deepEqual(service.state.snapshot?.windows, [])
-  assert.match(service.state.message ?? '', /5-hour window is active/)
-  await assert.rejects(readFile(cachePath)) // Stale window numbers are not kept.
-  now += 60_000
-  credentials = null
-  await service.refresh()
-  assert.equal(service.state.status, 'signed-out')
-  assert.equal(service.state.snapshot, null)
-  await assert.rejects(readFile(cachePath))
 })

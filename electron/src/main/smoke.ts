@@ -172,7 +172,7 @@ export async function runSmokeTest(
   assert.deepEqual(presence, { checked: 'false', status: 'Off' })
   await evaluate(`document.querySelector('[aria-expanded]').click()`)
   await pause()
-  assert.equal(await evaluate(`document.querySelectorAll('dd').length`), 4)
+  assert.equal(await evaluate(`document.querySelectorAll('dd').length`), 6)
   await evaluate(`document.querySelector('[data-back]').click()`)
   await pause()
   assert.equal(window.getBounds().height, mainHeight)

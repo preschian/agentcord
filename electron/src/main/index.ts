@@ -11,8 +11,12 @@ import {
 import { join } from 'node:path'
 import { CodexUsageService } from './codex-usage'
 import { ClaudeUsageService } from './claude-usage'
+import { createCursorUsage } from './cursor-usage'
+import { createGrokUsage } from './grok-usage'
+import { createMuseUsage } from './muse-usage'
+import type { TokenUsageService } from './token-usage'
+import type { ProviderUsageState, TokenProvider } from '../shared/types'
 import { ClaudeDesktopService } from './claude-desktop'
-import { MuseUsageService } from './muse-usage'
 import { PresenceService } from './presence'
 import { runSmokeTest } from './smoke'
 import {
@@ -39,9 +43,8 @@ const loginItemHost: LoginItemHost = {
 let window: BrowserWindow | null = null
 let tray: Tray | null = null
 let service: CodexUsageService | null = null
-let claude: ClaudeUsageService | null = null
+let providers: Record<TokenProvider, TokenUsageService<any>> | null = null
 let claudeDesktop: ClaudeDesktopService | null = null
-let muse: MuseUsageService | null = null
 let presence: PresenceService | null = null
 let quitting = false
 let anchored = true
@@ -58,9 +61,8 @@ else {
   app.on('before-quit', () => {
     quitting = true
     service?.stop()
-    claude?.stop()
+    for (const provider of Object.values(providers ?? {})) provider.stop()
     claudeDesktop?.stop()
-    muse?.stop()
     presence?.stop()
   })
   app.on('window-all-closed', () => {
@@ -85,7 +87,11 @@ else {
 }
 async function showWindow(): Promise<void> {
   // Check identity before revealing potentially cached account data.
-  await Promise.all([service?.tick(), claude?.tick(), claudeDesktop?.tick(), muse?.tick()])
+  await Promise.all([
+    service?.tick(),
+    ...Object.values(providers ?? {}).map((provider) => provider.tick()),
+    claudeDesktop?.tick(),
+  ])
   window?.show()
   window?.focus()
   if (
@@ -200,21 +206,26 @@ async function start(): Promise<void> {
       )
     },
   })
-  claude = new ClaudeUsageService({
-    cachePath: join(app.getPath('userData'), 'claude-usage-cache.json'),
+  const providerOptions = (name: TokenProvider) => ({
+    cachePath: join(app.getPath('userData'), `${name}-usage-cache.json`),
     visible: () => !!window?.isVisible() && !window.isMinimized(),
-    changed: (state) => {
-      if (!window?.isDestroyed()) window?.webContents.send('claude:changed', state)
-      presence?.update({ claude: state })
+    changed: (state: ProviderUsageState) => {
+      if (!window?.isDestroyed())
+        window?.webContents.send('provider:changed', name, state)
+      if (name === 'claude') presence?.update({ claude: state })
     },
   })
-  muse = new MuseUsageService({
-    cachePath: join(app.getPath('userData'), 'muse-usage-cache.json'),
-    visible: () => !!window?.isVisible() && !window.isMinimized(),
-    changed: (state) => {
-      if (!window?.isDestroyed()) window?.webContents.send('muse:changed', state)
-    },
-  })
+  providers = {
+    claude: new ClaudeUsageService(providerOptions('claude')),
+    cursor: createCursorUsage(providerOptions('cursor')),
+    grok: createGrokUsage(providerOptions('grok')),
+    muse: createMuseUsage(providerOptions('muse')),
+  }
+  const provider = (name: unknown) => {
+    if (typeof name !== 'string' || !Object.hasOwn(providers!, name))
+      throw new Error('Unknown usage provider')
+    return providers![name as TokenProvider]
+  }
   claudeDesktop = new ClaudeDesktopService({
     // Only scan while the popover is open or Discord presence would show it.
     needed: () =>
@@ -243,21 +254,13 @@ async function start(): Promise<void> {
     authorize(event)
     return service!.refresh()
   })
-  ipcMain.handle('claude:get', (event) => {
+  ipcMain.handle('provider:get', (event, name: unknown) => {
     authorize(event)
-    return claude!.state
+    return provider(name).state
   })
-  ipcMain.handle('claude:refresh', (event) => {
+  ipcMain.handle('provider:refresh', (event, name: unknown) => {
     authorize(event)
-    return claude!.refresh()
-  })
-  ipcMain.handle('muse:get', (event) => {
-    authorize(event)
-    return muse!.state
-  })
-  ipcMain.handle('muse:refresh', (event) => {
-    authorize(event)
-    return muse!.refresh()
+    return provider(name).refresh()
   })
   ipcMain.handle('claude-desktop:get', (event) => {
     authorize(event)
@@ -327,15 +330,10 @@ async function start(): Promise<void> {
           },
         },
         {
-          label: 'Refresh Claude usage',
+          label: 'Refresh other usage',
           click: () => {
-            void claude?.refresh()
-          },
-        },
-        {
-          label: 'Refresh Muse Code usage',
-          click: () => {
-            void muse?.refresh()
+            for (const provider of Object.values(providers ?? {}))
+              void provider.refresh()
           },
         },
         { type: 'separator' },
@@ -362,14 +360,17 @@ async function start(): Promise<void> {
   } else await window.loadFile(join(__dirname, '../renderer/index.html'))
   // A login launch stays in the tray; the popover opens when the user asks.
   if (smoke || !startedAtLogin(loginItemHost, process.argv)) window.show()
-  await Promise.all([service.start(), claude.start(), muse.start(), presence.start()])
+  await Promise.all([
+    service.start(),
+    ...Object.values(providers).map((provider) => provider.start()),
+    presence.start(),
+  ])
   await claudeDesktop.start() // After presence, so a saved opt-in is seen.
   if (smoke) {
     await runSmokeTest(window, service.state)
     service.stop()
-    claude.stop()
+    for (const provider of Object.values(providers)) provider.stop()
     claudeDesktop.stop()
-    muse.stop()
     presence.stop()
     app.exit(0)
   }

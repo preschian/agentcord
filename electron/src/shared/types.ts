@@ -24,8 +24,9 @@ export interface UsageState {
   codexHome: string
   executable: string | null
 }
-export type ClaudeUsageState = Omit<UsageState, 'codexHome' | 'executable'>
-export type MuseUsageState = ClaudeUsageState
+export type ProviderUsageState = Omit<UsageState, 'codexHome' | 'executable'>
+export type ClaudeUsageState = ProviderUsageState
+export type TokenProvider = 'claude' | 'cursor' | 'grok' | 'muse'
 export interface PresenceState {
   enabled: boolean
   // 'waiting' means enabled but Discord is not running or not connected yet.
@@ -39,12 +40,9 @@ export interface AgentCordAPI {
   getUsage(): Promise<UsageState>
   refreshUsage(): Promise<UsageState>
   onUsage(callback: (state: UsageState) => void): () => void
-  getClaudeUsage(): Promise<ClaudeUsageState>
-  refreshClaudeUsage(): Promise<ClaudeUsageState>
-  onClaudeUsage(callback: (state: ClaudeUsageState) => void): () => void
-  getMuseUsage(): Promise<MuseUsageState>
-  refreshMuseUsage(): Promise<MuseUsageState>
-  onMuseUsage(callback: (state: MuseUsageState) => void): () => void
+  getProviderUsage(provider: TokenProvider): Promise<ProviderUsageState>
+  refreshProviderUsage(provider: TokenProvider): Promise<ProviderUsageState>
+  onProviderUsage(callback: (provider: TokenProvider, state: ProviderUsageState) => void): () => void
   getClaudeActive(): Promise<boolean>
   onClaudeActive(callback: (active: boolean) => void): () => void
   getPresence(): Promise<PresenceState>

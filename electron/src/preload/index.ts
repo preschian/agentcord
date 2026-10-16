@@ -1,9 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AgentCordAPI,
-  ClaudeUsageState,
-  MuseUsageState,
   PresenceState,
+  ProviderUsageState,
+  TokenProvider,
   UsageState,
 } from '../shared/types'
 
@@ -16,21 +16,16 @@ const api: AgentCordAPI = {
     ipcRenderer.on('usage:changed', listener)
     return () => ipcRenderer.removeListener('usage:changed', listener)
   },
-  getClaudeUsage: () => ipcRenderer.invoke('claude:get'),
-  refreshClaudeUsage: () => ipcRenderer.invoke('claude:refresh'),
-  onClaudeUsage: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, state: ClaudeUsageState) =>
-      callback(state)
-    ipcRenderer.on('claude:changed', listener)
-    return () => ipcRenderer.removeListener('claude:changed', listener)
-  },
-  getMuseUsage: () => ipcRenderer.invoke('muse:get'),
-  refreshMuseUsage: () => ipcRenderer.invoke('muse:refresh'),
-  onMuseUsage: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, state: MuseUsageState) =>
-      callback(state)
-    ipcRenderer.on('muse:changed', listener)
-    return () => ipcRenderer.removeListener('muse:changed', listener)
+  getProviderUsage: (provider) => ipcRenderer.invoke('provider:get', provider),
+  refreshProviderUsage: (provider) => ipcRenderer.invoke('provider:refresh', provider),
+  onProviderUsage: (callback) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      provider: TokenProvider,
+      state: ProviderUsageState,
+    ) => callback(provider, state)
+    ipcRenderer.on('provider:changed', listener)
+    return () => ipcRenderer.removeListener('provider:changed', listener)
   },
   getClaudeActive: () => ipcRenderer.invoke('claude-desktop:get'),
   onClaudeActive: (callback) => {

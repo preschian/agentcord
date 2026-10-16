@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
-  ClaudeUsageState,
   PresenceState,
   LaunchAtLoginState,
+  ProviderUsageState,
+  TokenProvider,
   UsageState,
 } from '../shared/types'
 import Icon from './components/Icon.vue'
@@ -11,7 +12,31 @@ import UsageCard from './components/UsageCard.vue'
 import { ago, maskEmail } from './format'
 
 const logoUrl = `${import.meta.env.BASE_URL}agentcord.png`
-const page = ref<'main' | 'codex' | 'claude' | 'settings'>('main')
+const providers: Record<
+  TokenProvider,
+  { name: string; account: string; help: string; command: string }
+> = {
+  claude: {
+    name: 'Claude',
+    account: 'Anthropic / Claude',
+    help: 'Sign in to Claude Code, then refresh.',
+    command: 'claude /login',
+  },
+  cursor: {
+    name: 'Cursor',
+    account: 'Cursor',
+    help: 'Sign in to Cursor or the Cursor CLI, then refresh.',
+    command: 'cursor-agent login',
+  },
+  grok: {
+    name: 'Grok',
+    account: 'xAI / Grok',
+    help: 'Sign in to the Grok CLI, then refresh.',
+    command: 'grok login',
+  },
+}
+const providerNames = Object.keys(providers) as TokenProvider[]
+const page = ref<'main' | 'codex' | TokenProvider | 'settings'>('main')
 const popover = ref<HTMLElement | null>(null)
 const emailRevealed = ref(false)
 const installationExpanded = ref(false)
@@ -24,12 +49,17 @@ const state = ref<UsageState>({
   codexHome: '',
   executable: null,
 })
-const claudeState = ref<ClaudeUsageState>({
+const loading = (): ProviderUsageState => ({
   status: 'loading',
   snapshot: null,
   refreshing: false,
   message: null,
   nextRefreshAt: 0,
+})
+const providerStates = ref<Record<TokenProvider, ProviderUsageState>>({
+  claude: loading(),
+  cursor: loading(),
+  grok: loading(),
 })
 const claudeActive = ref(false)
 const presence = ref<PresenceState>({ enabled: false, status: 'off' })
@@ -47,19 +77,33 @@ const now = ref(Date.now())
 const uiError = ref<string | null>(null)
 const bridgeAvailable = ref(false)
 let unsubscribe: (() => void) | undefined
-let unsubscribeClaude: (() => void) | undefined
+let unsubscribeProviders: (() => void) | undefined
 let unsubscribeClaudeActive: (() => void) | undefined
 let unsubscribePresence: (() => void) | undefined
 let unsubscribeWindowShown: (() => void) | undefined
 let timer: ReturnType<typeof setInterval> | undefined
 let observer: ResizeObserver | undefined
 let lastHeight = 0
-const isClaude = computed(() => page.value === 'claude')
-const providerName = computed(() => (isClaude.value ? 'Claude' : 'Codex'))
-// Detail screens read from whichever provider is open; Codex is the default.
-const active = computed<ClaudeUsageState>(() =>
-  isClaude.value ? claudeState.value : state.value,
+const tokenPage = computed(() =>
+  providerNames.includes(page.value as TokenProvider)
+    ? (page.value as TokenProvider)
+    : null,
 )
+const meta = computed(() => (tokenPage.value ? providers[tokenPage.value] : null))
+const providerName = computed(() => meta.value?.name ?? 'Codex')
+// Detail screens read from whichever provider is open; Codex is the default.
+const active = computed<ProviderUsageState>(() =>
+  tokenPage.value ? providerStates.value[tokenPage.value] : state.value,
+)
+function rowStatus(value: ProviderUsageState) {
+  return value.snapshot
+    ? value.status === 'cached'
+      ? 'Cached usage'
+      : 'Connected'
+    : value.status === 'loading'
+      ? 'Connecting…'
+      : 'Not connected'
+}
 const snapshot = computed(() => active.value.snapshot)
 const cooldown = computed(() =>
   Math.max(0, Math.ceil((active.value.nextRefreshAt - now.value) / 1000)),
@@ -86,9 +130,7 @@ const accountLabel = computed(() => {
     ? emailRevealed.value
       ? email
       : maskEmail(email)
-    : isClaude.value
-      ? 'Anthropic / Claude'
-      : 'OpenAI / ChatGPT'
+    : (meta.value?.account ?? 'OpenAI / ChatGPT')
 })
 const plan = computed(() => {
   const value = snapshot.value?.plan?.replace(/[_-]/g, ' ')
@@ -114,7 +156,10 @@ function applyState(value: UsageState) {
 async function refresh() {
   uiError.value = null
   try {
-    if (isClaude.value) claudeState.value = await window.agentcord.refreshClaudeUsage()
+    const name = tokenPage.value
+    if (name)
+      providerStates.value[name] =
+        await window.agentcord.refreshProviderUsage(name)
     else applyState(await window.agentcord.refreshUsage())
   } catch {
     uiError.value =
@@ -201,10 +246,10 @@ onMounted(async () => {
     events++
     applyState(value)
   })
-  let claudeEvents = 0
-  unsubscribeClaude = window.agentcord.onClaudeUsage((value) => {
-    claudeEvents++
-    claudeState.value = value
+  const providerEvents = new Set<TokenProvider>()
+  unsubscribeProviders = window.agentcord.onProviderUsage((name, value) => {
+    providerEvents.add(name)
+    providerStates.value[name] = value
   })
   let activeEvents = 0
   unsubscribeClaudeActive = window.agentcord.onClaudeActive((value) => {
@@ -217,16 +262,19 @@ onMounted(async () => {
     presence.value = value
   })
   try {
-    const [initial, claudeInitial, activeInitial, presenceInitial, loginInitial] =
+    const [initial, providerInitial, activeInitial, presenceInitial, loginInitial] =
       await Promise.all([
         window.agentcord.getUsage(),
-        window.agentcord.getClaudeUsage(),
+        Promise.all(providerNames.map((name) => window.agentcord.getProviderUsage(name))),
         window.agentcord.getClaudeActive(),
         window.agentcord.getPresence(),
         window.agentcord.getLaunchAtLogin(),
       ])
     launchAtLogin.value = loginInitial
-    if (!claudeEvents) claudeState.value = claudeInitial
+    providerNames.forEach((name, index) => {
+      if (!providerEvents.has(name))
+        providerStates.value[name] = providerInitial[index]
+    })
     if (!activeEvents) claudeActive.value = activeInitial
     if (!events) applyState(initial)
     if (!presenceEvents) presence.value = presenceInitial
@@ -236,7 +284,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   unsubscribe?.()
-  unsubscribeClaude?.()
+  unsubscribeProviders?.()
   unsubscribeClaudeActive?.()
   unsubscribePresence?.()
   unsubscribeWindowShown?.()
@@ -264,15 +312,7 @@ onUnmounted(() => {
           <button class="agent-row" data-open-codex @click="navigate('codex')">
             <span class="agent-title"
               ><strong>Codex</strong
-              ><small>{{
-                snapshot
-                  ? state.status === 'cached'
-                    ? 'Cached usage'
-                    : 'Connected'
-                  : state.status === 'loading'
-                    ? 'Connecting…'
-                    : 'Not connected'
-              }}</small></span
+              ><small>{{ rowStatus(state) }}</small></span
             >
             <span class="agent-trailing" :class="{ connect: !snapshot }">{{
               snapshot
@@ -281,25 +321,26 @@ onUnmounted(() => {
             }}</span>
             <Icon name="arrow" :size="11" class="chevron" />
           </button>
-          <button class="agent-row" data-open-claude @click="navigate('claude')">
+          <button
+            v-for="name in providerNames"
+            :key="name"
+            class="agent-row"
+            :data-open-provider="name"
+            @click="navigate(name)"
+          >
             <span class="agent-title"
-              ><strong>Claude</strong
+              ><strong>{{ providers[name].name }}</strong
               ><small>{{
-                (claudeState.snapshot
-                  ? claudeState.status === 'cached'
-                    ? 'Cached usage'
-                    : 'Connected'
-                  : claudeState.status === 'loading'
-                    ? 'Connecting…'
-                    : 'Not connected') + (claudeActive ? ' · Desktop active' : '')
+                rowStatus(providerStates[name]) +
+                (name === 'claude' && claudeActive ? ' · Desktop active' : '')
               }}</small></span
             >
             <span
               class="agent-trailing"
-              :class="{ connect: !claudeState.snapshot }"
+              :class="{ connect: !providerStates[name].snapshot }"
               >{{
-                claudeState.snapshot
-                  ? `${Math.round(claudeState.snapshot.windows[0]?.usedPercent ?? 0)}% used`
+                providerStates[name].snapshot
+                  ? `${Math.round(providerStates[name].snapshot.windows[0]?.usedPercent ?? 0)}% used`
                   : 'Connect'
               }}</span
             >
@@ -419,9 +460,13 @@ onUnmounted(() => {
               "
               class="login-help"
             >
-              <p v-if="isClaude">Sign in to Claude Code, then refresh.</p>
-              <p v-else>Sign in to Codex with your ChatGPT account, then refresh.</p>
-              <code>{{ isClaude ? 'claude /login' : 'codex login' }}</code>
+              <p>
+                {{
+                  meta?.help ??
+                  'Sign in to Codex with your ChatGPT account, then refresh.'
+                }}
+              </p>
+              <code>{{ meta?.command ?? 'codex login' }}</code>
             </div>
             <button
               class="refresh-row"
@@ -431,7 +476,7 @@ onUnmounted(() => {
               <Icon
                 name="refresh"
                 :size="12"
-                :class="{ spinning: state.refreshing }"
+                :class="{ spinning: active.refreshing }"
               /><span>{{ refreshLabel }}</span>
             </button>
           </section>
@@ -491,8 +536,8 @@ onUnmounted(() => {
               <span class="provider-name"><i></i>Codex</span
               ><small>Usage only</small>
             </div>
-            <div class="setting-row">
-              <span class="provider-name"><i></i>Claude</span
+            <div v-for="name in providerNames" :key="name" class="setting-row">
+              <span class="provider-name"><i></i>{{ providers[name].name }}</span
               ><small>Usage only</small>
             </div>
           </section>
@@ -517,22 +562,26 @@ onUnmounted(() => {
               <dd>{{ state.executable || 'Not found / not checked yet' }}</dd>
               <dt>Claude sign-in</dt>
               <dd>Read from Claude Code's ~/.claude/.credentials.json.</dd>
+              <dt>Cursor sign-in</dt>
+              <dd>Read from Cursor's state.vscdb or the Cursor CLI auth.json.</dd>
+              <dt>Grok sign-in</dt>
+              <dd>Read from the Grok CLI's ~/.grok/auth.json.</dd>
               <dt>Configuration</dt>
               <dd>
-                Set CODEX_HOME, CODEX_BINARY or CLAUDE_CONFIG_DIR before
-                starting the app.
+                Set CODEX_HOME, CODEX_BINARY, CLAUDE_CONFIG_DIR or GROK_HOME
+                before starting the app.
               </dd>
             </dl>
           </section>
           <section class="soft-card about-card">
             <h2>Electron preview</h2>
             <p>
-              Codex / ChatGPT and Claude subscription limits only. Session
-              tracking and API billing are not included.
+              Codex / ChatGPT, Claude, Cursor and Grok subscription limits
+              only. Session tracking and API billing are not included.
             </p>
             <p>
-              Credentials stay with Codex and Claude Code. Cached results are marked; account
-              changes clear old usage.
+              Credentials stay with each agent's own app or CLI. Cached results
+              are marked; account changes clear old usage.
             </p>
           </section>
           <button class="navigation-row soft-card" @click="hide">

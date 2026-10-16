@@ -94,13 +94,21 @@ const enabledAgents = computed(() =>
 const enabledProviders = computed(() =>
   providerNames.filter((name) => settings.value.agents[name]),
 )
-// One bar per enabled agent's primary window, like the Windows summary card.
-const unifiedRows = computed(() =>
+// Enabled agents that report usage, with every limit window they return.
+const unifiedAgents = computed(() =>
   enabledAgents.value.flatMap((agent) => {
-    const primary = (agent === 'codex' ? state.value : providerStates.value[agent])
-      .snapshot?.windows[0]
-    return primary ? [{ agent, window: { ...primary, label: agentName(agent) } }] : []
+    const windows =
+      (agent === 'codex' ? state.value : providerStates.value[agent]).snapshot
+        ?.windows ?? []
+    return windows.length ? [{ agent, name: agentName(agent), windows }] : []
   }),
+)
+// One bar per agent's primary window, like the Windows summary card.
+const unifiedRows = computed(() =>
+  unifiedAgents.value.map(({ agent, name, windows }) => ({
+    agent,
+    window: { ...windows[0], label: name },
+  })),
 )
 const launchAtLogin = ref<LaunchAtLoginState>({ supported: false, enabled: false })
 const launchBusy = ref(false)
@@ -480,17 +488,25 @@ onUnmounted(() => {
           </button>
           <h1>{{ screenTitle }}</h1>
         </header>
-        <section v-if="page === 'usage'" class="card unified-detail">
-          <UsageCard
-            v-for="row in unifiedRows"
-            :key="row.agent"
-            :window="row.window"
-            :now="now"
-          />
-          <p v-if="!unifiedRows.length" class="empty-usage">
+        <template v-if="page === 'usage'">
+          <section
+            v-for="group in unifiedAgents"
+            :key="group.agent"
+            class="card unified-detail"
+            :data-usage-group="group.agent"
+          >
+            <h2>{{ group.name }}</h2>
+            <UsageCard
+              v-for="usageWindow in group.windows"
+              :key="usageWindow.id"
+              :window="usageWindow"
+              :now="now"
+            />
+          </section>
+          <p v-if="!unifiedAgents.length" class="card empty-usage">
             No connected agents
           </p>
-        </section>
+        </template>
         <template v-else-if="page !== 'settings'">
           <section class="card detail-card">
             <div class="account-row">

@@ -196,6 +196,14 @@ export async function runSmokeTest(
     await evaluate(`document.querySelector('h1').textContent`),
     'Unified usage',
   )
+  // Every limit window of every agent is listed, grouped per agent.
+  assert.equal(
+    await evaluate(
+      `document.querySelectorAll('[data-usage-group="codex"] [data-usage-card]').length`,
+    ),
+    state.snapshot?.windows.length ?? 0,
+  )
+  screenshots.push(await capture('-usage'))
   await evaluate(`document.querySelector('[data-back]').click()`)
   await pause()
   window.webContents.send('usage:changed', {

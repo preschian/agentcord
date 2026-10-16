@@ -14,7 +14,10 @@ internal static class Program
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => LogCrash("ThreadException", e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            LogCrash("UnhandledException", e.ExceptionObject as Exception);
+            LogCrash(
+                "UnhandledException",
+                e.ExceptionObject as Exception
+                    ?? new Exception(e.ExceptionObject?.ToString() ?? "non-Exception"));
 
         // A second instance would fight over the Discord pipe and the tray
         // icon; quietly defer to the one already running.
@@ -38,9 +41,7 @@ internal static class Program
         // the UI without reaching for the tray icon).
         try
         {
-            LogCrash("Startup", null);
             Application.Run(new TrayApplicationContext(showPopoverOnStart: args.Contains("--popover")));
-            LogCrash("Application.Run returned", null);
         }
         catch (Exception ex)
         {
@@ -82,7 +83,7 @@ internal static class Program
         controller.Shutdown();
     }
 
-    internal static void LogCrash(string kind, Exception? ex)
+    internal static void LogCrash(string kind, Exception ex)
     {
         try
         {
@@ -92,7 +93,7 @@ internal static class Program
             Directory.CreateDirectory(dir);
             File.AppendAllText(
                 Path.Combine(dir, "crash.log"),
-                $"{DateTime.Now:O} {kind}: {ex?.ToString() ?? "ok"}\n");
+                $"{DateTime.Now:O} {kind}: {ex}\n");
         }
         catch
         {

@@ -103,7 +103,7 @@ public sealed class GrokSession
             }
         }
 
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         var (activeMs, lastMs) = RollingActive(nowMs);
         var isLive = best is not null;
         var todayMs = SessionActivity.WithLiveTail(activeMs, lastMs, nowMs, isLive);
@@ -159,12 +159,12 @@ public sealed class GrokSession
             foreach (var item in doc.RootElement.EnumerateArray())
             {
                 if (item.ValueKind != JsonValueKind.Object) continue;
-                var sid = StringProp(item, "session_id");
-                var cwd = StringProp(item, "cwd");
+                var sid = JsonProp.String(item, "session_id");
+                var cwd = JsonProp.String(item, "cwd");
                 if (string.IsNullOrEmpty(sid) || string.IsNullOrEmpty(cwd)) continue;
                 if (IntProp(item, "pid") is not int pid) continue;
-                var opened = ParseIsoMs(StringProp(item, "opened_at"))
-                    ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var opened = ParseIsoMs(JsonProp.String(item, "opened_at"))
+                    ?? SessionActivity.Now().ToUnixTimeMilliseconds();
                 list.Add(new LiveEntry(sid, cwd, pid, opened));
             }
             return list;
@@ -248,13 +248,13 @@ public sealed class GrokSession
         {
             using var doc = JsonDocument.Parse(ReadAllShared(path));
             var root = doc.RootElement;
-            var model = StringProp(root, "current_model_id");
-            var lastActive = ParseIsoMs(StringProp(root, "last_active_at"))
-                ?? ParseIsoMs(StringProp(root, "updated_at"));
-            var createdAt = ParseIsoMs(StringProp(root, "created_at"));
+            var model = JsonProp.String(root, "current_model_id");
+            var lastActive = ParseIsoMs(JsonProp.String(root, "last_active_at"))
+                ?? ParseIsoMs(JsonProp.String(root, "updated_at"));
+            var createdAt = ParseIsoMs(JsonProp.String(root, "created_at"));
             string? cwd = null;
             if (root.TryGetProperty("info", out var info) && info.ValueKind == JsonValueKind.Object)
-                cwd = StringProp(info, "cwd");
+                cwd = JsonProp.String(info, "cwd");
             var remotes = new List<string>();
             if (root.TryGetProperty("git_remotes", out var remotesEl) && remotesEl.ValueKind == JsonValueKind.Array)
             {
@@ -313,7 +313,7 @@ public sealed class GrokSession
             && Path.GetDirectoryName(summaryPath) is { } sessionDir
             && IsOpenTurn(sessionDir))
         {
-            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            return SessionActivity.Now().ToUnixTimeMilliseconds();
         }
         return best;
     }
@@ -385,7 +385,7 @@ public sealed class GrokSession
             if (last is null) return null;
 
             using var doc = JsonDocument.Parse(last);
-            return StringProp(doc.RootElement, "type");
+            return JsonProp.String(doc.RootElement, "type");
         }
         catch
         {
@@ -404,7 +404,7 @@ public sealed class GrokSession
             return new SignalsMeta(
                 LongProp(root, "contextTokensUsed"),
                 LongProp(root, "contextWindowTokens"),
-                StringProp(root, "primaryModelId"));
+                JsonProp.String(root, "primaryModelId"));
         }
         catch
         {
@@ -417,7 +417,7 @@ public sealed class GrokSession
         if (!_hasBuiltSummaryIndex) RebuildSummaryIndex();
 
         (SessionInfo Info, long ActivityMs)? best = null;
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         foreach (var path in _summaryBySessionId.Values)
         {
             var summary = ReadSummary(path);
@@ -531,7 +531,7 @@ public sealed class GrokSession
         try
         {
             using var doc = JsonDocument.Parse(trimmed);
-            return ParseIsoMs(StringProp(doc.RootElement, "ts"));
+            return ParseIsoMs(JsonProp.String(doc.RootElement, "ts"));
         }
         catch
         {
@@ -602,11 +602,6 @@ public sealed class GrokSession
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();
     }
-
-    private static string? StringProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
 
     private static int? IntProp(JsonElement obj, string name)
     {

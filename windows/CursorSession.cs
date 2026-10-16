@@ -7,10 +7,8 @@ using System.Text.Json;
 
 namespace AgentCord;
 
-public sealed class CursorSession : IDisposable
+public sealed class CursorSession
 {
-    public double ActiveWindowSeconds { get; set; } = SessionActivity.IdleWindowSeconds;
-
     private readonly string _cursorHome;
     private readonly string _uptimeFile;
     private readonly Dictionary<string, string> _repoNameCache = [];
@@ -26,8 +24,6 @@ public sealed class CursorSession : IDisposable
         Directory.Exists(Path.Combine(_cursorHome, "projects"))
         || Directory.Exists(Path.Combine(_cursorHome, "chats"));
 
-    public void Dispose() { }
-
     public static string DefaultUptimeFile()
     {
         var dir = Environment.GetEnvironmentVariable("AGENTCORD_CURSOR_UPTIME_DIR");
@@ -36,7 +32,7 @@ public sealed class CursorSession : IDisposable
         return Path.Combine(dir, $"{DateTime.Today:yyyy-MM-dd}-uptime.json");
     }
 
-    public AgentScan Scan() => ScanAt(_uptimeFile, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    public AgentScan Scan() => ScanAt(_uptimeFile, SessionActivity.Now().ToUnixTimeMilliseconds());
 
     internal AgentScan ScanAt(string path, long nowMs)
     {
@@ -82,11 +78,11 @@ public sealed class CursorSession : IDisposable
             {
                 var v = doc.RootElement;
                 if (v.ValueKind != JsonValueKind.Object) continue;
-                var kind = Str(v, "e");
+                var kind = JsonProp.String(v, "e");
                 if (kind is null) continue;
                 if (!TryInt64(v, "ms", out var ms)) continue;
-                var id = Str(v, "id") ?? "";
-                var cwd = Str(v, "cwd");
+                var id = JsonProp.String(v, "id") ?? "";
+                var cwd = JsonProp.String(v, "cwd");
                 if (!string.IsNullOrEmpty(cwd))
                     project = RepoNames.FromCwd(cwd, _repoNameCache);
 
@@ -123,9 +119,6 @@ public sealed class CursorSession : IDisposable
 
     private readonly record struct Day(long TotalMs, bool Open, string Project);
 
-    private static string? Str(JsonElement v, string key) =>
-        v.TryGetProperty(key, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
-
     private static bool TryInt64(JsonElement v, string key, out long n)
     {
         n = 0;
@@ -137,21 +130,5 @@ public sealed class CursorSession : IDisposable
             return true;
         }
         return false;
-    }
-
-    public static string PrettyModel(string raw)
-    {
-        if (raw.Equals("default", StringComparison.OrdinalIgnoreCase)) return "Auto";
-
-        var value = raw;
-        if (value.StartsWith("cursor-", StringComparison.OrdinalIgnoreCase))
-            value = value["cursor-".Length..];
-
-        return string.Join(' ', value.Split('-', StringSplitOptions.RemoveEmptyEntries).Select(part =>
-        {
-            if (part.Length > 0 && char.IsDigit(part[0])) return part;
-            if (part.Equals("gpt", StringComparison.OrdinalIgnoreCase)) return "GPT";
-            return char.ToUpperInvariant(part[0]) + part[1..];
-        }));
     }
 }

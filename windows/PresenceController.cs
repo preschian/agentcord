@@ -83,7 +83,6 @@ public sealed class PresenceController : IDisposable
         _ipc.Dispose();
         _claudeScanner.Dispose();
         _codexScanner.Dispose();
-        _cursorScanner.Dispose();
         _antigravityScanner.Dispose();
     }
 
@@ -93,12 +92,6 @@ public sealed class PresenceController : IDisposable
         if (Interlocked.Exchange(ref _ticking, 1) == 1) return;
         try
         {
-            const double idle = SessionActivity.IdleWindowSeconds;
-            _claudeScanner.ActiveWindowSeconds = idle;
-            _codexScanner.ActiveWindowSeconds = idle;
-            _cursorScanner.ActiveWindowSeconds = idle;
-            _antigravityScanner.ActiveWindowSeconds = idle;
-            _grokScanner.ActiveWindowSeconds = idle;
             // Disabled agents must not walk their on-disk trees.
             var claude = _settings.AgentClaudeEnabled ? _claudeScanner.Scan() : default;
             var codex = _settings.AgentCodexEnabled ? _codexScanner.Scan() : default;
@@ -152,7 +145,7 @@ public sealed class PresenceController : IDisposable
         if (_settings.ShowProject)
             stateParts.Add($"Working on: {info.ProjectName}");
         if (_settings.ShowTokens && info.TotalTokens > 0)
-            stateParts.Add($"{FormatTokens(info.TotalTokens)} tokens");
+            stateParts.Add($"{Format.Tokens(info.TotalTokens)} tokens");
         var state = stateParts.Count > 0 ? string.Join(" · ", stateParts) : null;
 
         return new RichPresence
@@ -219,11 +212,4 @@ public sealed class PresenceController : IDisposable
     };
 
     private static string? NonEmpty(string s) => s.Length == 0 ? null : s;
-
-    public static string FormatTokens(long count) => count switch
-    {
-        >= 1_000_000 => $"{count / 1_000_000.0:F1}M",
-        >= 1_000 => $"{count / 1_000.0:F1}K",
-        _ => count.ToString(),
-    };
 }

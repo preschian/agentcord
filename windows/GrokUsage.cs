@@ -202,9 +202,9 @@ public sealed class GrokUsage : IDisposable
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-            if (StringProp(root, "subscription_tier_display") is { Length: > 0 } display)
+            if (JsonProp.String(root, "subscription_tier_display") is { Length: > 0 } display)
                 return display.Trim();
-            return MapSubscriptionTier(StringProp(root, "subscriptionTier"));
+            return MapSubscriptionTier(JsonProp.String(root, "subscriptionTier"));
         }
         catch
         {
@@ -327,16 +327,16 @@ public sealed class GrokUsage : IDisposable
             {
                 if (prop.Value.ValueKind != JsonValueKind.Object) continue;
                 var obj = prop.Value;
-                var access = StringProp(obj, "key");
-                var refresh = StringProp(obj, "refresh_token");
+                var access = JsonProp.String(obj, "key");
+                var refresh = JsonProp.String(obj, "refresh_token");
                 if (string.IsNullOrEmpty(access) && string.IsNullOrEmpty(refresh)) continue;
                 return new AuthTokens(
                     access,
                     refresh,
-                    StringProp(obj, "oidc_client_id"),
-                    StringProp(obj, "oidc_issuer"),
-                    StringProp(obj, "user_id"),
-                    StringProp(obj, "email"));
+                    JsonProp.String(obj, "oidc_client_id"),
+                    JsonProp.String(obj, "oidc_issuer"),
+                    JsonProp.String(obj, "user_id"),
+                    JsonProp.String(obj, "email"));
             }
         }
         catch
@@ -388,10 +388,10 @@ public sealed class GrokUsage : IDisposable
         if (config is JsonElement c)
         {
             if (c.TryGetProperty("currentPeriod", out var period) && period.ValueKind == JsonValueKind.Object)
-                periodEndRaw = StringProp(period, "end");
-            periodEndRaw ??= StringProp(c, "billingPeriodEnd");
+                periodEndRaw = JsonProp.String(period, "end");
+            periodEndRaw ??= JsonProp.String(c, "billingPeriodEnd");
         }
-        periodEndRaw ??= StringProp(root, "billingPeriodEnd");
+        periodEndRaw ??= JsonProp.String(root, "billingPeriodEnd");
 
         var periodEndMs = ParseIsoMs(periodEndRaw);
 
@@ -399,8 +399,8 @@ public sealed class GrokUsage : IDisposable
         // weekly accounts. Unified-billing accounts omit it entirely but still
         // report the weekly `currentPeriod` — the Grok CLI shows that as 0%
         // used, so treat an absent percent (when we have a period) as zero.
-        var percentRaw = NumberProp(config, "creditUsagePercent")
-            ?? NumberProp(root, "creditUsagePercent")
+        var percentRaw = JsonProp.Number(config, "creditUsagePercent")
+            ?? JsonProp.Number(root, "creditUsagePercent")
             ?? (periodEndMs is not null ? 0 : null);
         if (percentRaw is not double percentValue || double.IsNaN(percentValue) || double.IsInfinity(percentValue))
             return null;
@@ -429,33 +429,14 @@ public sealed class GrokUsage : IDisposable
     private static int ClampPercent(double value) =>
         Math.Min(100, Math.Max(0, (int)Math.Round(value)));
 
-    private static double? NumberProp(JsonElement? obj, string name)
-    {
-        if (obj is not JsonElement el) return NumberProp(default(JsonElement), name);
-        return NumberProp(el, name);
-    }
-
-    private static double? NumberProp(JsonElement obj, string name)
-    {
-        if (obj.ValueKind != JsonValueKind.Object) return null;
-        if (!obj.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.Number)
-            return null;
-        return v.GetDouble();
-    }
-
     private static double? MoneyVal(JsonElement obj, string name)
     {
         if (!obj.TryGetProperty(name, out var v)) return null;
         if (v.ValueKind == JsonValueKind.Number) return v.GetDouble();
         if (v.ValueKind == JsonValueKind.Object)
-            return NumberProp(v, "val");
+            return JsonProp.Number(v, "val");
         return null;
     }
-
-    private static string? StringProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
 
     private static long? ParseIsoMs(string? value)
     {

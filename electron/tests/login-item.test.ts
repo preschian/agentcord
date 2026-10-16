@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  applyLaunchAtLoginDefault,
   getLaunchAtLogin,
   setLaunchAtLogin,
   startedAtLogin,
@@ -32,6 +33,17 @@ function host(overrides: Partial<LoginItemHost> = {}) {
 test('launch at login is off by default and read from the OS', () => {
   const { fake } = host()
   assert.deepEqual(getLaunchAtLogin(fake), { supported: true, enabled: false })
+})
+test('the on-by-default is applied once, only where supported', () => {
+  const { fake } = host()
+  assert.equal(applyLaunchAtLoginDefault(fake, false), true)
+  assert.equal(getLaunchAtLogin(fake).enabled, true)
+  // Already applied: a user who switched it off stays off.
+  setLaunchAtLogin(fake, false)
+  assert.equal(applyLaunchAtLoginDefault(fake, true), false)
+  assert.equal(getLaunchAtLogin(fake).enabled, false)
+  // Dev runs never register the bare electron binary or use up the default.
+  assert.equal(applyLaunchAtLoginDefault(host({ isPackaged: false }).fake, false), false)
 })
 test('enabling registers the hidden launch argument and reads the state back', () => {
   const { fake, calls } = host()

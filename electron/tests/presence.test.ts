@@ -123,6 +123,26 @@ test('presence follows Claude Desktop activity while enabled', async () => {
   } finally { await t.cleanup() }
 })
 
+test('agents switched off are left out of the activity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agentcord-presence-'))
+  const off = new Set<string>(['codex'])
+  let ipc!: FakeIpc
+  const service = new PresenceService({
+    settingsPath: join(dir, 'settings.json'),
+    changed: () => {},
+    agentEnabled: (agent) => !off.has(agent),
+    createIpc: (onState) => (ipc = new FakeIpc(onState)) as never,
+  })
+  try {
+    service.update({ codex: codex('ready', 46), claude: claude('ready', 13), claudeActive: true })
+    await service.setEnabled(true)
+    assert.equal(ipc.activity?.state, 'Claude 13% used')
+    off.add('claude')
+    service.update({})
+    assert.equal(ipc.activity, null)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
 test('disabling clears the presence and disconnects', async () => {
   const t = await setup({ presenceEnabled: true })
   try {

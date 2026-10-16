@@ -60,6 +60,23 @@ export function setLaunchAtLogin(
   host.setLoginItemSettings({ ...options(host), openAtLogin: enabled })
   return getLaunchAtLogin(host)
 }
+/**
+ * Launch at login defaults to on: it is switched on once, on the first
+ * supported run, and after that the user's choice in Settings sticks.
+ * Returns whether the default was applied now and should be recorded.
+ */
+export function applyLaunchAtLoginDefault(
+  host: LoginItemHost,
+  alreadyApplied: boolean,
+): boolean {
+  if (alreadyApplied || !loginItemSupported(host)) return false
+  try {
+    setLaunchAtLogin(host, true)
+    return true
+  } catch {
+    return false // Retry on the next launch.
+  }
+}
 export function startedAtLogin(host: LoginItemHost, argv: string[]): boolean {
   if (!loginItemSupported(host)) return false
   if (argv.includes(HIDDEN_ARG)) return true

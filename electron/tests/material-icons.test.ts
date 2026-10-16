@@ -10,11 +10,10 @@ test('all current UI actions map to Google Material Symbols', () => {
     'eye-off': 'visibility_off',
     clock: 'schedule',
     refresh: 'refresh',
-    hide: 'dock_to_right',
   })
 })
 test('icon mapping is a UI-only set; AgentCord branding remains separate', () => {
-  assert.equal(Object.values(materialSymbols).length, 7)
+  assert.equal(Object.values(materialSymbols).length, 6)
   assert.ok(
     Object.values(materialSymbols).every((name) => /^[a-z_]+$/.test(name)),
   )

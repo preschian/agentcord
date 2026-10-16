@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
+  Agent,
   PresenceState,
   LaunchAtLoginState,
   ProviderUsageState,
   TokenProvider,
+  UiSettings,
   UsageState,
 } from '../shared/types'
 import Icon from './components/Icon.vue'
@@ -42,10 +44,14 @@ const providers: Record<
   },
 }
 const providerNames = Object.keys(providers) as TokenProvider[]
-const page = ref<'main' | 'codex' | TokenProvider | 'settings'>('main')
+const agentNames: Agent[] = ['codex', ...providerNames]
+const agentName = (agent: Agent) =>
+  agent === 'codex' ? 'Codex' : providers[agent].name
+const page = ref<'main' | 'codex' | TokenProvider | 'settings' | 'usage'>(
+  'main',
+)
 const popover = ref<HTMLElement | null>(null)
 const emailRevealed = ref(false)
-const installationExpanded = ref(false)
 const state = ref<UsageState>({
   status: 'loading',
   snapshot: null,
@@ -78,6 +84,32 @@ const presenceText = computed(
       connected: 'Connected',
     })[presence.value.status],
 )
+const settings = ref<UiSettings>({
+  agents: { codex: true, claude: true, cursor: true, grok: true, muse: true },
+  unifiedUsage: true,
+})
+const enabledAgents = computed(() =>
+  agentNames.filter((agent) => settings.value.agents[agent]),
+)
+const enabledProviders = computed(() =>
+  providerNames.filter((name) => settings.value.agents[name]),
+)
+// Enabled agents that report usage, with every limit window they return.
+const unifiedAgents = computed(() =>
+  enabledAgents.value.flatMap((agent) => {
+    const windows =
+      (agent === 'codex' ? state.value : providerStates.value[agent]).snapshot
+        ?.windows ?? []
+    return windows.length ? [{ agent, name: agentName(agent), windows }] : []
+  }),
+)
+// One bar per agent's primary window, like the Windows summary card.
+const unifiedRows = computed(() =>
+  unifiedAgents.value.map(({ agent, name, windows }) => ({
+    agent,
+    window: { ...windows[0], label: name },
+  })),
+)
 const launchAtLogin = ref<LaunchAtLoginState>({ supported: false, enabled: false })
 const launchBusy = ref(false)
 const now = ref(Date.now())
@@ -98,6 +130,13 @@ const tokenPage = computed(() =>
 )
 const meta = computed(() => (tokenPage.value ? providers[tokenPage.value] : null))
 const providerName = computed(() => meta.value?.name ?? 'Codex')
+const screenTitle = computed(() =>
+  page.value === 'settings'
+    ? 'Settings'
+    : page.value === 'usage'
+      ? 'Unified usage'
+      : providerName.value,
+)
 // Detail screens read from whichever provider is open; Codex is the default.
 const active = computed<ProviderUsageState>(() =>
   tokenPage.value ? providerStates.value[tokenPage.value] : state.value,
@@ -183,6 +222,27 @@ async function togglePresence() {
     )
   } catch {
     uiError.value = 'Discord Rich Presence could not be changed.'
+  }
+}
+async function toggleAgent(agent: Agent) {
+  uiError.value = null
+  try {
+    settings.value = await window.agentcord.setAgentEnabled(
+      agent,
+      !settings.value.agents[agent],
+    )
+  } catch {
+    uiError.value = `${agentName(agent)} could not be changed.`
+  }
+}
+async function toggleUnifiedUsage() {
+  uiError.value = null
+  try {
+    settings.value = await window.agentcord.setUnifiedUsage(
+      !settings.value.unifiedUsage,
+    )
+  } catch {
+    uiError.value = 'Unified usage could not be changed.'
   }
 }
 async function toggleLaunchAtLogin() {
@@ -271,15 +331,23 @@ onMounted(async () => {
     presence.value = value
   })
   try {
-    const [initial, providerInitial, activeInitial, presenceInitial, loginInitial] =
-      await Promise.all([
+    const [
+      initial,
+      providerInitial,
+      activeInitial,
+      presenceInitial,
+      loginInitial,
+      settingsInitial,
+    ] = await Promise.all([
         window.agentcord.getUsage(),
         Promise.all(providerNames.map((name) => window.agentcord.getProviderUsage(name))),
         window.agentcord.getClaudeActive(),
         window.agentcord.getPresence(),
         window.agentcord.getLaunchAtLogin(),
+        window.agentcord.getSettings(),
       ])
     launchAtLogin.value = loginInitial
+    settings.value = settingsInitial
     providerNames.forEach((name, index) => {
       if (!providerEvents.has(name))
         providerStates.value[name] = providerInitial[index]
@@ -317,8 +385,35 @@ onUnmounted(() => {
             ><i></i>{{ statusText }}</span
           >
         </header>
+        <button
+          v-if="settings.unifiedUsage && enabledAgents.length > 1"
+          class="card unified-usage"
+          data-unified-usage
+          @click="navigate('usage')"
+        >
+          <span
+            v-for="row in unifiedRows"
+            :key="row.agent"
+            class="compact-row"
+            :class="row.window.severity"
+            ><span>{{ row.window.label }}</span
+            ><span class="progress"
+              ><span
+                :style="{ width: `${Math.max(1.5, row.window.usedPercent)}%` }"
+              ></span></span
+            ><strong>{{ Math.round(row.window.usedPercent) }}%</strong></span
+          >
+          <p v-if="!unifiedRows.length" class="empty-usage">
+            No connected agents
+          </p>
+        </button>
         <section class="card agent-list">
-          <button class="agent-row" data-open-codex @click="navigate('codex')">
+          <button
+            v-if="settings.agents.codex"
+            class="agent-row"
+            data-open-codex
+            @click="navigate('codex')"
+          >
             <span class="agent-title"
               ><strong>Codex</strong
               ><small>{{ rowStatus(state) }}</small></span
@@ -331,7 +426,7 @@ onUnmounted(() => {
             <Icon name="arrow" :size="11" class="chevron" />
           </button>
           <button
-            v-for="name in providerNames"
+            v-for="name in enabledProviders"
             :key="name"
             class="agent-row"
             :data-open-provider="name"
@@ -357,6 +452,9 @@ onUnmounted(() => {
             >
             <Icon name="arrow" :size="11" class="chevron" />
           </button>
+          <p v-if="!enabledAgents.length" class="empty-usage">
+            No agents enabled
+          </p>
         </section>
         <button
           class="navigation-row soft-card"
@@ -364,7 +462,11 @@ onUnmounted(() => {
           @click="navigate('settings')"
         >
           <Icon name="settings" :size="14" /><span>Settings</span
-          ><small>Usage only</small
+          ><small>{{
+            enabledAgents.length === 1
+              ? '1 agent on'
+              : `${enabledAgents.length} agents on`
+          }}</small
           ><Icon name="arrow" :size="11" class="chevron" />
         </button>
         <div v-if="uiError" class="notice" role="status">{{ uiError }}</div>
@@ -384,9 +486,28 @@ onUnmounted(() => {
           >
             <Icon name="arrow" :size="13" />
           </button>
-          <h1>{{ page === 'settings' ? 'Settings' : providerName }}</h1>
+          <h1>{{ screenTitle }}</h1>
         </header>
-        <template v-if="page !== 'settings'">
+        <template v-if="page === 'usage'">
+          <section
+            v-for="group in unifiedAgents"
+            :key="group.agent"
+            class="card unified-detail"
+            :data-usage-group="group.agent"
+          >
+            <h2>{{ group.name }}</h2>
+            <UsageCard
+              v-for="usageWindow in group.windows"
+              :key="usageWindow.id"
+              :window="usageWindow"
+              :now="now"
+            />
+          </section>
+          <p v-if="!unifiedAgents.length" class="card empty-usage">
+            No connected agents
+          </p>
+        </template>
+        <template v-else-if="page !== 'settings'">
           <section class="card detail-card">
             <div class="account-row">
               <button
@@ -511,15 +632,6 @@ onUnmounted(() => {
                 @click="toggleLaunchAtLogin"
               ></button>
             </div>
-            <div class="setting-row">
-              <span>Auto-refresh</span><small>5m · while visible</small>
-            </div>
-            <div class="setting-row">
-              <span>Refresh cooldown</span><small>1m</small>
-            </div>
-            <div class="setting-row">
-              <span>Usage cache</span><small>Up to 24h</small>
-            </div>
           </section>
           <section class="soft-card provider-settings">
             <h2>DISCORD</h2>
@@ -538,72 +650,37 @@ onUnmounted(() => {
                 ></button
               ></span>
             </div>
-            <p class="setting-hint">
-              Shares your usage percentages on your Discord profile while the
-              Discord app is running. Off by default.
-            </p>
           </section>
           <section class="soft-card provider-settings">
             <h2>AGENTS</h2>
+            <div v-for="agent in agentNames" :key="agent" class="setting-row">
+              <span class="provider-name"><i></i>{{ agentName(agent) }}</span
+              ><button
+                class="switch"
+                role="switch"
+                :data-agent-switch="agent"
+                :aria-label="agentName(agent)"
+                :aria-checked="settings.agents[agent]"
+                :disabled="!bridgeAvailable"
+                @click="toggleAgent(agent)"
+              ></button>
+            </div>
+          </section>
+          <section class="soft-card provider-settings">
+            <h2>DISPLAY</h2>
             <div class="setting-row">
-              <span class="provider-name"><i></i>Codex</span
-              ><small>Usage only</small>
+              <span id="unified-usage-label">Show unified usage</span
+              ><button
+                class="switch"
+                role="switch"
+                data-unified-usage-switch
+                aria-labelledby="unified-usage-label"
+                :aria-checked="settings.unifiedUsage"
+                :disabled="!bridgeAvailable"
+                @click="toggleUnifiedUsage"
+              ></button>
             </div>
-            <div v-for="name in providerNames" :key="name" class="setting-row">
-              <span class="provider-name"><i></i>{{ providers[name].name }}</span
-              ><small>Usage only</small>
-            </div>
           </section>
-          <section class="soft-card installation-card">
-            <button
-              class="navigation-row"
-              :aria-expanded="installationExpanded"
-              @click="installationExpanded = !installationExpanded"
-            >
-              <span>Installation</span
-              ><Icon
-                name="arrow"
-                :size="11"
-                class="chevron"
-                :class="{ expanded: installationExpanded }"
-              />
-            </button>
-            <dl v-if="installationExpanded">
-              <dt>Codex home</dt>
-              <dd>{{ state.codexHome || 'Initializing…' }}</dd>
-              <dt>Codex executable</dt>
-              <dd>{{ state.executable || 'Not found / not checked yet' }}</dd>
-              <dt>Claude sign-in</dt>
-              <dd>Read from Claude Code's ~/.claude/.credentials.json.</dd>
-              <dt>Cursor sign-in</dt>
-              <dd>Read from Cursor's state.vscdb or the Cursor CLI auth.json.</dd>
-              <dt>Grok sign-in</dt>
-              <dd>Read from the Grok CLI's ~/.grok/auth.json.</dd>
-              <dt>Muse Code sign-in</dt>
-              <dd>Read from Muse Code's ~/.config/muse/auth.json.</dd>
-              <dt>Configuration</dt>
-              <dd>
-                Set CODEX_HOME, CODEX_BINARY, CLAUDE_CONFIG_DIR or GROK_HOME
-                before starting the app.
-              </dd>
-            </dl>
-          </section>
-          <section class="soft-card about-card">
-            <h2>Electron preview</h2>
-            <p>
-              Codex / ChatGPT, Claude, Cursor, Grok and Muse Code subscription
-              limits only. Session tracking and API billing are not included.
-            </p>
-            <p>
-              Credentials stay with each agent's own app or CLI. Cached results
-              are marked; account changes clear old usage.
-            </p>
-          </section>
-          <button class="navigation-row soft-card" @click="hide">
-            <Icon name="hide" :size="14" /><span>Hide to tray</span
-            ><small>Esc</small>
-          </button>
-          <p class="version">agentcord 0.1.0 · Electron + Vue</p>
         </template>
       </template>
     </main>

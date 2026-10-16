@@ -15,11 +15,19 @@ import { createCursorUsage } from './cursor-usage'
 import { createGrokUsage } from './grok-usage'
 import { createMuseUsage } from './muse-usage'
 import type { TokenUsageService } from './token-usage'
-import type { ProviderUsageState, TokenProvider } from '../shared/types'
+import type {
+  Agent,
+  AppSettings,
+  ProviderUsageState,
+  TokenProvider,
+  UiSettings,
+} from '../shared/types'
 import { ClaudeDesktopService } from './claude-desktop'
 import { PresenceService } from './presence'
+import { isAgent, readSettings, updateSettings } from './settings'
 import { runSmokeTest } from './smoke'
 import {
+  applyLaunchAtLoginDefault,
   getLaunchAtLogin,
   setLaunchAtLogin,
   startedAtLogin,
@@ -46,6 +54,9 @@ let service: CodexUsageService | null = null
 let providers: Record<TokenProvider, TokenUsageService<any>> | null = null
 let claudeDesktop: ClaudeDesktopService | null = null
 let presence: PresenceService | null = null
+let settings: AppSettings | null = null
+// Disabled agents are never started; one switched on later starts then.
+const started = new Set<Agent>()
 let quitting = false
 let anchored = true
 let lastDeactivated = 0
@@ -88,14 +99,17 @@ else {
 async function showWindow(): Promise<void> {
   // Check identity before revealing potentially cached account data.
   await Promise.all([
-    service?.tick(),
-    ...Object.values(providers ?? {}).map((provider) => provider.tick()),
+    started.has('codex') && service?.tick(),
+    ...Object.entries(providers ?? {}).map(
+      ([name, provider]) => started.has(name as Agent) && provider.tick(),
+    ),
     claudeDesktop?.tick(),
   ])
   window?.show()
   window?.focus()
   if (
     service &&
+    settings?.agents.codex &&
     (!service.state.snapshot ||
       Date.now() - service.state.snapshot.fetchedAt >= 5 * 60_000)
   ) {
@@ -131,8 +145,28 @@ function loadIcon(role: IconRole) {
   if (image.isEmpty()) throw new Error(`The ${role} icon could not be loaded`)
   return image
 }
+const uiSettings = ({ agents, unifiedUsage }: AppSettings): UiSettings => ({
+  agents,
+  unifiedUsage,
+})
+const agentOn = (agent: Agent) => settings?.agents[agent] ?? false
+const windowVisible = () => !!window?.isVisible() && !window.isMinimized()
+function agentService(agent: Agent) {
+  return agent === 'codex' ? service! : providers![agent]
+}
+function startAgent(agent: Agent): Promise<void> {
+  if (started.has(agent)) return agentService(agent).tick()
+  started.add(agent)
+  return agentService(agent).start()
+}
 async function start(): Promise<void> {
   nativeTheme.themeSource = 'light'
+  const settingsPath = join(app.getPath('userData'), 'settings.json')
+  settings = await readSettings(settingsPath)
+  if (applyLaunchAtLoginDefault(loginItemHost, settings.launchAtLoginDefaulted))
+    await updateSettings(settingsPath, (value) => {
+      value.launchAtLoginDefaulted = true
+    }).catch(() => {})
   Menu.setApplicationMenu(null)
   const area = screen.getDisplayNearestPoint(
     screen.getCursorScreenPoint(),
@@ -188,7 +222,8 @@ async function start(): Promise<void> {
     }
   })
   presence = new PresenceService({
-    settingsPath: join(app.getPath('userData'), 'settings.json'),
+    settingsPath,
+    agentEnabled: agentOn,
     changed: (state) => {
       if (!window?.isDestroyed())
         window?.webContents.send('presence:changed', state)
@@ -196,7 +231,7 @@ async function start(): Promise<void> {
   })
   service = new CodexUsageService({
     cachePath: join(app.getPath('userData'), 'codex-usage-cache.json'),
-    visible: () => !!window?.isVisible() && !window.isMinimized(),
+    visible: () => agentOn('codex') && windowVisible(),
     changed: (state) => {
       if (!window?.isDestroyed())
         window?.webContents.send('usage:changed', state)
@@ -208,7 +243,7 @@ async function start(): Promise<void> {
   })
   const providerOptions = (name: TokenProvider) => ({
     cachePath: join(app.getPath('userData'), `${name}-usage-cache.json`),
-    visible: () => !!window?.isVisible() && !window.isMinimized(),
+    visible: () => agentOn(name) && windowVisible(),
     changed: (state: ProviderUsageState) => {
       if (!window?.isDestroyed())
         window?.webContents.send('provider:changed', name, state)
@@ -229,8 +264,7 @@ async function start(): Promise<void> {
   claudeDesktop = new ClaudeDesktopService({
     // Only scan while the popover is open or Discord presence would show it.
     needed: () =>
-      !!presence?.state.enabled ||
-      (!!window?.isVisible() && !window.isMinimized()),
+      agentOn('claude') && (!!presence?.state.enabled || windowVisible()),
     changed: (active) => {
       if (!window?.isDestroyed())
         window?.webContents.send('claude-desktop:changed', active)
@@ -276,6 +310,38 @@ async function start(): Promise<void> {
     const state = await presence!.setEnabled(enabled)
     void claudeDesktop?.tick()
     return state
+  })
+  ipcMain.handle('settings:get', (event) => {
+    authorize(event)
+    return uiSettings(settings!)
+  })
+  const saveSettings = async (change: (value: AppSettings) => void) => {
+    change(settings!) // Apply now; disk is best-effort, like presence.
+    try {
+      await updateSettings(settingsPath, change)
+    } catch {
+      // The toggle still works for this run.
+    }
+  }
+  ipcMain.handle('settings:agent', async (event, agent: unknown, enabled: unknown) => {
+    authorize(event)
+    if (!isAgent(agent) || typeof enabled !== 'boolean')
+      throw new Error('Invalid agent setting')
+    await saveSettings((value) => {
+      value.agents[agent] = enabled
+    })
+    presence?.update({}) // Re-send the activity without the agent.
+    if (enabled) void startAgent(agent)
+    if (agent === 'claude') void claudeDesktop?.tick()
+    return uiSettings(settings!)
+  })
+  ipcMain.handle('settings:unified-usage', async (event, enabled: unknown) => {
+    authorize(event)
+    if (typeof enabled !== 'boolean') throw new Error('Invalid display setting')
+    await saveSettings((value) => {
+      value.unifiedUsage = enabled
+    })
+    return uiSettings(settings!)
   })
   ipcMain.handle('window:resize', (event, height: unknown) => {
     authorize(event)
@@ -326,14 +392,14 @@ async function start(): Promise<void> {
         {
           label: 'Refresh Codex usage',
           click: () => {
-            void service?.refresh()
+            if (agentOn('codex')) void service?.refresh()
           },
         },
         {
           label: 'Refresh other usage',
           click: () => {
-            for (const provider of Object.values(providers ?? {}))
-              void provider.refresh()
+            for (const [name, provider] of Object.entries(providers ?? {}))
+              if (agentOn(name as Agent)) void provider.refresh()
           },
         },
         { type: 'separator' },
@@ -361,8 +427,9 @@ async function start(): Promise<void> {
   // A login launch stays in the tray; the popover opens when the user asks.
   if (smoke || !startedAtLogin(loginItemHost, process.argv)) window.show()
   await Promise.all([
-    service.start(),
-    ...Object.values(providers).map((provider) => provider.start()),
+    ...(['codex', ...Object.keys(providers)] as Agent[])
+      .filter(agentOn)
+      .map(startAgent),
     presence.start(),
   ])
   await claudeDesktop.start() // After presence, so a saved opt-in is seen.

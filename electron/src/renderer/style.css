@@ -132,6 +132,61 @@ h1 {
   margin-bottom: 11px;
   overflow: hidden;
 }
+.agent-list .empty-usage {
+  margin: 0;
+  padding: 10px 11px;
+}
+.unified-usage {
+  display: block;
+  width: 100%;
+  margin-bottom: 11px;
+  text-align: left;
+}
+/* Main-screen row: name, bar and percent on one line, like Windows. */
+.compact-row {
+  --accent: #007aff;
+  display: grid;
+  grid-template-columns: 82px 1fr 4ch; /* Fixed percent column keeps bars aligned. */
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.compact-row + .compact-row {
+  margin-top: 7px;
+}
+.compact-row.warning {
+  --accent: #ff9500;
+}
+.compact-row.critical {
+  --accent: #ff3b30;
+}
+.compact-row .progress {
+  display: block;
+  margin: 0;
+}
+.compact-row .progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.compact-row strong {
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.unified-detail .usage-row:last-child,
+.unified-usage .empty-usage {
+  margin: 0;
+}
+.unified-detail {
+  margin-bottom: 7px;
+}
+.unified-detail h2 {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 9px;
+}
 .agent-row {
   display: flex;
   align-items: center;
@@ -467,51 +522,6 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.setting-hint {
-  color: var(--mid);
-  font-size: 11px;
-  line-height: 1.5;
-  margin: 2px 0 5px;
-}
-.installation-card {
-  margin-bottom: 7px;
-}
-.expanded {
-  transform: rotate(90deg);
-}
-dl {
-  margin: 1px 11px 11px;
-  font-size: 11px;
-  line-height: 1.5;
-}
-dt {
-  color: var(--mid);
-  margin-top: 8px;
-}
-dd {
-  margin: 2px 0 0;
-  overflow-wrap: anywhere;
-}
-.about-card {
-  padding: 10px 11px;
-  margin-bottom: 7px;
-}
-.about-card h2 {
-  font-size: 12.5px;
-  font-weight: 500;
-}
-.about-card p {
-  font-size: 11px;
-  color: var(--mid);
-  line-height: 1.5;
-  margin-top: 7px;
-}
-.version {
-  color: var(--soft);
-  text-align: center;
-  font-size: 10px;
-  margin-top: 11px;
 }
 .spinning {
   animation: spin 1.5s linear infinite;

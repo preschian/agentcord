@@ -1,12 +1,11 @@
-import { readFile, mkdir, writeFile, rename } from 'node:fs/promises'
-import { dirname } from 'node:path'
 import type {
+  Agent,
   ClaudeUsageState,
   PresenceState,
   UsageState,
 } from '../shared/types'
-import { object } from './codex-parser'
 import { DiscordIpc, type Activity, type DiscordConnection } from './discord-ipc'
+import { readSettings, updateSettings } from './settings'
 
 // Discord application ID shared with the Windows and macOS apps. Not a secret.
 // Its art assets provide the `discord-presence-icon` image key used below.
@@ -48,22 +47,14 @@ export function buildActivity(
 
 /** Rich Presence is opt-in: a missing or unreadable file means disabled. */
 export async function readPresenceEnabled(path: string): Promise<boolean> {
-  try {
-    return object(JSON.parse(await readFile(path, 'utf8')))?.presenceEnabled === true
-  } catch {
-    return false
-  }
-}
-async function writePresenceEnabled(path: string, enabled: boolean): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.tmp`
-  await writeFile(tmp, JSON.stringify({ presenceEnabled: enabled }), { mode: 0o600 })
-  await rename(tmp, path)
+  return (await readSettings(path)).presenceEnabled
 }
 
 interface Options {
   settingsPath: string
   changed: (state: PresenceState) => void
+  /** Agents switched off in Settings are left out of the activity. */
+  agentEnabled?: (agent: Agent) => boolean
   // Injectable for tests.
   createIpc?: (onState: (state: DiscordConnection) => void) => DiscordIpc
 }
@@ -102,7 +93,9 @@ export class PresenceService {
     if (enabled === this.state.enabled) return this.state
     this.apply(enabled)
     try {
-      await writePresenceEnabled(this.options.settingsPath, enabled)
+      await updateSettings(this.options.settingsPath, (settings) => {
+        settings.presenceEnabled = enabled
+      })
     } catch {
       // Best-effort: the toggle still works for this run.
     }
@@ -124,7 +117,12 @@ export class PresenceService {
   }
 
   private activity(): Activity | null {
-    return buildActivity(this.codex, this.claude, this.claudeActive)
+    const on = this.options.agentEnabled ?? (() => true)
+    return buildActivity(
+      on('codex') ? this.codex : null,
+      on('claude') ? this.claude : null,
+      on('claude') && this.claudeActive,
+    )
   }
 
   private status(): PresenceState['status'] {

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
+  Agent,
   PresenceState,
   LaunchAtLoginState,
   ProviderUsageState,
   TokenProvider,
+  UiSettings,
   UsageState,
 } from '../shared/types'
 import Icon from './components/Icon.vue'
@@ -42,6 +44,9 @@ const providers: Record<
   },
 }
 const providerNames = Object.keys(providers) as TokenProvider[]
+const agentNames: Agent[] = ['codex', ...providerNames]
+const agentName = (agent: Agent) =>
+  agent === 'codex' ? 'Codex' : providers[agent].name
 const page = ref<'main' | 'codex' | TokenProvider | 'settings'>('main')
 const popover = ref<HTMLElement | null>(null)
 const emailRevealed = ref(false)
@@ -77,6 +82,24 @@ const presenceText = computed(
       waiting: 'Waiting for Discord',
       connected: 'Connected',
     })[presence.value.status],
+)
+const settings = ref<UiSettings>({
+  agents: { codex: true, claude: true, cursor: true, grok: true, muse: true },
+  unifiedUsage: true,
+})
+const enabledAgents = computed(() =>
+  agentNames.filter((agent) => settings.value.agents[agent]),
+)
+const enabledProviders = computed(() =>
+  providerNames.filter((name) => settings.value.agents[name]),
+)
+// One bar per enabled agent's primary window, like the Windows summary card.
+const unifiedRows = computed(() =>
+  enabledAgents.value.flatMap((agent) => {
+    const primary = (agent === 'codex' ? state.value : providerStates.value[agent])
+      .snapshot?.windows[0]
+    return primary ? [{ agent, window: { ...primary, label: agentName(agent) } }] : []
+  }),
 )
 const launchAtLogin = ref<LaunchAtLoginState>({ supported: false, enabled: false })
 const launchBusy = ref(false)
@@ -185,6 +208,27 @@ async function togglePresence() {
     uiError.value = 'Discord Rich Presence could not be changed.'
   }
 }
+async function toggleAgent(agent: Agent) {
+  uiError.value = null
+  try {
+    settings.value = await window.agentcord.setAgentEnabled(
+      agent,
+      !settings.value.agents[agent],
+    )
+  } catch {
+    uiError.value = `${agentName(agent)} could not be changed.`
+  }
+}
+async function toggleUnifiedUsage() {
+  uiError.value = null
+  try {
+    settings.value = await window.agentcord.setUnifiedUsage(
+      !settings.value.unifiedUsage,
+    )
+  } catch {
+    uiError.value = 'Unified usage could not be changed.'
+  }
+}
 async function toggleLaunchAtLogin() {
   if (launchBusy.value || !launchAtLogin.value.supported) return
   launchBusy.value = true
@@ -271,15 +315,23 @@ onMounted(async () => {
     presence.value = value
   })
   try {
-    const [initial, providerInitial, activeInitial, presenceInitial, loginInitial] =
-      await Promise.all([
+    const [
+      initial,
+      providerInitial,
+      activeInitial,
+      presenceInitial,
+      loginInitial,
+      settingsInitial,
+    ] = await Promise.all([
         window.agentcord.getUsage(),
         Promise.all(providerNames.map((name) => window.agentcord.getProviderUsage(name))),
         window.agentcord.getClaudeActive(),
         window.agentcord.getPresence(),
         window.agentcord.getLaunchAtLogin(),
+        window.agentcord.getSettings(),
       ])
     launchAtLogin.value = loginInitial
+    settings.value = settingsInitial
     providerNames.forEach((name, index) => {
       if (!providerEvents.has(name))
         providerStates.value[name] = providerInitial[index]
@@ -317,8 +369,28 @@ onUnmounted(() => {
             ><i></i>{{ statusText }}</span
           >
         </header>
+        <section
+          v-if="settings.unifiedUsage && enabledAgents.length > 1"
+          class="card unified-usage"
+          data-unified-usage
+        >
+          <UsageCard
+            v-for="row in unifiedRows"
+            :key="row.agent"
+            :window="row.window"
+            :now="now"
+          />
+          <p v-if="!unifiedRows.length" class="empty-usage">
+            No connected agents
+          </p>
+        </section>
         <section class="card agent-list">
-          <button class="agent-row" data-open-codex @click="navigate('codex')">
+          <button
+            v-if="settings.agents.codex"
+            class="agent-row"
+            data-open-codex
+            @click="navigate('codex')"
+          >
             <span class="agent-title"
               ><strong>Codex</strong
               ><small>{{ rowStatus(state) }}</small></span
@@ -331,7 +403,7 @@ onUnmounted(() => {
             <Icon name="arrow" :size="11" class="chevron" />
           </button>
           <button
-            v-for="name in providerNames"
+            v-for="name in enabledProviders"
             :key="name"
             class="agent-row"
             :data-open-provider="name"
@@ -357,6 +429,9 @@ onUnmounted(() => {
             >
             <Icon name="arrow" :size="11" class="chevron" />
           </button>
+          <p v-if="!enabledAgents.length" class="empty-usage">
+            No agents enabled
+          </p>
         </section>
         <button
           class="navigation-row soft-card"
@@ -364,7 +439,11 @@ onUnmounted(() => {
           @click="navigate('settings')"
         >
           <Icon name="settings" :size="14" /><span>Settings</span
-          ><small>Usage only</small
+          ><small>{{
+            enabledAgents.length === 1
+              ? '1 agent on'
+              : `${enabledAgents.length} agents on`
+          }}</small
           ><Icon name="arrow" :size="11" class="chevron" />
         </button>
         <div v-if="uiError" class="notice" role="status">{{ uiError }}</div>
@@ -545,13 +624,32 @@ onUnmounted(() => {
           </section>
           <section class="soft-card provider-settings">
             <h2>AGENTS</h2>
-            <div class="setting-row">
-              <span class="provider-name"><i></i>Codex</span
-              ><small>Usage only</small>
+            <div v-for="agent in agentNames" :key="agent" class="setting-row">
+              <span class="provider-name"><i></i>{{ agentName(agent) }}</span
+              ><button
+                class="switch"
+                role="switch"
+                :data-agent-switch="agent"
+                :aria-label="agentName(agent)"
+                :aria-checked="settings.agents[agent]"
+                :disabled="!bridgeAvailable"
+                @click="toggleAgent(agent)"
+              ></button>
             </div>
-            <div v-for="name in providerNames" :key="name" class="setting-row">
-              <span class="provider-name"><i></i>{{ providers[name].name }}</span
-              ><small>Usage only</small>
+          </section>
+          <section class="soft-card provider-settings">
+            <h2>DISPLAY</h2>
+            <div class="setting-row">
+              <span id="unified-usage-label">Show unified usage</span
+              ><button
+                class="switch"
+                role="switch"
+                data-unified-usage-switch
+                aria-labelledby="unified-usage-label"
+                :aria-checked="settings.unifiedUsage"
+                :disabled="!bridgeAvailable"
+                @click="toggleUnifiedUsage"
+              ></button>
             </div>
           </section>
           <section class="soft-card installation-card">

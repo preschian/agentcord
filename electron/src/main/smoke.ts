@@ -170,9 +170,25 @@ export async function runSmokeTest(
     status: document.querySelector('[data-presence-status]')?.textContent
   })`)
   assert.deepEqual(presence, { checked: 'false', status: 'Off' })
+  // Switching an agent off hides its main-screen row; switching it on restores it.
+  const grokSwitch = `document.querySelector('[data-agent-switch="grok"]')`
+  await evaluate(`${grokSwitch}.click()`)
+  await pause()
+  assert.equal(await evaluate(`${grokSwitch}.getAttribute('aria-checked')`), 'false')
+  await evaluate(`document.querySelector('[data-back]').click()`)
+  await pause()
+  assert.equal(
+    await evaluate(`document.querySelector('[data-open-provider="grok"]') === null`),
+    true,
+  )
+  await evaluate(`document.querySelector('[data-open-settings]').click()`)
+  await pause()
+  await evaluate(`${grokSwitch}.click()`)
+  await pause()
+  assert.equal(await evaluate(`${grokSwitch}.getAttribute('aria-checked')`), 'true')
   await evaluate(`document.querySelector('[aria-expanded]').click()`)
   await pause()
-  assert.equal(await evaluate(`document.querySelectorAll('dd').length`), 6)
+  assert.equal(await evaluate(`document.querySelectorAll('dd').length`), 7)
   await evaluate(`document.querySelector('[data-back]').click()`)
   await pause()
   assert.equal(window.getBounds().height, mainHeight)
@@ -236,6 +252,12 @@ export async function runSmokeTest(
   assert.equal(
     await evaluate(
       `window.agentcord.setPresenceEnabled('yes').then(() => false, () => true)`,
+    ),
+    true,
+  )
+  assert.equal(
+    await evaluate(
+      `window.agentcord.setAgentEnabled('antigravity', false).then(() => false, () => true)`,
     ),
     true,
   )

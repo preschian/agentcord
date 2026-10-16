@@ -48,6 +48,11 @@ const api: AgentCordAPI = {
     return () => ipcRenderer.removeListener('window:shown', listener)
   },
   resizeWindow: (height) => ipcRenderer.invoke('window:resize', height),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setAgentEnabled: (agent, enabled) =>
+    ipcRenderer.invoke('settings:agent', agent, enabled),
+  setUnifiedUsage: (enabled) =>
+    ipcRenderer.invoke('settings:unified-usage', enabled),
   getLaunchAtLogin: () => ipcRenderer.invoke('login-item:get'),
   setLaunchAtLogin: (enabled) => ipcRenderer.invoke('login-item:set', enabled),
   hideWindow: () => ipcRenderer.invoke('window:hide'),

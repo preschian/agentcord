@@ -132,6 +132,17 @@ h1 {
   margin-bottom: 11px;
   overflow: hidden;
 }
+.agent-list .empty-usage {
+  margin: 0;
+  padding: 10px 11px;
+}
+.unified-usage {
+  margin-bottom: 11px;
+}
+.unified-usage .usage-row:last-child,
+.unified-usage .empty-usage {
+  margin: 0;
+}
 .agent-row {
   display: flex;
   align-items: center;

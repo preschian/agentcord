@@ -27,6 +27,14 @@ export interface UsageState {
 export type ProviderUsageState = Omit<UsageState, 'codexHome' | 'executable'>
 export type ClaudeUsageState = ProviderUsageState
 export type TokenProvider = 'claude' | 'cursor' | 'grok' | 'muse'
+export type Agent = 'codex' | TokenProvider
+/** Persisted in settings.json. The renderer sees everything but presence, which has its own state. */
+export interface AppSettings {
+  presenceEnabled: boolean
+  agents: Record<Agent, boolean>
+  unifiedUsage: boolean
+}
+export type UiSettings = Omit<AppSettings, 'presenceEnabled'>
 export interface PresenceState {
   enabled: boolean
   // 'waiting' means enabled but Discord is not running or not connected yet.
@@ -50,6 +58,9 @@ export interface AgentCordAPI {
   onPresence(callback: (state: PresenceState) => void): () => void
   onWindowShown(callback: () => void): () => void
   resizeWindow(height: number): Promise<void>
+  getSettings(): Promise<UiSettings>
+  setAgentEnabled(agent: Agent, enabled: boolean): Promise<UiSettings>
+  setUnifiedUsage(enabled: boolean): Promise<UiSettings>
   getLaunchAtLogin(): Promise<LaunchAtLoginState>
   setLaunchAtLogin(enabled: boolean): Promise<LaunchAtLoginState>
   hideWindow(): Promise<void>

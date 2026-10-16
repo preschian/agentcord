@@ -333,9 +333,11 @@ onUnmounted(() => {
               ><strong>Muse Code</strong
               ><small>{{
                 museState.snapshot
-                  ? museState.status === 'cached'
-                    ? 'Cached usage'
-                    : 'Connected'
+                  ? !museState.snapshot.windows.length
+                    ? (museState.snapshot.plan ?? 'Connected')
+                    : museState.status === 'cached'
+                      ? 'Cached usage'
+                      : 'Connected'
                   : museState.status === 'loading'
                     ? 'Connecting…'
                     : 'Not connected'
@@ -346,7 +348,9 @@ onUnmounted(() => {
               :class="{ connect: !museState.snapshot }"
               >{{
                 museState.snapshot
-                  ? `${Math.round(museState.snapshot.windows[0]?.usedPercent ?? 0)}% used`
+                  ? museState.snapshot.windows.length
+                    ? `${Math.round(museState.snapshot.windows[0].usedPercent)}% used`
+                    : 'Idle'
                   : 'Connect'
               }}</span
             >
@@ -425,7 +429,7 @@ onUnmounted(() => {
               </div>
               <p>{{ updated }}</p>
             </div>
-            <div v-if="snapshot" class="usage-rows">
+            <div v-if="snapshot?.windows.length" class="usage-rows">
               <UsageCard
                 v-for="usageWindow in snapshot.windows"
                 :key="usageWindow.id"
@@ -443,7 +447,9 @@ onUnmounted(() => {
                   ? `Waiting for ${providerName} usage…`
                   : active.status === 'api-key'
                     ? 'ChatGPT subscription required'
-                    : 'No usage available'
+                    : snapshot
+                      ? 'Idle · no active 5-hour window'
+                      : 'No usage available'
               }}
             </p>
             <div

@@ -63,9 +63,12 @@ export function parseMuseUsage(value: unknown): Pick<UsageSnapshot, 'email' | 'p
   const root = object(value)
   if (root?.require_payment === true) throw new Error('Muse Code needs a payment method. Finish billing at dev.meta.ai, then refresh.')
   if (root?.is_subs_active !== true) throw new Error('No Muse Code subscription is active on this login.')
+  const email = text(root.user_email)
+  const plan = text(root.subs_tier_name)?.replace(/^Muse Code\s+/i, '') ?? null
   const usage = object(root.subs_usage)
-  // Meta omits the quota while the 5-hour window is idle, even if the weekly limit has usage.
-  if (!usage) throw new Error('Muse Code reports usage only while a 5-hour window is active. Send a prompt, then refresh.')
+  // Meta omits the quota while the 5-hour window is idle, even if the weekly limit has usage:
+  // the login is valid, there are just no numbers to show.
+  if (!usage) return { email, plan, windows: [] }
   const duration = object(usage.window)?.window_duration_mins
   const minutes = typeof duration === 'number' && duration > 0 ? Math.round(duration) : 300
   const windows = [
@@ -73,7 +76,7 @@ export function parseMuseUsage(value: unknown): Pick<UsageSnapshot, 'email' | 'p
     usageWindow('muse-weekly', 'Weekly limit', 10080, usage.weekly),
   ].filter(w => !!w)
   if (!windows.length) throw new Error('Muse Code has not returned valid usage limit data.')
-  return { email: text(root.user_email), plan: text(root.subs_tier_name)?.replace(/^Muse Code\s+/i, '') ?? null, windows }
+  return { email, plan, windows }
 }
 
 export class MuseUsageService {
@@ -136,7 +139,11 @@ export class MuseUsageService {
       const parsed = parseMuseUsage(await (this.options.fetchJson ?? fetchJson)(credentials.accessToken))
       this.state.snapshot = { ...parsed, credits: null, fetchedAt: this.now() }
       this.state.status = 'ready'
-      await this.saveCache(credentials.key, this.state.snapshot)
+      if (parsed.windows.length) await this.saveCache(credentials.key, this.state.snapshot)
+      else {
+        this.state.message = 'Muse Code reports usage only while a 5-hour window is active. Send a prompt, then refresh.'
+        await this.clearCache() // Old window numbers must not come back on relaunch.
+      }
     } catch (error) {
       if (this.state.snapshot && this.now() - this.state.snapshot.fetchedAt > MAX_CACHE_AGE) await this.invalidate()
       this.state.status = this.state.snapshot ? 'cached' : 'unavailable'

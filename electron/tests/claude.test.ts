@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ClaudeUsageService, parseClaudeProfile, parseClaudeUsage } from '../src/main/claude-usage.ts'
+import { ClaudeUsageService, desktopWindows, parseClaudeProfile, parseClaudeUsage } from '../src/main/claude-usage.ts'
 
 const usage = {
   limits: [
@@ -32,7 +32,7 @@ test('fetch caches without email; account switch and logout drop old data', asyn
   let credentials: { accessToken: string; key: string } | null = { accessToken: 't', key: 'a' }
   let now = 1_800_000_000_000
   const service = new ClaudeUsageService({
-    cachePath, visible: () => true, changed: () => {}, now: () => now, credentials: async () => credentials,
+    cachePath, visible: () => true, changed: () => {}, now: () => now, credentials: async () => credentials, desktop: async () => null,
     fetchJson: async url => url.endsWith('/profile') ? { account: { email: 'a@b.invalid' } } : usage,
   })
   t.after(() => service.stop())
@@ -60,7 +60,7 @@ test('expired token keeps the cache without hitting the network', async t => {
   let renew = async () => {}
   let credentials = { accessToken: 't', key: 'a', expiresAt: now + 60_000 }
   const service = new ClaudeUsageService({
-    cachePath: join(dir, 'claude.json'), visible: () => true, changed: () => {}, now: () => now, credentials: async () => credentials,
+    cachePath: join(dir, 'claude.json'), visible: () => true, changed: () => {}, now: () => now, credentials: async () => credentials, desktop: async () => null,
     renew: async () => { renewals++; await renew() },
     fetchJson: async url => { calls++; return url.endsWith('/profile') ? {} : usage },
   })
@@ -82,4 +82,28 @@ test('expired token keeps the cache without hitting the network', async t => {
   now += 120_000
   await service.refresh() // valid token: no renewal
   assert.equal(renewals, 2)
+})
+test('falls back to Claude Desktop usage when the CLI cannot renew', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'agentcord-claude-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const now = 1_800_000_000_000
+  let renewals = 0
+  const service = new ClaudeUsageService({
+    cachePath: join(dir, 'claude.json'), visible: () => true, changed: () => {}, now: () => now,
+    credentials: async () => ({ accessToken: 'old', key: 'a', expiresAt: now - 1 }),
+    renew: async () => { renewals++ },
+    desktop: async () => ({ at: now - 60_000, org: 'o', fiveHour: 2, weekly: 20 }),
+    fetchJson: async () => { throw new Error('no network for Desktop usage') },
+  })
+  t.after(() => service.stop())
+  await service.refresh()
+  assert.equal(service.state.status, 'ready')
+  assert.deepEqual(service.state.snapshot?.windows.map(w => [w.id, w.usedPercent, w.resetsAt]), [['claude-session', 2, null], ['claude-weekly', 20, null]])
+  assert.equal(renewals, 1)
+})
+test('Desktop samples older than their window are dropped', () => {
+  const sample = { at: 0, org: 'o', fiveHour: 5, weekly: 9 }
+  assert.deepEqual(desktopWindows(sample, 400 * 60_000).map(w => w.id), ['claude-weekly'])
+  assert.throws(() => desktopWindows(sample, 8 * 86_400_000))
+  assert.throws(() => desktopWindows(null, 0))
 })

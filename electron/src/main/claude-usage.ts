@@ -21,6 +21,7 @@ interface Options extends ServiceOptions {
   credentials?: () => Promise<Credentials | null>
   fetchJson?: Fetcher
   renew?: () => Promise<void>
+  desktop?: () => Promise<DesktopSample | null>
 }
 
 export async function readCredentials(): Promise<Credentials | null> {
@@ -33,6 +34,31 @@ export async function readCredentials(): Promise<Credentials | null> {
     const expiresAt = typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : undefined
     return { accessToken, expiresAt, key: hash(text(oauth?.refreshToken) ?? accessToken) }
   } catch { return null }
+}
+// Claude Desktop keeps its sign-in encrypted (never read here) but logs its own usage percentages
+// next to it. Without a usable CLI login we show the latest of those, with no reset time.
+// ponytail: percentages are as of the last sample; a 5-hour or weekly window that has since reset
+// shows stale numbers until Desktop writes a new one, so samples older than the window are dropped.
+export interface DesktopSample { at: number; org: string; fiveHour: unknown; weekly: unknown }
+export async function readDesktopUsage(): Promise<DesktopSample | null> {
+  try {
+    const base = process.platform === 'win32' ? process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
+      : process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support') : process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config')
+    const root = object(JSON.parse(await readFile(join(base, 'Claude', 'plan-usage-history.json'), 'utf8')))
+    const last = object(Array.isArray(root?.samples) ? root.samples.at(-1) : null)
+    const u = object(last?.u)
+    if (typeof last?.t !== 'number' || !u) return null
+    return { at: last.t, org: text(last.org) ?? 'desktop', fiveHour: u.fh, weekly: u.sd }
+  } catch { return null }
+}
+export function desktopWindows(sample: DesktopSample | null, now: number): UsageWindow[] {
+  const age = sample ? now - sample.at : Infinity
+  const windows = [
+    age < 300 * 60_000 ? usageWindow('claude-session', '5-hour session', 300, sample?.fiveHour, null, null) : null,
+    age < 10080 * 60_000 ? usageWindow('claude-weekly', 'Weekly limit', 10080, sample?.weekly, null, null) : null,
+  ].filter(w => !!w)
+  if (!windows.length) throw new Error('Claude Desktop has not recorded recent usage. Use Claude Desktop, then refresh.')
+  return windows
 }
 // `claude auth status` refreshes an expired token and writes it back; it starts no session or model call.
 export function renewCredentials(): Promise<void> {
@@ -91,12 +117,29 @@ export function parseClaudeProfile(value: unknown): { email: string | null; plan
 export class ClaudeUsageService extends TokenUsageService {
   constructor(options: Options) {
     const get = options.fetchJson ?? fetchJson
+    const cli = options.credentials ?? readCredentials
+    const renew = options.renew ?? renewCredentials
+    const desktop = options.desktop ?? readDesktopUsage
+    const now = options.now ?? Date.now
+    const stale = (c: Credentials) => c.expiresAt !== undefined && now() >= c.expiresAt
+    let renewFailed = false // the CLI could not renew, so use Claude Desktop until it signs in again
     super(options, {
-      credentials: options.credentials ?? readCredentials,
-      renew: options.renew ?? renewCredentials,
-      profile: async c => parseClaudeProfile(await get(PROFILE_URL, c.accessToken)),
-      usage: async c => parseClaudeUsage(await get(USAGE_URL, c.accessToken)),
-      signedOut: 'Run claude and sign in with /login, then refresh to see your Claude usage.',
+      credentials: async () => {
+        const c = await cli()
+        if (c && !stale(c)) { renewFailed = false; return c }
+        if (c && !renewFailed) return c // expired: let the poller try renewing it first
+        const sample = await desktop()
+        return sample ? { accessToken: '', key: hash(`desktop:${sample.org}`) } : c
+      },
+      renew: async () => {
+        await renew()
+        const c = await cli()
+        renewFailed = !!c && stale(c)
+      },
+      // An empty access token marks the Claude Desktop fallback: no network, no profile.
+      profile: async c => c.accessToken ? parseClaudeProfile(await get(PROFILE_URL, c.accessToken)) : { email: null, plan: null },
+      usage: async c => c.accessToken ? parseClaudeUsage(await get(USAGE_URL, c.accessToken)) : desktopWindows(await desktop(), now()),
+      signedOut: 'Open Claude Desktop, or run claude and sign in with /login, then refresh to see your Claude usage.',
       expired: EXPIRED,
     })
   }

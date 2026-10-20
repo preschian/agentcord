@@ -16,9 +16,32 @@ internal static class SessionActivity
     /// <summary>File-retention bound for tree snapshots, not the clock cutoff.</summary>
     public const long LookbackMs = 24 * 60 * 60 * 1000;
 
+    /// <summary>Tests pin the scan clock so "earlier today" stays on one local
+    /// day. Null in the app.</summary>
+    internal static DateTimeOffset? Clock;
+
+    public static DateTimeOffset Now() => Clock ?? DateTimeOffset.UtcNow;
+
+    internal static IDisposable Pin(DateTimeOffset now)
+    {
+        var previous = Clock;
+        Clock = now;
+        return new Unpin(previous);
+    }
+
     /// <summary>Local calendar-day start, used as the work-clock cutoff.</summary>
-    public static long LocalMidnightMs() =>
-        new DateTimeOffset(DateTime.Today).ToUnixTimeMilliseconds();
+    public static long LocalMidnightMs()
+    {
+        if (Clock is not DateTimeOffset pinned)
+            return new DateTimeOffset(DateTime.Today).ToUnixTimeMilliseconds();
+        var local = pinned.ToLocalTime();
+        return new DateTimeOffset(local.Date, local.Offset).ToUnixTimeMilliseconds();
+    }
+
+    private sealed class Unpin(DateTimeOffset? previous) : IDisposable
+    {
+        public void Dispose() => Clock = previous;
+    }
 
     /// <summary>Add <c>now - last</c> only while the session is live, so idle clocks freeze.</summary>
     public static long WithLiveTail(long totalActiveMs, long? lastMs, long nowMs, bool live)
@@ -55,7 +78,7 @@ internal static class SessionActivity
     /// configured idle window ending at <paramref name="now"/>.</summary>
     public static bool IsWithinWindow(long activityMs, double windowSeconds, DateTimeOffset? now = null)
     {
-        var nowMs = (now ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds();
+        var nowMs = (now ?? Now()).ToUnixTimeMilliseconds();
         return (nowMs - activityMs) / 1000.0 <= windowSeconds;
     }
 

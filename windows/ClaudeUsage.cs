@@ -197,7 +197,7 @@ public sealed class ClaudeUsage : IDisposable
             var root = doc.RootElement;
             var email = root.TryGetProperty("account", out var account)
                 && account.ValueKind == JsonValueKind.Object
-                ? StringProp(account, "email")
+                ? JsonProp.String(account, "email")
                 : null;
             AccountEmail = string.IsNullOrEmpty(email) ? null : email;
 
@@ -249,7 +249,7 @@ public sealed class ClaudeUsage : IDisposable
     private static string? PlanLabel(JsonElement root)
     {
         if (root.TryGetProperty("organization", out var org) && org.ValueKind == JsonValueKind.Object
-            && StringProp(org, "organization_type") is { Length: > 0 } type)
+            && JsonProp.String(org, "organization_type") is { Length: > 0 } type)
         {
             var stripped = type.StartsWith("claude_", StringComparison.Ordinal)
                 ? type["claude_".Length..]
@@ -417,8 +417,8 @@ public sealed class ClaudeUsage : IDisposable
         var modelWeekly = new List<ModelUsageWindow>();
         foreach (var limit in limits)
         {
-            var kind = StringProp(limit, "kind");
-            var group = StringProp(limit, "group");
+            var kind = JsonProp.String(limit, "kind");
+            var group = JsonProp.String(limit, "group");
             var hasScope = limit.TryGetProperty("scope", out var scope) && scope.ValueKind == JsonValueKind.Object;
 
             if (session is null && (kind == "session" || group == "session")) session = limit;
@@ -428,7 +428,7 @@ public sealed class ClaudeUsage : IDisposable
             // arrive as extra entries carrying the model's display name.
             if (group == "weekly" && hasScope
                 && scope.TryGetProperty("model", out var model) && model.ValueKind == JsonValueKind.Object
-                && StringProp(model, "display_name") is { Length: > 0 } name)
+                && JsonProp.String(model, "display_name") is { Length: > 0 } name)
             {
                 modelWeekly.Add(new ModelUsageWindow { ModelName = name, Window = LimitWindow(limit, null) });
             }
@@ -447,27 +447,19 @@ public sealed class ClaudeUsage : IDisposable
 
     private static UsageWindow LimitWindow(JsonElement? limit, JsonElement? fallback)
     {
-        var percent = NumberProp(limit, "percent") ?? NumberProp(fallback, "utilization") ?? 0;
-        var resetsAt = (limit is { } lim ? StringProp(lim, "resets_at") : null)
-            ?? (fallback is { } fb ? StringProp(fb, "resets_at") : null);
+        var percent = JsonProp.Number(limit, "percent") ?? JsonProp.Number(fallback, "utilization") ?? 0;
+        var resetsAt = (limit is { } lim ? JsonProp.String(lim, "resets_at") : null)
+            ?? (fallback is { } fb ? JsonProp.String(fb, "resets_at") : null);
         return new UsageWindow
         {
             Percent = (int)Math.Round(percent),
-            Severity = (limit is { } li ? StringProp(li, "severity") : null) ?? "normal",
+            Severity = (limit is { } li ? JsonProp.String(li, "severity") : null) ?? "normal",
             ResetsAtMs = ClaudeSession.EpochMsFromIso(resetsAt),
         };
     }
-
-    private static string? StringProp(JsonElement obj, string name) =>
-        obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
-            ? v.GetString() : null;
 
     private static bool? BoolProp(JsonElement obj, string name) =>
         obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(name, out var v) &&
         (v.ValueKind is JsonValueKind.True or JsonValueKind.False)
             ? v.GetBoolean() : null;
-
-    private static double? NumberProp(JsonElement? obj, string name) =>
-        obj is { ValueKind: JsonValueKind.Object } o && o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number
-            ? v.GetDouble() : null;
 }

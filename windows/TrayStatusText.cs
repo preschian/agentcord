@@ -38,7 +38,7 @@ public static class TrayStatusText
         if (settings.ShowModel && session.Model is not null) parts.Add(session.Model);
         parts.Add(Format.Elapsed(Format.NowMs() - session.StartEpochMs));
         if (settings.ShowTokens && session.TotalTokens > 0)
-            parts.Add($"{PresenceController.FormatTokens(session.TotalTokens)} tokens");
+            parts.Add($"{Format.Tokens(session.TotalTokens)} tokens");
         return string.Join(" · ", parts);
     }
 

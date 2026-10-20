@@ -93,11 +93,11 @@ public sealed class AnthropicStatus : IDisposable
             {
                 // Statuspage marks container rows with group: true; skip those.
                 if (c.TryGetProperty("group", out var g) && g.ValueKind == JsonValueKind.True) continue;
-                if (StringProp(c, "name") is not { Length: > 0 } name) continue;
+                if (JsonProp.String(c, "name") is not { Length: > 0 } name) continue;
                 components.Add(new StatusComponent
                 {
                     Name = ShortName(name),
-                    Status = StringProp(c, "status") ?? "unknown",
+                    Status = JsonProp.String(c, "status") ?? "unknown",
                 });
             }
         }
@@ -107,13 +107,13 @@ public sealed class AnthropicStatus : IDisposable
         {
             foreach (var i in inc.EnumerateArray())
             {
-                if (StringProp(i, "name") is not { Length: > 0 } name) continue;
+                if (JsonProp.String(i, "name") is not { Length: > 0 } name) continue;
                 incidents.Add(new StatusIncident
                 {
                     Name = name,
-                    Status = StringProp(i, "status") ?? "investigating",
-                    Impact = StringProp(i, "impact") ?? "none",
-                    StartedAtMs = ClaudeSession.EpochMsFromIso(StringProp(i, "started_at")),
+                    Status = JsonProp.String(i, "status") ?? "investigating",
+                    Impact = JsonProp.String(i, "impact") ?? "none",
+                    StartedAtMs = ClaudeSession.EpochMsFromIso(JsonProp.String(i, "started_at")),
                 });
             }
         }
@@ -127,10 +127,6 @@ public sealed class AnthropicStatus : IDisposable
             FetchedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
     }
-
-    private static string? StringProp(JsonElement obj, string name) =>
-        obj.ValueKind == JsonValueKind.Object && obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
-            ? v.GetString() : null;
 
     /// <summary>Drops the trailing parenthetical so names stay compact, e.g.
     /// "Claude API (api.anthropic.com)" -> "Claude API".</summary>

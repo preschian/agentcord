@@ -36,7 +36,7 @@ public sealed class CodexSession : IDisposable
         // selection. Every transcript must be inspected because an active
         // session can have a stale mtime; the per-file cache keeps re-scans of
         // unchanged files cheap.
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var nowMs = SessionActivity.Now().ToUnixTimeMilliseconds();
         var cutoffMs = SessionActivity.LocalMidnightMs();
         SessionInfo? best = null;
         long total = 0;
@@ -155,24 +155,24 @@ public sealed class CodexSession : IDisposable
             var type = typeElement.GetString();
             if (type is "session_meta" or "turn_context")
             {
-                if (StringProp(payload, "cwd") is { Length: > 0 } cwd) state.Cwd = cwd;
-                if (type == "turn_context" && StringProp(payload, "model") is { Length: > 0 } model)
+                if (JsonProp.String(payload, "cwd") is { Length: > 0 } cwd) state.Cwd = cwd;
+                if (type == "turn_context" && JsonProp.String(payload, "model") is { Length: > 0 } model)
                     state.Model = model;
                 if (type == "session_meta"
-                    && ClaudeSession.EpochMsFromIso(StringProp(payload, "timestamp")) is long started)
+                    && ClaudeSession.EpochMsFromIso(JsonProp.String(payload, "timestamp")) is long started)
                     state.StartedAtMs = started;
             }
 
             if (type == "event_msg"
-                && StringProp(payload, "type") == "token_count"
+                && JsonProp.String(payload, "type") == "token_count"
                 && payload.TryGetProperty("info", out var info)
                 && info.ValueKind == JsonValueKind.Object
                 && info.TryGetProperty("last_token_usage", out var usage)
                 && usage.ValueKind == JsonValueKind.Object)
             {
-                var total = IntProp(usage, "total_tokens");
+                var total = JsonProp.Long(usage, "total_tokens");
                 if (total == 0)
-                    total = IntProp(usage, "input_tokens") + IntProp(usage, "output_tokens");
+                    total = JsonProp.Long(usage, "input_tokens") + JsonProp.Long(usage, "output_tokens");
                 // This is the active context/turn, not the cumulative
                 // amount processed over the entire transcript. Keep
                 // the newest event rather than the maximum because
@@ -181,18 +181,6 @@ public sealed class CodexSession : IDisposable
             }
         }
     }
-
-    private static string? StringProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static long IntProp(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var value)
-        && value.ValueKind == JsonValueKind.Number
-        && value.TryGetInt64(out var number)
-            ? number
-            : 0;
 
     public static string PrettyModel(string raw)
     {

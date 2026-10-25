@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ClaudeUsageService, desktopWindows, parseClaudeProfile, parseClaudeUsage } from '../src/main/claude-usage.ts'
+import { ClaudeUsageService, desktopWindows, parseClaudeProfile, parseClaudeUsage, parseDesktopUsage } from '../src/main/claude-usage.ts'
 
 const usage = {
   limits: [
@@ -100,6 +100,11 @@ test('falls back to Claude Desktop usage when the CLI cannot renew', async t => 
   assert.equal(service.state.status, 'ready')
   assert.deepEqual(service.state.snapshot?.windows.map(w => [w.id, w.usedPercent, w.resetsAt]), [['claude-session', 2, null], ['claude-weekly', 20, null]])
   assert.equal(renewals, 1)
+})
+test('reads the latest Desktop history sample', () => {
+  const history = { version: 2, samples: [{ t: 1, org: 'o', u: { fh: 1, sd: 2 } }, { t: 2, org: 'o', u: { fh: 4, sd: 8, xu: 0 } }] }
+  assert.deepEqual(parseDesktopUsage(history), { at: 2, org: 'o', fiveHour: 4, weekly: 8 })
+  assert.equal(parseDesktopUsage({ samples: [] }), null)
 })
 test('Desktop samples older than their window are dropped', () => {
   const sample = { at: 0, org: 'o', fiveHour: 5, weekly: 9 }

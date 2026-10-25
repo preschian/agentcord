@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { UsageWindow } from '../shared/types'
@@ -40,16 +40,29 @@ export async function readCredentials(): Promise<Credentials | null> {
 // ponytail: percentages are as of the last sample; a 5-hour or weekly window that has since reset
 // shows stale numbers until Desktop writes a new one, so samples older than the window are dropped.
 export interface DesktopSample { at: number; org: string; fiveHour: unknown; weekly: unknown }
+const HISTORY = 'plan-usage-history.json'
+// The Store (MSIX) build moves its data out of %APPDATA%\Claude to %LOCALAPPDATA%\Claude-Data\claude_<publisher>.
+async function desktopUsageFiles(): Promise<string[]> {
+  if (process.platform === 'darwin') return [join(homedir(), 'Library', 'Application Support', 'Claude', HISTORY)]
+  if (process.platform !== 'win32') return [join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'Claude', HISTORY)]
+  const files = [join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'Claude', HISTORY)]
+  const moved = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Claude-Data')
+  const dirs = await readdir(moved).catch(() => [])
+  return [...files, ...dirs.filter(d => d.startsWith('claude_')).map(d => join(moved, d, HISTORY))]
+}
+export function parseDesktopUsage(value: unknown): DesktopSample | null {
+  const root = object(value)
+  const last = object(Array.isArray(root?.samples) ? root.samples.at(-1) : null)
+  const u = object(last?.u)
+  if (typeof last?.t !== 'number' || !u) return null
+  return { at: last.t, org: text(last.org) ?? 'desktop', fiveHour: u.fh, weekly: u.sd }
+}
+// Several installs can leave a history behind; the newest sample is the one in use.
 export async function readDesktopUsage(): Promise<DesktopSample | null> {
-  try {
-    const base = process.platform === 'win32' ? process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
-      : process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support') : process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config')
-    const root = object(JSON.parse(await readFile(join(base, 'Claude', 'plan-usage-history.json'), 'utf8')))
-    const last = object(Array.isArray(root?.samples) ? root.samples.at(-1) : null)
-    const u = object(last?.u)
-    if (typeof last?.t !== 'number' || !u) return null
-    return { at: last.t, org: text(last.org) ?? 'desktop', fiveHour: u.fh, weekly: u.sd }
-  } catch { return null }
+  const samples = await Promise.all((await desktopUsageFiles()).map(async f => {
+    try { return parseDesktopUsage(JSON.parse(await readFile(f, 'utf8'))) } catch { return null }
+  }))
+  return samples.reduce<DesktopSample | null>((a, s) => s && (!a || s.at > a.at) ? s : a, null)
 }
 export function desktopWindows(sample: DesktopSample | null, now: number): UsageWindow[] {
   const age = sample ? now - sample.at : Infinity

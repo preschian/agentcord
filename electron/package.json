@@ -29,7 +29,7 @@
   "devDependencies": {
     "@types/node": "26.6.4",
     "@vitejs/plugin-vue": "6.0.9",
-    "electron": "44.5.1",
+    "electron": "44.9.1",
     "electron-builder": "26.15.3",
     "tsx": "4.23.15",
     "typescript": "6.0.3",
